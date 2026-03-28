@@ -28,11 +28,16 @@ Required GitHub repository secrets:
 
 - `KALE_AWS_ACCESS_KEY_ID`
 - `KALE_AWS_SECRET_ACCESS_KEY`
-- `KALE_RUNNER_SSH_KEY`
 
 Optional GitHub repository secret:
 
 - `KALE_AWS_SESSION_TOKEN`
+
+Notes:
+
+- the scheduled GitHub Actions healthcheck currently checks the EC2 instance state, not the runner `readyz` endpoint over SSH
+- keep the SSH-based `readyz` check for local/manual operator use
+- if you later grant `ssm:SendCommand`, the GitHub workflow can be extended to check the runner process from inside the instance without opening SSH
 
 If you want the script to check the runner over SSH too:
 
