@@ -110,6 +110,7 @@ Implemented now:
 - host-based project URLs on `*.cuny.qzz.io`
 - Codex and Claude plugin packaging
 - an AWS-hosted build runner with a stable Elastic IP and SSM-ready instance profile
+- a scheduled GitHub Actions healthcheck for the public stack and AWS runner
 - no daily validate/deploy cap by default, but support for per-repository override caps
 - project-isolated `DB`, `FILES`, and `CACHE` provisioning
 - approval-only policy for advanced bindings such as AI, Vectorize, and Rooms

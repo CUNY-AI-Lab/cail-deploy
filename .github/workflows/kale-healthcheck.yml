@@ -1,0 +1,60 @@
+name: Kale Healthcheck
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kale-healthcheck
+  cancel-in-progress: false
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AWS_REGION: us-east-1
+      KALE_BASE_URL: https://cuny.qzz.io/kale
+      KALE_RUNTIME_URL: https://runtime.cuny.qzz.io/.well-known/cail-runtime.json
+      KALE_DEPLOY_SERVICE_HEALTH_URL: https://cail-deploy-service.ailab-452.workers.dev/healthz
+      KALE_GATEWAY_HEALTH_URL: https://cail-gateway.ailab-452.workers.dev/healthz
+      KALE_SMOKE_URL: https://kale-cache-smoke-test.cuny.qzz.io/api/cache-smoke
+      KALE_RUNNER_HOST: 54.235.218.250
+      KALE_RUNNER_INSTANCE_ID: i-0a6504fec9b1bcfaf
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.KALE_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.KALE_AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.KALE_AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install runner SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          cat > ~/.ssh/kale-build-runner.pem <<'EOF'
+          ${{ secrets.KALE_RUNNER_SSH_KEY }}
+          EOF
+          chmod 600 ~/.ssh/kale-build-runner.pem
+
+      - name: Run Kale healthcheck
+        env:
+          KALE_RUNNER_SSH_KEY: /home/runner/.ssh/kale-build-runner.pem
+        run: npm run ops:healthcheck

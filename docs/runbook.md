@@ -19,6 +19,21 @@ The fastest repeatable check is:
 npm run ops:healthcheck
 ```
 
+The same check also runs from GitHub Actions every 15 minutes:
+
+- workflow: `.github/workflows/kale-healthcheck.yml`
+- triggers: manual and scheduled
+
+Required GitHub repository secrets:
+
+- `KALE_AWS_ACCESS_KEY_ID`
+- `KALE_AWS_SECRET_ACCESS_KEY`
+- `KALE_RUNNER_SSH_KEY`
+
+Optional GitHub repository secret:
+
+- `KALE_AWS_SESSION_TOKEN`
+
 If you want the script to check the runner over SSH too:
 
 ```bash
