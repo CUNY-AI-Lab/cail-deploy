@@ -443,10 +443,10 @@ deployServiceApp.get("/", async (c) => {
   const liveProjectCount = liveProjects.length;
   const marketingName = "Kale Deploy";
   const marketingSource = "From the CUNY AI Lab";
-  const claudeSetupPrompt = `Install ${marketingName} in this Claude Code environment. If you can run terminal commands yourself, run:\nclaude plugins marketplace add ${repositoryUrl}\nclaude plugins install cail-deploy@cuny-ai-lab\nThen tell me when ${marketingName} is connected.`;
-  const codexSetupPrompt = `Connect ${marketingName} in this Codex environment. If you can run terminal commands yourself, run:\ncodex mcp add cail --url ${mcpEndpoint}\nThen tell me when ${marketingName} is connected.`;
-  const geminiSetupPrompt = `Connect ${marketingName} in this Gemini CLI environment. If you can run terminal commands yourself, run:\ngemini mcp add --transport http cail ${mcpEndpoint}\nThen tell me when ${marketingName} is connected.`;
-  const buildPrompt = `Use ${marketingName} from the CUNY AI Lab to build me a small web app. If ${marketingName} is not connected yet, connect it first and then continue.`;
+  const claudeSetupPrompt = `Connect ${marketingName} in this Claude Code environment. If you can run terminal commands yourself, run:\nclaude mcp add --transport http cail ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. Then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
+  const codexSetupPrompt = `Connect ${marketingName} in this Codex environment. If you can run terminal commands yourself, run:\ncodex mcp add cail --url ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. Then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
+  const geminiSetupPrompt = `Connect ${marketingName} in this Gemini CLI environment. If you can run terminal commands yourself, run:\ngemini mcp add --transport http cail ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. Then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
+  const buildPrompt = `Use ${marketingName} from the CUNY AI Lab to build me a small web app. If ${marketingName} is not connected yet, connect it first and verify that its tools are available. Then use Kale Deploy to register this repo, hand me any guided GitHub install link if approval is needed, validate the project, and deploy it through Kale.`;
 
   const agents = [
     { name: "Claude Code", prompt: claudeSetupPrompt, letter: "C" },
@@ -764,6 +764,7 @@ deployServiceApp.get("/", async (c) => {
       <section class="get-started">
         <div class="agent-blocks">
           <p class="section-label">Get started &mdash; Pick your agent</p>
+          <p class="build-hint">The first connection may open a browser so your agent can sign you in. After that, it should be able to see Kale Deploy&apos;s tools.</p>
           ${agents.map((agent) => `
           <div class="agent-block">
             <div class="agent-header">

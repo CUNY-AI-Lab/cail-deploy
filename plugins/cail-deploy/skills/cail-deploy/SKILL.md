@@ -191,7 +191,7 @@ After scaffolding or adapting the repo, use this loop:
 2. Create or connect the GitHub repo.
 3. If the harness is not already connected to Kale Deploy, connect it to the remote MCP server:
    - `POST https://cuny.qzz.io/kale/mcp`
-   - Prefer the bundled plugin when available.
+   - Prefer the direct remote MCP connection when possible so the OAuth/browser flow is visible.
 4. Let the harness complete MCP OAuth through the browser:
    - protected resource metadata: `GET /.well-known/oauth-protected-resource/mcp`
    - authorization server metadata: `GET /.well-known/oauth-authorization-server`
@@ -203,6 +203,7 @@ After scaffolding or adapting the repo, use this loop:
    - `validate_project`
    - `get_build_job_status`
    - `get_project_status`
+   - confirm the harness can actually see these tools before you say Kale Deploy is connected
 6. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`.
 7. After the install step, continue with one of:
    - `validate_project` for a non-production branch or preflight build
