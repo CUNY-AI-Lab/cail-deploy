@@ -13,6 +13,7 @@ KALE_RUNNER_SSH_USER="${KALE_RUNNER_SSH_USER:-ec2-user}"
 KALE_RUNNER_INSTANCE_ID="${KALE_RUNNER_INSTANCE_ID:-}"
 AWS_PROFILE="${AWS_PROFILE:-}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
+KALE_HEALTHCHECK_USER_AGENT="${KALE_HEALTHCHECK_USER_AGENT:-Mozilla/5.0 (compatible; KaleHealthcheck/1.0; +https://github.com/CUNY-AI-Lab/cail-deploy)}"
 
 pass() {
   printf 'OK   %s\n' "$1"
@@ -29,7 +30,18 @@ fail() {
 
 fetch_body() {
   local url="$1"
-  curl --silent --show-error --fail --location --max-time 20 "$url"
+  curl \
+    --silent \
+    --show-error \
+    --fail \
+    --location \
+    --max-time 20 \
+    --retry 2 \
+    --retry-delay 2 \
+    --retry-all-errors \
+    --user-agent "$KALE_HEALTHCHECK_USER_AGENT" \
+    --header 'Accept: text/html,application/json;q=0.9,*/*;q=0.8' \
+    "$url"
 }
 
 check_contains() {

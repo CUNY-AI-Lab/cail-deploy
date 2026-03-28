@@ -19,7 +19,7 @@ The fastest repeatable check is:
 npm run ops:healthcheck
 ```
 
-The same check also runs from GitHub Actions every 15 minutes:
+The same check also runs from GitHub Actions every hour:
 
 - workflow: `.github/workflows/kale-healthcheck.yml`
 - triggers: manual and scheduled
