@@ -1,0 +1,44 @@
+{
+  "name": "cail-deploy",
+  "version": "0.1.0",
+  "description": "CAIL Deploy assistant adapter for building CAIL-compatible Cloudflare apps.",
+  "author": {
+    "name": "CUNY AI Lab",
+    "email": "hello@ailab.gc.cuny.edu",
+    "url": "https://github.com/CUNY-AI-Lab"
+  },
+  "homepage": "https://deploy.ailab.gc.cuny.edu",
+  "repository": "https://github.com/CUNY-AI-Lab/cail-deploy",
+  "license": "MIT",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "deployment",
+    "cuny",
+    "mcp",
+    "oauth"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "CAIL Deploy",
+    "shortDescription": "Build and deploy apps that fit the CAIL runtime.",
+    "longDescription": "A Codex plugin that teaches the CAIL Deploy runtime, bundles the remote CAIL MCP server, and provides a cail-init command prompt for scaffolding and shipping new projects.",
+    "developerName": "CUNY AI Lab",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://cail-deploy-service.ailab-452.workers.dev",
+    "privacyPolicyURL": "https://cail-deploy-service.ailab-452.workers.dev/privacy",
+    "termsOfServiceURL": "https://cail-deploy-service.ailab-452.workers.dev/terms",
+    "defaultPrompt": [
+      "Use CAIL Deploy to build me a small web app.",
+      "Scaffold and deploy a CAIL-compatible survey tool.",
+      "Make this Worker fit CAIL Deploy and push it live."
+    ],
+    "brandColor": "#c2410c"
+  }
+}

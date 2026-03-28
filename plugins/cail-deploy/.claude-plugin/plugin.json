@@ -1,0 +1,9 @@
+{
+  "name": "cail-deploy",
+  "version": "0.1.0",
+  "description": "CAIL Deploy plugin for building and shipping CAIL-compatible web apps through the remote CAIL MCP server.",
+  "author": {
+    "name": "CUNY AI Lab",
+    "email": "hello@ailab.gc.cuny.edu"
+  }
+}

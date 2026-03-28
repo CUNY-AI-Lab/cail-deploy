@@ -1,0 +1,26 @@
+{
+  "name": "@cuny-ai-lab/deploy-service",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@cfworker/json-schema": "^4.1.1",
+    "@cuny-ai-lab/build-contract": "0.1.0",
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "hono": "^4.12.9",
+    "jose": "^6.2.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260317.1",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "wrangler": "^4.77.0"
+  }
+}

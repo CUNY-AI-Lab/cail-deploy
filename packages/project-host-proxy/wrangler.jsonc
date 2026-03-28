@@ -1,0 +1,30 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cail-project-host-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-26",
+  "account_id": "0c7ef775c8a1aa3f6b5bc0d2ae56167b",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "cuny.qzz.io/.well-known/cail-runtime.json",
+      "zone_name": "cuny.qzz.io"
+    },
+    {
+      "pattern": "cuny.qzz.io/kale*",
+      "zone_name": "cuny.qzz.io"
+    },
+    {
+      "pattern": "*.cuny.qzz.io/*",
+      "zone_name": "cuny.qzz.io"
+    }
+  ],
+  "vars": {
+    "INTERNAL_GATEWAY_BASE_URL": "https://cail-gateway.ailab-452.workers.dev",
+    "INTERNAL_DEPLOY_SERVICE_URL": "https://cail-deploy-service.ailab-452.workers.dev",
+    "DEPLOY_SERVICE_PATH_PREFIX": "/kale",
+    "PROJECT_HOST_SUFFIX": "cuny.qzz.io",
+    "RUNTIME_MANIFEST_HOST": "runtime.cuny.qzz.io",
+    "RUNTIME_MANIFEST_URL": "https://cail-deploy-service.ailab-452.workers.dev/.well-known/cail-runtime.json"
+  }
+}

@@ -1,0 +1,11 @@
+DEPLOY_API_TOKEN=replace-with-local-api-token
+MCP_OAUTH_TOKEN_SECRET=replace-with-mcp-oauth-token-secret
+MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS=3600
+CLOUDFLARE_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+CLOUDFLARE_ACCESS_AUD=replace-with-access-aud-tag
+CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS=cuny.edu
+CLOUDFLARE_ACCESS_ALLOWED_EMAILS=
+GITHUB_APP_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nREPLACE_WITH_PRIVATE_KEY\n-----END PRIVATE KEY-----"
+GITHUB_WEBHOOK_SECRET=replace-with-github-webhook-secret
+BUILD_RUNNER_TOKEN=replace-with-runner-shared-secret
+CLOUDFLARE_API_TOKEN=replace-with-cloudflare-api-token

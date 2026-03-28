@@ -1,0 +1,15 @@
+{
+  "name": "@cuny-ai-lab/cail-deploy",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CAIL Deploy control plane, gateway workers, and assistant adapters.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  }
+}
+

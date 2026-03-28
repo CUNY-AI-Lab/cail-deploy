@@ -1,0 +1,124 @@
+{
+  "name": "cail-runtime",
+  "version": 1,
+  "provider": "cloudflare",
+  "deployment_model": "workers-for-platforms",
+  "build_surface": "github",
+  "build_execution": "cail-owned-runner",
+  "build_queue": "cloudflare-queues",
+  "control_plane_store": "d1",
+  "artifact_archive": "r2",
+  "public_base_url": "https://cuny.qzz.io",
+  "install_base_url": "https://cuny.qzz.io/kale",
+  "well_known_runtime_url": "https://runtime.cuny.qzz.io/.well-known/cail-runtime.json",
+  "project_url_template": "https://<project-name>.cuny.qzz.io",
+  "project_name_pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+  "reserved_project_names": [
+    "runtime"
+  ],
+  "recommended_framework": "hono",
+  "languages": [
+    "typescript",
+    "javascript"
+  ],
+  "local_preflight": {
+    "commands": [
+      "npm run check",
+      "npx wrangler dev"
+    ],
+    "notes": [
+      "Run npm run check before every push.",
+      "Use wrangler dev for Worker-shaped runtime testing before GitHub deployment."
+    ]
+  },
+  "agent_api": {
+    "runtime_manifest": "https://runtime.cuny.qzz.io/.well-known/cail-runtime.json",
+    "mcp_endpoint": "https://cuny.qzz.io/kale/mcp",
+    "oauth_authorization_metadata": "https://cuny.qzz.io/kale/.well-known/oauth-authorization-server",
+    "oauth_protected_resource_metadata": "https://cuny.qzz.io/kale/.well-known/oauth-protected-resource/mcp",
+    "repository_status_template": "https://cuny.qzz.io/kale/api/repositories/{owner}/{repo}/status",
+    "register_project": "https://cuny.qzz.io/kale/api/projects/register",
+    "validate_project": "https://cuny.qzz.io/kale/api/validate",
+    "build_job_status_template": "https://cuny.qzz.io/kale/api/build-jobs/{jobId}/status",
+    "project_status_template": "https://cuny.qzz.io/kale/api/projects/{projectName}/status",
+    "github_install": "https://cuny.qzz.io/kale/github/install",
+    "github_setup": "https://cuny.qzz.io/kale/github/setup",
+    "auth": {
+      "scheme": "oauth2.1",
+      "broker": "mcp_oauth_with_cloudflare_access_authorization",
+      "headless_bootstrap_supported": false,
+      "browser_session_required_for_authorization": true,
+      "required_for": [
+        "repository_status_template",
+        "register_project",
+        "validate_project",
+        "project_status_template",
+        "build_job_status_template"
+      ]
+    }
+  },
+  "mcp": {
+    "transport": "streamable_http",
+    "endpoint": "https://cuny.qzz.io/kale/mcp",
+    "auth": {
+      "scheme": "oauth2.1",
+      "authorization_metadata_url": "https://cuny.qzz.io/kale/.well-known/oauth-authorization-server",
+      "protected_resource_metadata_url": "https://cuny.qzz.io/kale/.well-known/oauth-protected-resource/mcp",
+      "dynamic_client_registration_endpoint": "https://cuny.qzz.io/kale/oauth/register",
+      "browser_login_url": "https://cuny.qzz.io/kale/api/oauth/authorize"
+    },
+    "tools": [
+      "get_runtime_manifest",
+      "get_repository_status",
+      "register_project",
+      "validate_project",
+      "get_project_status",
+      "get_build_job_status"
+    ]
+  },
+  "disallowed": [
+    "python",
+    "native-node-modules",
+    "long-running-cpu-bound-jobs",
+    "traditional-node-server-processes",
+    "filesystem-backed-runtime-state"
+  ],
+  "bindings": [
+    {
+      "name": "DB",
+      "type": "d1",
+      "required": true,
+      "scope": "per-project"
+    },
+    {
+      "name": "FILES",
+      "type": "r2",
+      "required": false,
+      "scope": "shared-or-per-project"
+    },
+    {
+      "name": "CACHE",
+      "type": "kv",
+      "required": false,
+      "scope": "shared"
+    },
+    {
+      "name": "AI",
+      "type": "ai",
+      "required": false,
+      "scope": "shared"
+    },
+    {
+      "name": "VECTORIZE",
+      "type": "vectorize",
+      "required": false,
+      "scope": "shared-or-per-project"
+    },
+    {
+      "name": "ROOMS",
+      "type": "durable_object_namespace",
+      "required": false,
+      "scope": "shared"
+    }
+  ]
+}

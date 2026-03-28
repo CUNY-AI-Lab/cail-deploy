@@ -1,0 +1,47 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cail-deploy-service",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-26",
+  "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "CONTROL_PLANE_DB",
+      "database_name": "cail-control-plane",
+      "database_id": "9873e5f8-eefc-4078-81e3-0718ec5b402b"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "DEPLOYMENT_ARCHIVE",
+      "bucket_name": "cail-deployment-archive"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "BUILD_QUEUE",
+        "queue": "cail-builds"
+      }
+    ]
+  },
+  "vars": {
+    "CLOUDFLARE_ACCOUNT_ID": "452c33847cf5cb1e46f391fca32fd1b5",
+    "CLOUDFLARE_ACCESS_TEAM_DOMAIN": "https://ailab-452.cloudflareaccess.com",
+    "CLOUDFLARE_ACCESS_AUD": "8400834949e15a0383b90a51dece46024c0afdc158ec561f63783aa463ead033",
+    "CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS": "cuny.edu",
+    "MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS": "3600",
+    "WFP_NAMESPACE": "cail-production",
+    "PROJECT_BASE_URL": "https://cail-gateway.ailab-452.workers.dev",
+    "PROJECT_HOST_SUFFIX": "cuny.qzz.io",
+    "DEPLOY_SERVICE_BASE_URL": "https://cuny.qzz.io/kale",
+    "GITHUB_APP_NAME": "CAIL Deploy",
+    "GITHUB_APP_MANIFEST_ORG": "CUNY-AI-Lab",
+    "RETAIN_SUCCESSFUL_ARTIFACTS": "2",
+    "FAILED_ARTIFACT_RETENTION_DAYS": "7",
+    "D1_LOCATION_HINT": "enam",
+    "GITHUB_APP_ID": "3196468",
+    "GITHUB_APP_SLUG": "cail-deploy"
+  }
+}

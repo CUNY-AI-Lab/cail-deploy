@@ -1,0 +1,21 @@
+{
+  "name": "cuny-ai-lab",
+  "interface": {
+    "displayName": "CUNY AI Lab"
+  },
+  "plugins": [
+    {
+      "name": "cail-deploy",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cail-deploy"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
+

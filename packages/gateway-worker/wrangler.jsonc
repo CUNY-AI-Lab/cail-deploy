@@ -1,0 +1,28 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cail-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-26",
+  "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "CONTROL_PLANE_DB",
+      "database_name": "cail-control-plane",
+      "database_id": "9873e5f8-eefc-4078-81e3-0718ec5b402b"
+    }
+  ],
+  "dispatch_namespaces": [
+    {
+      "binding": "DISPATCHER",
+      "namespace": "cail-production"
+    }
+  ],
+  "vars": {
+    "PLATFORM_BASE_URL": "https://cail-gateway.ailab-452.workers.dev",
+    "INSTALL_URL": "https://cuny.qzz.io/kale/github/install",
+    "PROJECT_HOST_SUFFIX": "cuny.qzz.io",
+    "PROJECT_CPU_LIMIT_MS": "100",
+    "PROJECT_SUBREQUEST_LIMIT": "100"
+  }
+}
