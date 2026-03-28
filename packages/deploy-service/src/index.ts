@@ -2744,30 +2744,23 @@ async function resolveProjectResources(
   filesBucketName?: string;
   cacheNamespaceId?: string;
 }> {
-  const previousProjectName = repositoryRecord?.projectName !== metadata.projectName
-    ? repositoryRecord?.projectName
-    : undefined;
-
   const databaseId = await resolveProjectDatabaseId(client, {
     projectName: metadata.projectName,
     existingDatabaseId: repositoryRecord?.databaseId,
-    previousProjectName,
     locationHint
   });
 
   const filesBucketName = requestsBinding(metadata, "r2_bucket", "FILES")
     ? await resolveProjectFilesBucketName(client, {
         projectName: metadata.projectName,
-        existingBucketName: repositoryRecord?.filesBucketName,
-        previousProjectName
+        existingBucketName: repositoryRecord?.filesBucketName
       })
     : undefined;
 
   const cacheNamespaceId = requestsBinding(metadata, "kv_namespace", "CACHE")
     ? await resolveProjectCacheNamespaceId(client, {
         projectName: metadata.projectName,
-        existingNamespaceId: repositoryRecord?.cacheNamespaceId,
-        previousProjectName
+        existingNamespaceId: repositoryRecord?.cacheNamespaceId
       })
     : undefined;
 
@@ -2779,19 +2772,11 @@ async function resolveProjectDatabaseId(
   options: {
     projectName: string;
     existingDatabaseId?: string;
-    previousProjectName?: string;
     locationHint?: string;
   }
 ): Promise<string> {
   if (options.existingDatabaseId) {
     return options.existingDatabaseId;
-  }
-
-  if (options.previousProjectName) {
-    const previousDatabase = await client.findD1DatabaseByName(`cail-${options.previousProjectName}`);
-    if (previousDatabase) {
-      return previousDatabase.uuid;
-    }
   }
 
   const databaseName = `cail-${options.projectName}`;
@@ -2808,19 +2793,10 @@ async function resolveProjectCacheNamespaceId(
   options: {
     projectName: string;
     existingNamespaceId?: string;
-    previousProjectName?: string;
   }
 ): Promise<string> {
   if (options.existingNamespaceId) {
     return options.existingNamespaceId;
-  }
-
-  if (options.previousProjectName) {
-    const previousTitle = buildProjectScopedResourceName("kale-cache", options.previousProjectName, 63);
-    const previousNamespace = await client.findKvNamespaceByTitle(previousTitle);
-    if (previousNamespace) {
-      return previousNamespace.id;
-    }
   }
 
   const title = buildProjectScopedResourceName("kale-cache", options.projectName, 63);
@@ -2838,19 +2814,10 @@ async function resolveProjectFilesBucketName(
   options: {
     projectName: string;
     existingBucketName?: string;
-    previousProjectName?: string;
   }
 ): Promise<string> {
   if (options.existingBucketName) {
     return options.existingBucketName;
-  }
-
-  if (options.previousProjectName) {
-    const previousBucketName = buildProjectScopedResourceName("kale-files", options.previousProjectName, 63);
-    const previousBucket = await client.findR2BucketByName(previousBucketName);
-    if (previousBucket) {
-      return previousBucket.name;
-    }
   }
 
   const bucketName = buildProjectScopedResourceName("kale-files", options.projectName, 63);
