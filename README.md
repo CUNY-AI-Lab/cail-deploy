@@ -109,11 +109,14 @@ Implemented now:
 - Workers for Platforms project deployment
 - host-based project URLs on `*.cuny.qzz.io`
 - Codex and Claude plugin packaging
+- no daily validate/deploy cap by default, but support for per-repository override caps
+- project-isolated `DB`, `FILES`, and `CACHE` provisioning
+- approval-only policy for advanced bindings such as AI, Vectorize, and Rooms
 
 Still not finished:
 
 - fully polished onboarding with no human GitHub approval step
-- project moderation and quota enforcement
+- a richer admin surface for raising or lowering per-project caps
 - a permanent non-laptop runner host
 
 ## Guides

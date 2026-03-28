@@ -61,6 +61,13 @@ npx wrangler secret put BUILD_RUNNER_TOKEN --config packages/deploy-service/wran
 npx wrangler secret put CLOUDFLARE_API_TOKEN --config packages/deploy-service/wrangler.jsonc
 ```
 
+The `CLOUDFLARE_API_TOKEN` now needs enough account permissions for Kale's managed provisioning flow:
+
+- `Workers Scripts: Edit`
+- `D1: Edit`
+- `Workers KV Storage: Edit`
+- `Workers R2 Storage: Edit`
+
 Then redeploy the Worker:
 
 ```bash

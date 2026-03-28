@@ -25,7 +25,6 @@ Examples:
 - course project site
 - archive browser
 - bibliography or submission form
-- lightweight AI interface
 
 ## Works With Adaptation
 
@@ -44,6 +43,19 @@ Typical changes:
 - replace `app.listen(...)`
 - use D1/R2/KV instead of local disk
 - remove unsupported Node packages
+
+## Requires Approval
+
+These may be technically possible, but they are not enabled by default.
+
+- chatbots or other model-backed interfaces
+- vector search or retrieval features
+- realtime rooms or collaboration features
+- unusually large static asset collections
+
+Typical reason:
+
+- Kale Deploy keeps these behind approval and usage caps instead of making them self-service by default.
 
 ## Not Supported
 
@@ -97,6 +109,11 @@ Do not assume:
 - local SQLite files
 - writing application state to disk
 - persistent process memory
+
+Important:
+
+- `DB`, `FILES`, and `CACHE` are self-service production bindings today because Kale provisions one isolated D1 database, R2 bucket, and KV namespace per project when needed.
+- `AI`, `VECTORIZE`, and `ROOMS` require approval because they create billable or always-on platform resources.
 
 ## URL And Hosting Rules
 

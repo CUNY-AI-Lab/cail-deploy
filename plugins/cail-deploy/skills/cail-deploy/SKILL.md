@@ -27,9 +27,8 @@ When there is no strong reason to do otherwise:
 - serve small HTML pages directly from the Worker
 - add JSON routes only where they are clearly useful
 - use D1 for structured data
-- use R2 for uploaded files
-- use KV for cache-like or configuration-like data
-- use Workers AI only when the app actually needs inference
+- treat R2 and KV as managed platform extras, not default self-service promises
+- treat AI, Vectorize, and Rooms as approval-only features
 
 ## Good first app shapes
 
@@ -40,7 +39,6 @@ Bias toward projects that make Kale Deploy useful quickly:
 - guestbooks, forms, and submissions
 - small APIs
 - bibliographies or lightweight searchable collections
-- lightweight AI interfaces
 
 These are usually better targets than heavy SPA stacks or apps that assume a traditional server.
 
@@ -66,6 +64,19 @@ Use these names consistently in generated code:
 - `ROOMS`: Durable Object namespace
 
 Do not invent binding names unless the user explicitly asks.
+
+Current policy defaults for platform-managed bindings are:
+
+- `DB`, `FILES`, and `CACHE` are self-service
+- `AI`, `VECTORIZE`, and `ROOMS` require approval
+- `FILES` and `CACHE` are attached as isolated per-project resources when the repository requests them
+
+To request `FILES` or `CACHE`, add the standard binding names to `wrangler.jsonc`:
+
+- `r2_buckets` with `binding: "FILES"`
+- `kv_namespaces` with `binding: "CACHE"`
+
+Kale replaces the production bucket and namespace values during deployment, so local placeholder values are acceptable when the repository only needs the production binding.
 
 ## Project structure
 

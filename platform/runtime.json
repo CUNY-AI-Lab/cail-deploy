@@ -22,9 +22,43 @@
     "course-site",
     "guestbook-or-form",
     "small-api",
-    "archive-or-bibliography",
-    "lightweight-ai-interface"
+    "archive-or-bibliography"
   ],
+  "approval_required_project_types": [
+    "lightweight-ai-interface",
+    "vector-search",
+    "realtime-room"
+  ],
+  "default_limits": {
+    "max_validations_per_day": null,
+    "max_deployments_per_day": null,
+    "max_concurrent_builds": 1,
+    "max_asset_bytes": 94371840
+  },
+  "limit_rationale": {
+    "max_validations_per_day": "Not capped by default. Set only as an abuse-control override for a specific repository.",
+    "max_deployments_per_day": "Not capped by default. Set only as an abuse-control override for a specific repository.",
+    "max_concurrent_builds": "Limited because builds run on a shared Kale-owned runner.",
+    "max_asset_bytes": "Limited because Kale Deploy currently receives each build artifact as one multipart upload and must stay within Cloudflare request-body limits with headroom for Worker code and metadata."
+  },
+  "approval_required_bindings": [
+    "AI",
+    "VECTORIZE",
+    "ROOMS"
+  ],
+  "self_service_bindings": [
+    "DB",
+    "FILES",
+    "CACHE"
+  ],
+  "binding_rationale": {
+    "DB": "Self-service because Kale already provisions one D1 database per project.",
+    "FILES": "Self-service because Kale provisions one isolated R2 bucket per project when the repository requests FILES.",
+    "CACHE": "Self-service because Kale provisions one isolated KV namespace per project when the repository requests CACHE.",
+    "AI": "Approval-only because model usage is directly billable.",
+    "VECTORIZE": "Approval-only because vector storage and queries are directly billable.",
+    "ROOMS": "Approval-only because realtime state creates an always-on shared backend surface that needs moderation."
+  },
   "languages": [
     "typescript",
     "javascript"
@@ -122,37 +156,48 @@
       "name": "DB",
       "type": "d1",
       "required": true,
-      "scope": "per-project"
+      "scope": "per-project",
+      "enabled_by_default": true
     },
     {
       "name": "FILES",
       "type": "r2",
       "required": false,
-      "scope": "shared-or-per-project"
+      "scope": "per-project",
+      "enabled_by_default": true,
+      "self_service": true
     },
     {
       "name": "CACHE",
       "type": "kv",
       "required": false,
-      "scope": "shared"
+      "scope": "per-project",
+      "enabled_by_default": true,
+      "self_service": true
     },
     {
       "name": "AI",
       "type": "ai",
       "required": false,
-      "scope": "shared"
+      "scope": "shared",
+      "enabled_by_default": false,
+      "approval_required": true
     },
     {
       "name": "VECTORIZE",
       "type": "vectorize",
       "required": false,
-      "scope": "shared-or-per-project"
+      "scope": "shared-or-per-project",
+      "enabled_by_default": false,
+      "approval_required": true
     },
     {
       "name": "ROOMS",
       "type": "durable_object_namespace",
       "required": false,
-      "scope": "shared"
+      "scope": "shared",
+      "enabled_by_default": false,
+      "approval_required": true
     }
   ]
 }

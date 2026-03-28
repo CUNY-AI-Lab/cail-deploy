@@ -6,6 +6,33 @@ import type {
   ProjectRecord
 } from "@cuny-ai-lab/build-contract";
 
+export type ProjectPolicySettings = {
+  aiEnabled: boolean;
+  vectorizeEnabled: boolean;
+  roomsEnabled: boolean;
+  maxValidationsPerDay: number;
+  maxDeploymentsPerDay: number;
+  maxConcurrentBuilds: number;
+  maxAssetBytes: number;
+};
+
+export type ProjectPolicyRecord = ProjectPolicySettings & {
+  githubRepo: string;
+  projectName?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export const DEFAULT_PROJECT_POLICY: ProjectPolicySettings = Object.freeze({
+  aiEnabled: false,
+  vectorizeEnabled: false,
+  roomsEnabled: false,
+  maxValidationsPerDay: 0,
+  maxDeploymentsPerDay: 0,
+  maxConcurrentBuilds: 1,
+  maxAssetBytes: 90 * 1024 * 1024
+});
+
 type ProjectRow = {
   project_name: string;
   owner_login: string;
@@ -64,6 +91,24 @@ type OauthUsedGrantRow = {
   jti: string;
 };
 
+type ProjectPolicyRow = {
+  github_repo: string;
+  project_name: string | null;
+  ai_enabled: number;
+  vectorize_enabled: number;
+  rooms_enabled: number;
+  max_validations_per_day: number;
+  max_deployments_per_day: number;
+  max_concurrent_builds: number;
+  max_asset_bytes: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type CountRow = {
+  count: number;
+};
+
 export async function listProjects(db: D1Database): Promise<ProjectRecord[]> {
   const session = db.withSession("first-primary");
   const result = await session.prepare(`
@@ -105,6 +150,162 @@ export async function getProject(db: D1Database, projectName: string): Promise<P
   `).bind(projectName).first<ProjectRow>();
 
   return row ? toProjectRecord(row) : null;
+}
+
+export async function getLatestProjectForRepository(
+  db: D1Database,
+  githubRepo: string
+): Promise<ProjectRecord | null> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT
+      project_name,
+      owner_login,
+      github_repo,
+      description,
+      deployment_url,
+      database_id,
+      has_assets,
+      latest_deployment_id,
+      created_at,
+      updated_at
+    FROM projects
+    WHERE github_repo = ?
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).bind(githubRepo).first<ProjectRow>();
+
+  return row ? toProjectRecord(row) : null;
+}
+
+export async function getProjectPolicy(
+  db: D1Database,
+  githubRepo: string
+): Promise<ProjectPolicyRecord | null> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT
+      github_repo,
+      project_name,
+      ai_enabled,
+      vectorize_enabled,
+      rooms_enabled,
+      max_validations_per_day,
+      max_deployments_per_day,
+      max_concurrent_builds,
+      max_asset_bytes,
+      created_at,
+      updated_at
+    FROM project_policies
+    WHERE github_repo = ?
+  `).bind(githubRepo).first<ProjectPolicyRow>();
+
+  return row ? toProjectPolicyRecord(row) : null;
+}
+
+export async function resolveProjectPolicy(
+  db: D1Database,
+  githubRepo: string
+): Promise<ProjectPolicySettings> {
+  const policy = await getProjectPolicy(db, githubRepo);
+  if (!policy) {
+    return { ...DEFAULT_PROJECT_POLICY };
+  }
+
+  return {
+    aiEnabled: policy.aiEnabled,
+    vectorizeEnabled: policy.vectorizeEnabled,
+    roomsEnabled: policy.roomsEnabled,
+    maxValidationsPerDay: policy.maxValidationsPerDay,
+    maxDeploymentsPerDay: policy.maxDeploymentsPerDay,
+    maxConcurrentBuilds: policy.maxConcurrentBuilds,
+    maxAssetBytes: policy.maxAssetBytes
+  };
+}
+
+export async function getPreferredProjectNameForRepository(
+  db: D1Database,
+  githubRepo: string
+): Promise<string | undefined> {
+  const [policy, project] = await Promise.all([
+    getProjectPolicy(db, githubRepo),
+    getLatestProjectForRepository(db, githubRepo)
+  ]);
+
+  return policy?.projectName ?? project?.projectName;
+}
+
+export async function ensureProjectPolicy(
+  db: D1Database,
+  githubRepo: string,
+  projectName: string | undefined,
+  now: string
+): Promise<ProjectPolicySettings> {
+  await db.prepare(`
+    INSERT INTO project_policies (
+      github_repo,
+      project_name,
+      ai_enabled,
+      vectorize_enabled,
+      rooms_enabled,
+      max_validations_per_day,
+      max_deployments_per_day,
+      max_concurrent_builds,
+      max_asset_bytes,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(github_repo) DO UPDATE SET
+      project_name = COALESCE(excluded.project_name, project_name),
+      updated_at = excluded.updated_at
+  `).bind(
+    githubRepo,
+    projectName ?? null,
+    DEFAULT_PROJECT_POLICY.aiEnabled ? 1 : 0,
+    DEFAULT_PROJECT_POLICY.vectorizeEnabled ? 1 : 0,
+    DEFAULT_PROJECT_POLICY.roomsEnabled ? 1 : 0,
+    DEFAULT_PROJECT_POLICY.maxValidationsPerDay,
+    DEFAULT_PROJECT_POLICY.maxDeploymentsPerDay,
+    DEFAULT_PROJECT_POLICY.maxConcurrentBuilds,
+    DEFAULT_PROJECT_POLICY.maxAssetBytes,
+    now,
+    now
+  ).run();
+
+  return await resolveProjectPolicy(db, githubRepo);
+}
+
+export async function countBuildJobsForRepositoryOnDate(
+  db: D1Database,
+  githubRepo: string,
+  eventName: "push" | "validate",
+  usageDate: string
+): Promise<number> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT COUNT(*) AS count
+    FROM build_jobs
+    WHERE event_name = ?
+      AND json_extract(repository_json, '$.fullName') = ?
+      AND substr(created_at, 1, 10) = ?
+  `).bind(eventName, githubRepo, usageDate).first<CountRow>();
+
+  return Number(row?.count ?? 0);
+}
+
+export async function countActiveBuildJobsForRepository(
+  db: D1Database,
+  githubRepo: string
+): Promise<number> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT COUNT(*) AS count
+    FROM build_jobs
+    WHERE json_extract(repository_json, '$.fullName') = ?
+      AND status IN ('queued', 'in_progress', 'deploying')
+  `).bind(githubRepo).first<CountRow>();
+
+  return Number(row?.count ?? 0);
 }
 
 export async function putProject(db: D1Database, project: ProjectRecord): Promise<void> {
@@ -548,6 +749,22 @@ function toBuildJobRecord(row: BuildJobRow): BuildJobRecord {
     errorMessage: row.error_message ?? undefined,
     errorDetail: row.error_detail ?? undefined,
     runnerId: row.runner_id ?? undefined
+  };
+}
+
+function toProjectPolicyRecord(row: ProjectPolicyRow): ProjectPolicyRecord {
+  return {
+    githubRepo: row.github_repo,
+    projectName: row.project_name ?? undefined,
+    aiEnabled: row.ai_enabled === 1,
+    vectorizeEnabled: row.vectorize_enabled === 1,
+    roomsEnabled: row.rooms_enabled === 1,
+    maxValidationsPerDay: row.max_validations_per_day,
+    maxDeploymentsPerDay: row.max_deployments_per_day,
+    maxConcurrentBuilds: row.max_concurrent_builds,
+    maxAssetBytes: row.max_asset_bytes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   };
 }
 

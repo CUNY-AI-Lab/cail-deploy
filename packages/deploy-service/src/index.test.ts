@@ -10,6 +10,7 @@ import type {
 } from "@cuny-ai-lab/build-contract";
 
 import deployServiceWorker, { deployServiceApp } from "./index";
+import { CloudflareApiClient } from "./lib/cloudflare";
 
 const TEST_PRIVATE_KEY = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -43,6 +44,17 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     well_known_runtime_url: string;
     reserved_project_names: string[];
     good_fit_project_types: string[];
+    approval_required_project_types: string[];
+    default_limits: {
+      max_validations_per_day: number | null;
+      max_deployments_per_day: number | null;
+      max_concurrent_builds: number;
+      max_asset_bytes: number;
+    };
+    limit_rationale: Record<string, string>;
+    approval_required_bindings: string[];
+    self_service_bindings: string[];
+    binding_rationale: Record<string, string>;
     deployment_ready_repository: {
       required_files: string[];
       expected_routes: string[];
@@ -79,9 +91,25 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     "course-site",
     "guestbook-or-form",
     "small-api",
-    "archive-or-bibliography",
-    "lightweight-ai-interface"
+    "archive-or-bibliography"
   ]);
+  assert.deepEqual(body.approval_required_project_types, [
+    "lightweight-ai-interface",
+    "vector-search",
+    "realtime-room"
+  ]);
+  assert.deepEqual(body.default_limits, {
+    max_validations_per_day: null,
+    max_deployments_per_day: null,
+    max_concurrent_builds: 1,
+    max_asset_bytes: 94371840
+  });
+  assert.match(body.limit_rationale.max_validations_per_day, /Not capped by default/i);
+  assert.match(body.limit_rationale.max_asset_bytes, /multipart upload/i);
+  assert.deepEqual(body.approval_required_bindings, ["AI", "VECTORIZE", "ROOMS"]);
+  assert.deepEqual(body.self_service_bindings, ["DB", "FILES", "CACHE"]);
+  assert.match(body.binding_rationale.FILES, /isolated R2 bucket/i);
+  assert.match(body.binding_rationale.CACHE, /isolated KV namespace/i);
   assert.deepEqual(body.deployment_ready_repository.required_files, [
     "package.json",
     "wrangler.jsonc",
@@ -470,6 +498,47 @@ test("project registration returns structured state for an existing project", as
   assert.equal(body.latestStatus, "live");
 });
 
+test("CloudflareApiClient paginates R2 bucket lookup", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    assert.equal(url.pathname, "/client/v4/accounts/account-123/r2/buckets");
+    if (url.searchParams.get("cursor") === "page-2") {
+      return jsonResponse({
+        success: true,
+        errors: [],
+        result: {
+          buckets: [{ name: "wanted-bucket" }]
+        },
+        result_info: {}
+      });
+    }
+
+    return jsonResponse({
+      success: true,
+      errors: [],
+      result: {
+        buckets: [{ name: "other-bucket" }]
+      },
+      result_info: {
+        cursor: "page-2"
+      }
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new CloudflareApiClient({
+    accountId: "account-123",
+    apiToken: "token-123"
+  });
+  const bucket = await client.findR2BucketByName("wanted-bucket");
+  assert.equal(bucket?.name, "wanted-bucket");
+});
+
 test("repository status returns a repo-first lifecycle summary", async () => {
   const { env, db } = createTestContext({
     GITHUB_APP_ID: undefined,
@@ -761,6 +830,116 @@ test("validate queues a build-only job and returns a pollable status URL", async
   assert.equal(savedJob?.headSha, "abc123def456");
 });
 
+test("validate reuses the repository's existing project slug by default", async (t) => {
+  const { env, db, queue } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-assets-build-test",
+    headSha: "abc123def456"
+  });
+
+  db.putProject({
+    projectName: "custom-assets-site",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://custom-assets-site.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-28T00:00:00.000Z",
+    updatedAt: "2026-03-28T00:05:00.000Z"
+  });
+
+  const response = await fetchApp("POST", "/api/validate", env, {
+    repositoryFullName: "szweibel/cail-assets-build-test",
+    ref: "main"
+  });
+  assert.equal(response.status, 202);
+  assert.equal(queue.sent.length, 1);
+  assert.equal(queue.sent[0]?.deployment.suggestedProjectName, "custom-assets-site");
+});
+
+test("validate does not enforce a daily cap by default", async (t) => {
+  const { env, db, queue } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-assets-build-test",
+    headSha: "abc123def456"
+  });
+
+  for (let index = 0; index < 25; index += 1) {
+    db.putBuildJob({
+      jobId: `job-${index}`,
+      eventName: "validate",
+      installationId: 42,
+      repository: repositoryRecord("cail-assets-build-test"),
+      ref: "refs/heads/main",
+      headSha: `sha-${index}`,
+      checkRunId: 500 + index,
+      status: "success",
+      projectName: "cail-assets-build-test",
+      createdAt: `2026-03-28T0${Math.min(index, 9)}:00:00.000Z`,
+      updatedAt: `2026-03-28T0${Math.min(index, 9)}:05:00.000Z`,
+      completedAt: `2026-03-28T0${Math.min(index, 9)}:05:00.000Z`
+    });
+  }
+
+  const response = await fetchApp("POST", "/api/validate", env, {
+    repositoryFullName: "szweibel/cail-assets-build-test",
+    ref: "main"
+  });
+  assert.equal(response.status, 202);
+
+  const body = await response.json() as {
+    ok: boolean;
+    status: string;
+  };
+
+  assert.equal(body.ok, true);
+  assert.equal(body.status, "queued");
+  assert.equal(queue.sent.length, 1);
+});
+
+test("deployments reject oversized total upload bundles before provisioning resources", async () => {
+  const { env } = createTestContext();
+  const metadata = {
+    projectName: "oversized-upload",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/oversized-upload",
+    workerUpload: {
+      main_module: "index.js",
+      compatibility_date: "2026-03-28",
+      bindings: []
+    },
+    staticAssets: {
+      files: [
+        {
+          path: "assets/hero.bin",
+          partName: "asset-hero",
+          contentType: "application/octet-stream"
+        }
+      ]
+    }
+  };
+  const form = new FormData();
+  form.append("metadata", JSON.stringify(metadata));
+  form.append("index.js", new File([new Uint8Array(46 * 1024 * 1024)], "index.js", { type: "application/javascript" }));
+  form.append("asset-hero", new File([new Uint8Array(46 * 1024 * 1024)], "hero.bin", { type: "application/octet-stream" }));
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: form
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token",
+    CLOUDFLARE_API_TOKEN: "cloudflare-token"
+  });
+
+  assert.equal(response.status, 413);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /deployment bundle is too large/i);
+});
+
 test("validate requires auth when Cloudflare Access is configured", async () => {
   const { env } = createTestContext({
     CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
@@ -1040,10 +1219,12 @@ function createTestContext(overrides: Partial<TestEnv> = {}): {
     DEPLOYMENT_ARCHIVE: {} as R2Bucket,
     BUILD_QUEUE: queue as unknown as Queue<BuildRunnerJobRequest>,
     CLOUDFLARE_ACCOUNT_ID: "account-123",
+    CLOUDFLARE_API_TOKEN: "cloudflare-token",
     WFP_NAMESPACE: "cail-production",
     PROJECT_BASE_URL: "https://gateway.example",
     PROJECT_HOST_SUFFIX: "cuny.qzz.io",
     DEPLOY_SERVICE_BASE_URL: "https://deploy.example",
+    DEPLOY_API_TOKEN: "deploy-token",
     MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
     GITHUB_APP_ID: "3196468",
     GITHUB_APP_PRIVATE_KEY: TEST_PRIVATE_KEY,
@@ -1326,6 +1507,29 @@ class FakeD1Database {
     };
   }
 
+  selectLatestProjectForRepository(repositoryFullName: string): Record<string, unknown> | null {
+    const matches = Array.from(this.projects.values())
+      .filter((project) => project.githubRepo === repositoryFullName)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const project = matches[0];
+    if (!project) {
+      return null;
+    }
+
+    return {
+      project_name: project.projectName,
+      owner_login: project.ownerLogin,
+      github_repo: project.githubRepo,
+      description: project.description ?? null,
+      deployment_url: project.deploymentUrl,
+      database_id: project.databaseId ?? null,
+      has_assets: project.hasAssets ? 1 : 0,
+      latest_deployment_id: project.latestDeploymentId ?? null,
+      created_at: project.createdAt,
+      updated_at: project.updatedAt
+    };
+  }
+
   selectBuildJob(jobId: string): Record<string, unknown> | null {
     const job = this.buildJobs.get(jobId);
     return job ? buildJobRow(job) : null;
@@ -1336,6 +1540,21 @@ class FakeD1Database {
       .filter((job) => job.projectName === projectName && job.eventName === "push")
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     return matches[0] ? buildJobRow(matches[0]) : null;
+  }
+
+  countBuildJobsForRepositoryOnDate(repositoryFullName: string, eventName: "push" | "validate", usageDate: string): number {
+    return Array.from(this.buildJobs.values()).filter((job) =>
+      job.eventName === eventName
+      && job.repository.fullName === repositoryFullName
+      && job.createdAt.slice(0, 10) === usageDate
+    ).length;
+  }
+
+  countActiveBuildJobsForRepository(repositoryFullName: string): number {
+    return Array.from(this.buildJobs.values()).filter((job) =>
+      job.repository.fullName === repositoryFullName
+      && (job.status === "queued" || job.status === "in_progress" || job.status === "deploying")
+    ).length;
   }
 
   upsertBuildJobFromParams(params: unknown[]): void {
@@ -1397,12 +1616,36 @@ class FakePreparedStatement {
       return this.db.selectProject(String(this.params[0])) as T | null;
     }
 
+    if (normalized.includes("from projects") && normalized.includes("where github_repo = ?") && normalized.includes("limit 1")) {
+      return this.db.selectLatestProjectForRepository(String(this.params[0])) as T | null;
+    }
+
     if (normalized.includes("from build_jobs") && normalized.includes("where job_id = ?")) {
       return this.db.selectBuildJob(String(this.params[0])) as T | null;
     }
 
     if (normalized.includes("from build_jobs") && normalized.includes("where project_name = ?") && normalized.includes("event_name = 'push'")) {
       return this.db.selectLatestPushBuildJob(String(this.params[0])) as T | null;
+    }
+
+    if (normalized.includes("select count(*) as count from build_jobs")
+      && normalized.includes("json_extract(repository_json, '$.fullname') = ?")
+      && normalized.includes("status in ('queued', 'in_progress', 'deploying')")) {
+      return ({
+        count: this.db.countActiveBuildJobsForRepository(String(this.params[0]))
+      } as T);
+    }
+
+    if (normalized.includes("select count(*) as count from build_jobs")
+      && normalized.includes("json_extract(repository_json, '$.fullname') = ?")
+      && normalized.includes("substr(created_at, 1, 10) = ?")) {
+      return ({
+        count: this.db.countBuildJobsForRepositoryOnDate(
+          String(this.params[1]),
+          String(this.params[0]) as "push" | "validate",
+          String(this.params[2])
+        )
+      } as T);
     }
 
     if (normalized.includes("insert into oauth_used_grants")) {
@@ -1474,6 +1717,7 @@ type TestEnv = {
   DEPLOYMENT_ARCHIVE: R2Bucket;
   BUILD_QUEUE: Queue<BuildRunnerJobRequest>;
   CLOUDFLARE_ACCOUNT_ID: string;
+  CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_ACCESS_AUD?: string;
   CLOUDFLARE_ACCESS_ALLOWED_EMAILS?: string;
   CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS?: string;
@@ -1482,6 +1726,7 @@ type TestEnv = {
   PROJECT_BASE_URL: string;
   PROJECT_HOST_SUFFIX?: string;
   DEPLOY_SERVICE_BASE_URL?: string;
+  DEPLOY_API_TOKEN?: string;
   MCP_OAUTH_TOKEN_SECRET?: string;
   MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
   GITHUB_APP_ID?: string;

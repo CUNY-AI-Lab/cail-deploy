@@ -67,7 +67,10 @@ function wranglerJsonc(name) {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "${name}",
   "main": "src/index.ts",
-  "compatibility_date": "2026-03-26"
+  "compatibility_date": "2026-03-26",
+  // Optional self-service storage bindings:
+  // "r2_buckets": [{ "binding": "FILES", "bucket_name": "local-${name}-files" }],
+  // "kv_namespaces": [{ "binding": "CACHE", "id": "local-${name}-cache" }]
 }
 `;
 }
@@ -90,7 +93,6 @@ This repository targets CAIL Deploy on Cloudflare Workers.
 - guestbooks, forms, and submissions
 - small APIs
 - bibliographies or lightweight searchable collections
-- lightweight AI interfaces
 
 ## Deployment assumptions
 
@@ -112,6 +114,19 @@ This repository targets CAIL Deploy on Cloudflare Workers.
 - \`AI\`: Workers AI
 - \`VECTORIZE\`: Vectorize index
 - \`ROOMS\`: Durable Object namespace
+
+Current policy defaults for platform-managed bindings are:
+
+- \`DB\`, \`FILES\`, and \`CACHE\` are self-service
+- \`AI\`, \`VECTORIZE\`, and \`ROOMS\` require approval
+- \`FILES\` and \`CACHE\` are attached as isolated per-project resources when the repository requests them
+
+To request \`FILES\` or \`CACHE\`, add the standard binding names to \`wrangler.jsonc\`:
+
+- \`r2_buckets\` with \`binding: "FILES"\`
+- \`kv_namespaces\` with \`binding: "CACHE"\`
+
+Kale replaces the production bucket and namespace values during deployment, so local placeholder values are acceptable when the repository only needs the production binding.
 
 ## Guardrails
 

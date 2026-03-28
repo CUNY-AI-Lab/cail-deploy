@@ -113,6 +113,13 @@ Kale Deploy works best for:
 - D1-backed projects
 - Worker-compatible Hono apps
 
+Some advanced features may require approval and usage caps:
+
+- chatbots or other AI-backed features
+- vector search
+- realtime rooms
+- very large media collections
+
 It is not a general-purpose Linux server host.
 
 ## If you already have a repo

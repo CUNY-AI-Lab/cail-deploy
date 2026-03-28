@@ -95,9 +95,14 @@ Agents should bias toward app types that fit the platform well:
 - guestbooks, forms, and submissions
 - small APIs
 - bibliographies or lightweight searchable collections
-- lightweight AI interfaces that call Workers AI or external APIs
 
 These are usually a better fit than heavyweight front-end frameworks or traditional server stacks.
+
+Projects that require extra approval or tighter oversight include:
+
+- lightweight AI interfaces
+- vector search or semantic retrieval features
+- realtime rooms or collaborative presence features
 
 ## Deployment-ready repository checklist
 
@@ -134,6 +139,34 @@ These names should remain stable across assistant adapters:
 - `ROOMS`: Durable Object namespace when enabled
 
 Not every project needs every binding, but assistants should treat this set as the standard vocabulary.
+
+Current policy defaults are:
+
+- `DB`, `FILES`, and `CACHE` are self-service production bindings.
+- `AI`, `VECTORIZE`, and `ROOMS` are approval-only.
+- `FILES` is implemented as one project-isolated R2 bucket per repository that requests it.
+- `CACHE` is implemented as one project-isolated KV namespace per repository that requests it.
+
+To request self-service storage in a repository:
+
+- declare `FILES` in `wrangler.jsonc` under `r2_buckets`
+- declare `CACHE` in `wrangler.jsonc` under `kv_namespaces`
+- use placeholder local IDs or bucket names if needed; Kale replaces the production binding values with project-isolated resources during deployment
+
+Default caps are:
+
+- no daily validation cap by default
+- no daily deployment cap by default
+- 1 active build per repository at a time
+- 90 MiB for the total deployment upload bundle per build
+
+Those caps are intentionally narrow:
+
+- the active-build cap protects a shared Kale-owned runner from being monopolized by one repository or agent loop
+- the upload cap protects Kale's current deploy transport, which receives each build as a single multipart upload and needs headroom under Cloudflare request-body limits
+- daily validate or deploy caps remain available as per-project overrides, but they are not enabled by default
+
+Assistants should not promise AI, vector search, realtime rooms, or large asset hosting unless the user has explicit approval.
 
 ## Naming conventions
 

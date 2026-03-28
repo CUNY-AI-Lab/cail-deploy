@@ -41,6 +41,9 @@ This repository is the control plane and delivery stack for Kale Deploy, the pub
   - `AI`
   - `VECTORIZE`
   - `ROOMS`
+- Treat advanced bindings as approval-only unless the task is explicitly about platform policy:
+  - `DB`, `FILES`, and `CACHE` are self-service via project-isolated provisioning
+  - `AI`, `VECTORIZE`, and `ROOMS` require approval
 
 ## UI and copy
 

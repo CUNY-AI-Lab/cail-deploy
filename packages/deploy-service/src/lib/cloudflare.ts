@@ -11,6 +11,15 @@ type CloudflareClientOptions = {
   apiToken: string;
 };
 
+type KvNamespaceResult = {
+  id: string;
+  title: string;
+};
+
+type R2BucketResult = {
+  name: string;
+};
+
 export class CloudflareApiClient {
   constructor(private readonly options: CloudflareClientOptions) {}
 
@@ -41,6 +50,75 @@ export class CloudflareApiClient {
         name,
         ...(locationHint ? { primary_location_hint: locationHint } : {})
       })
+    });
+
+    return envelope.result;
+  }
+
+  async findKvNamespaceByTitle(title: string): Promise<KvNamespaceResult | undefined> {
+    let page = 1;
+
+    for (;;) {
+      const envelope = await this.jsonRequest<KvNamespaceResult[]>(`/storage/kv/namespaces?page=${page}&per_page=100`, {
+        method: "GET"
+      });
+      const match = envelope.result.find((namespace) => namespace.title === title);
+      if (match) {
+        return match;
+      }
+
+      if (envelope.result.length < 100) {
+        return undefined;
+      }
+
+      page += 1;
+    }
+  }
+
+  async createKvNamespace(title: string): Promise<KvNamespaceResult> {
+    const envelope = await this.jsonRequest<KvNamespaceResult>("/storage/kv/namespaces", {
+      method: "POST",
+      body: JSON.stringify({ title })
+    });
+
+    return envelope.result;
+  }
+
+  async findR2BucketByName(name: string): Promise<R2BucketResult | undefined> {
+    let cursor: string | undefined;
+
+    for (;;) {
+      const query = new URLSearchParams({ per_page: "1000" });
+      if (cursor) {
+        query.set("cursor", cursor);
+      }
+
+      const response = await this.rawRequest(`/r2/buckets?${query.toString()}`, {
+        method: "GET"
+      });
+      const envelope = await response.json<CloudflareEnvelope<{ buckets: R2BucketResult[] }> & {
+        result_info?: { cursor?: string };
+      }>();
+      if (!envelope.success) {
+        throw new Error(envelope.errors.map((error) => error.message).join("; "));
+      }
+
+      const match = envelope.result.buckets.find((bucket) => bucket.name === name);
+      if (match) {
+        return match;
+      }
+
+      cursor = envelope.result_info?.cursor;
+      if (!cursor) {
+        return undefined;
+      }
+    }
+  }
+
+  async createR2Bucket(name: string): Promise<R2BucketResult> {
+    const envelope = await this.jsonRequest<R2BucketResult>("/r2/buckets", {
+      method: "POST",
+      body: JSON.stringify({ name })
     });
 
     return envelope.result;

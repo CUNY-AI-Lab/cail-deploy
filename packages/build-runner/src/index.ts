@@ -18,6 +18,7 @@ import type {
   BuildRunnerSourceLease,
   BuildRunnerStartPayload,
   StaticAssetUpload,
+  WorkerBinding,
   WorkerAssetsConfig,
   WorkerUploadMetadata
 } from "@cuny-ai-lab/build-contract";
@@ -144,6 +145,35 @@ type WranglerConfig = {
   main?: string;
   compatibility_date?: string;
   compatibility_flags?: string[];
+  d1_databases?: Array<{
+    binding?: string;
+    database_id?: string;
+    preview_database_id?: string;
+  }>;
+  kv_namespaces?: Array<{
+    binding?: string;
+    id?: string;
+    preview_id?: string;
+  }>;
+  r2_buckets?: Array<{
+    binding?: string;
+    bucket_name?: string;
+    preview_bucket_name?: string;
+  }>;
+  ai?: {
+    binding?: string;
+  };
+  vectorize?: Array<{
+    binding?: string;
+    index_name?: string;
+  }>;
+  durable_objects?: {
+    bindings?: Array<{
+      name?: string;
+      class_name?: string;
+      script_name?: string;
+    }>;
+  };
   observability?: {
     enabled?: boolean;
   };
@@ -160,6 +190,7 @@ type BuildPlan = {
   workerName: string;
   compatibilityDate: string;
   compatibilityFlags?: string[];
+  requestedBindings: WorkerBinding[];
   observabilityEnabled?: boolean;
   assetsDirectory?: string;
   assetsConfig?: WorkerAssetsConfig;
@@ -739,6 +770,7 @@ async function createBuildPlan(projectRoot: string, suggestedProjectName: string
       workerName: suggestedProjectName,
       compatibilityDate: resolvedConfig.config.compatibility_date ?? DEFAULT_COMPATIBILITY_DATE,
       compatibilityFlags: normalizeStringArray(resolvedConfig.config.compatibility_flags),
+      requestedBindings: extractRequestedBindings(resolvedConfig.config),
       observabilityEnabled: typeof resolvedConfig.config.observability?.enabled === "boolean"
         ? resolvedConfig.config.observability.enabled
         : undefined,
@@ -772,6 +804,7 @@ async function createBuildPlan(projectRoot: string, suggestedProjectName: string
   return {
     workerName: suggestedProjectName,
     compatibilityDate: DEFAULT_COMPATIBILITY_DATE,
+    requestedBindings: [],
     wranglerArgs: [
       "deploy",
       fallbackEntrypoint,
@@ -938,7 +971,7 @@ async function prepareArtifact(
     ...(buildPlan.compatibilityFlags && buildPlan.compatibilityFlags.length > 0
       ? { compatibility_flags: buildPlan.compatibilityFlags }
       : {}),
-    bindings: [],
+    bindings: buildPlan.requestedBindings,
     ...(typeof buildPlan.observabilityEnabled === "boolean"
       ? { observability: { enabled: buildPlan.observabilityEnabled } }
       : {})
@@ -977,6 +1010,88 @@ function resolveMainModule(files: Array<{ name: string; file: File }>): string {
   }
 
   throw new PermanentRunnerError("Wrangler bundle did not produce a root JavaScript entrypoint.");
+}
+
+function extractRequestedBindings(config: WranglerConfig): WorkerBinding[] {
+  const bindings: WorkerBinding[] = [];
+
+  for (const database of config.d1_databases ?? []) {
+    if (!database.binding) {
+      continue;
+    }
+
+    bindings.push({
+      type: "d1",
+      name: database.binding,
+      id: database.database_id ?? database.preview_database_id ?? ""
+    });
+  }
+
+  for (const namespace of config.kv_namespaces ?? []) {
+    if (!namespace.binding) {
+      continue;
+    }
+
+    bindings.push({
+      type: "kv_namespace",
+      name: namespace.binding,
+      namespace_id: namespace.id ?? namespace.preview_id ?? ""
+    });
+  }
+
+  for (const bucket of config.r2_buckets ?? []) {
+    if (!bucket.binding) {
+      continue;
+    }
+
+    bindings.push({
+      type: "r2_bucket",
+      name: bucket.binding,
+      bucket_name: bucket.bucket_name ?? bucket.preview_bucket_name ?? ""
+    });
+  }
+
+  if (config.ai?.binding) {
+    bindings.push({
+      type: "ai",
+      name: config.ai.binding
+    });
+  }
+
+  for (const index of config.vectorize ?? []) {
+    if (!index.binding) {
+      continue;
+    }
+
+    bindings.push({
+      type: "vectorize",
+      name: index.binding,
+      index_name: index.index_name ?? ""
+    });
+  }
+
+  for (const durableObject of config.durable_objects?.bindings ?? []) {
+    if (!durableObject.name || !durableObject.class_name) {
+      continue;
+    }
+
+    bindings.push({
+      type: "durable_object_namespace",
+      name: durableObject.name,
+      class_name: durableObject.class_name,
+      ...(durableObject.script_name ? { script_name: durableObject.script_name } : {})
+    });
+  }
+
+  return dedupeBindingsByName(bindings);
+}
+
+function dedupeBindingsByName(bindings: WorkerBinding[]): WorkerBinding[] {
+  const byName = new Map<string, WorkerBinding>();
+  for (const binding of bindings) {
+    byName.set(binding.name, binding);
+  }
+  return [...byName.values()];
 }
 
 async function collectStaticAssets(

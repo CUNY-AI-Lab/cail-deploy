@@ -14,13 +14,18 @@ import {
 } from "./lib/access";
 import { CloudflareApiClient } from "./lib/cloudflare";
 import {
+  DEFAULT_PROJECT_POLICY,
   attachWebhookDeliveryJob,
   claimProjectName,
   claimWebhookDelivery,
+  countActiveBuildJobsForRepository,
+  countBuildJobsForRepositoryOnDate,
   consumeOauthGrant,
+  ensureProjectPolicy,
   getBuildJob,
   getBuildJobByDeliveryId,
   getLatestBuildJobForProject,
+  getPreferredProjectNameForRepository,
   getProject,
   listExpiredRetainedFailedDeployments,
   listProjects,
@@ -191,7 +196,7 @@ type RepositoryLifecyclePayload = {
   updatedAt?: string;
 };
 
-type ApiResponseStatus = 200 | 202 | 400 | 401 | 403 | 404 | 409 | 500 | 503;
+type ApiResponseStatus = 200 | 202 | 400 | 401 | 403 | 404 | 409 | 413 | 429 | 500 | 503;
 
 export const deployServiceApp = new Hono<{ Bindings: Env }>();
 const DEFAULT_SUCCESSFUL_ARTIFACT_RETENTION = 2;
@@ -1976,6 +1981,15 @@ async function handlePushWebhook(
 
   const github = getGitHubAppClient(env);
   const repository = toRepositoryRecord(payload);
+  const serviceBaseUrl = resolveServiceBaseUrl(env, requestUrl);
+  const reservedProjectNames = resolveReservedProjectNames(env, serviceBaseUrl);
+  const repositoryFullName = repository.fullName;
+  const projectName = await resolveRepositoryProjectName(
+    env.CONTROL_PLANE_DB,
+    repositoryFullName,
+    repository.name,
+    reservedProjectNames
+  );
   const jobId = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   let createdJob: BuildJobRecord | undefined;
@@ -1983,6 +1997,70 @@ async function handlePushWebhook(
 
   try {
     const installationClient = await github.createInstallationClient(installationId);
+    try {
+      await assertRepositoryWithinJobLimits(
+        env,
+        repositoryFullName,
+        projectName,
+        "push",
+        createdAt
+      );
+    } catch (error) {
+      const httpError = asHttpError(error);
+      if (httpError.status === 429) {
+        const checkRun = await installationClient.createCheckRun({
+          owner: repository.ownerLogin,
+          repo: repository.name,
+          name: "CAIL Deploy",
+          headSha: payload.after,
+          externalId: jobId,
+          status: "completed",
+          conclusion: "action_required",
+          output: checkRunOutput(
+            "Deployment limit reached",
+            httpError.message
+          )
+        });
+
+        const blockedJob: BuildJobRecord = {
+          jobId,
+          deliveryId,
+          eventName: "push",
+          installationId,
+          repository,
+          ref: payload.ref,
+          headSha: payload.after,
+          previousSha: payload.before,
+          checkRunId: checkRun.id,
+          status: "failure",
+          projectName,
+          createdAt,
+          updatedAt: createdAt,
+          completedAt: createdAt,
+          errorKind: "build_failure",
+          errorMessage: httpError.message
+        };
+        await putBuildJob(env.CONTROL_PLANE_DB, blockedJob);
+        if (deliveryId) {
+          await attachWebhookDeliveryJob(env.CONTROL_PLANE_DB, deliveryId, jobId);
+        }
+
+        return Response.json(
+          {
+            accepted: true,
+            eventName: "push",
+            jobId,
+            checkRunId: checkRun.id,
+            status: "blocked",
+            error: httpError.message
+          },
+          { status: 202 }
+        );
+      }
+
+      throw error;
+    }
+
     const checkRun = await installationClient.createCheckRun({
       owner: repository.ownerLogin,
       repo: repository.name,
@@ -2008,10 +2086,7 @@ async function handlePushWebhook(
       previousSha: payload.before,
       checkRunId: checkRun.id,
       status: "queued",
-      projectName: suggestProjectName(
-        repository.name,
-        resolveReservedProjectNames(env, resolveServiceBaseUrl(env, requestUrl))
-      ),
+      projectName,
       createdAt,
       updatedAt: createdAt
     };
@@ -2105,7 +2180,7 @@ function createBuildRunnerRequest(
     },
     deployment: {
       publicBaseUrl: resolveProjectPublicBaseUrl(env),
-      suggestedProjectName: suggestProjectName(job.repository.name, reservedProjectNames)
+      suggestedProjectName: job.projectName ?? suggestProjectName(job.repository.name, reservedProjectNames)
     },
     callback: {
       startUrl: `${serviceBaseUrl}/internal/build-jobs/${job.jobId}/start`,
@@ -2207,13 +2282,15 @@ async function deployArtifact(
   assertAllowedProjectName(metadata.projectName, env, env.DEPLOY_SERVICE_BASE_URL);
   const deploymentUrl = buildProjectDeploymentUrl(env, metadata.projectName);
   const repositoryFullName = formatRepositoryFullName(metadata.ownerLogin, metadata.githubRepo);
+  const now = new Date().toISOString();
+  const policy = await ensureProjectPolicy(env.CONTROL_PLANE_DB, repositoryFullName, metadata.projectName, now);
+  assertDeploymentPolicy(metadata, policy);
   const projectClaim = await getProjectClaim(env.CONTROL_PLANE_DB, metadata.projectName, repositoryFullName);
   const existingRecord = projectClaim.project;
   if (projectClaim.conflict) {
     throw new HttpError(409, `Project name '${metadata.projectName}' is already claimed by another GitHub repository.`);
   }
 
-  const now = new Date().toISOString();
   const reservedRecord: ProjectRecord = existingRecord ?? {
     projectName: metadata.projectName,
     ownerLogin: metadata.ownerLogin,
@@ -2236,6 +2313,7 @@ async function deployArtifact(
   const deploymentId = crypto.randomUUID();
   const artifactPrefix = `deployments/${metadata.projectName}/${deploymentId}`;
   const staticAssets = normalizeStaticAssets(metadata.staticAssets, metadata.projectName);
+  assertDeploymentUploadWithinLimit(metadata, files, policy.maxAssetBytes);
   const workerFiles = getWorkerFiles(staticAssets, files);
   ensureUploadContainsMainModule(workerFiles, metadata.workerUpload.main_module);
   const archiveManifest = createDeploymentArchiveManifest(metadata, workerFiles, staticAssets, options);
@@ -2250,6 +2328,12 @@ async function deployArtifact(
     existingRecord?.databaseId,
     env.D1_LOCATION_HINT
   );
+  const filesBucketName = requestsBinding(metadata, "r2_bucket", "FILES")
+    ? await resolveProjectFilesBucketName(client, metadata.projectName)
+    : undefined;
+  const cacheNamespaceId = requestsBinding(metadata, "kv_namespace", "CACHE")
+    ? await resolveProjectCacheNamespaceId(client, metadata.projectName)
+    : undefined;
   await putProject(env.CONTROL_PLANE_DB, {
     ...reservedRecord,
     databaseId,
@@ -2260,6 +2344,8 @@ async function deployArtifact(
   const staticAssetsResult = await prepareStaticAssetsUpload(client, env.WFP_NAMESPACE, metadata.projectName, staticAssets, files);
   const nextHasAssets = Boolean(staticAssets?.files.length || existingRecord?.hasAssets);
   const workerUpload = withProjectBindings(metadata, databaseId, {
+    filesBucketName,
+    cacheNamespaceId,
     existingHasAssets: existingRecord?.hasAssets ?? false,
     staticAssetsJwt: staticAssetsResult.completionJwt,
     staticAssetsConfig: staticAssets?.config ?? metadata.workerUpload.assets?.config
@@ -2332,6 +2418,78 @@ async function deployArtifact(
   void enforceArtifactRetentionPolicy(env, project.projectName);
 
   return { project, deployment };
+}
+
+function assertDeploymentPolicy(
+  metadata: DeploymentMetadata,
+  policy: { aiEnabled: boolean; vectorizeEnabled: boolean; roomsEnabled: boolean }
+): void {
+  const invalidBindings: string[] = [];
+
+  for (const binding of metadata.workerUpload.bindings ?? []) {
+    switch (binding.type) {
+      case "d1":
+        if (binding.name !== "DB") {
+          invalidBindings.push(`${binding.name} (${binding.type})`);
+        }
+        break;
+      case "kv_namespace":
+        if (binding.name !== "CACHE") {
+          invalidBindings.push(`${binding.name} (${binding.type})`);
+        }
+        break;
+      case "r2_bucket":
+        if (binding.name !== "FILES") {
+          invalidBindings.push(`${binding.name} (${binding.type})`);
+        }
+        break;
+      case "ai":
+        if (binding.name !== "AI" || !policy.aiEnabled) {
+          invalidBindings.push(`${binding.name} (${binding.type})`);
+        }
+        break;
+      case "vectorize":
+        if (binding.name !== "VECTORIZE" || !policy.vectorizeEnabled) {
+          invalidBindings.push(`${binding.name} (${binding.type})`);
+        }
+        break;
+      case "durable_object_namespace":
+        if (binding.name !== "ROOMS" || !policy.roomsEnabled) {
+          invalidBindings.push(`${binding.name} (${binding.type})`);
+        }
+        break;
+      default:
+        invalidBindings.push(`${binding.name} (${binding.type})`);
+        break;
+    }
+  }
+
+  if (invalidBindings.length > 0) {
+    throw new HttpError(
+      403,
+      `This deployment requests bindings that Kale Deploy does not allow by default: ${invalidBindings.join(", ")}. FILES and CACHE are supported only as the standard per-project bindings, while AI, Vectorize, and Rooms still require approval.`
+    );
+  }
+}
+
+function assertDeploymentUploadWithinLimit(
+  metadata: DeploymentMetadata,
+  files: Array<{ name: string; file: File }>,
+  maxAssetBytes: number
+): void {
+  if (files.length === 0) {
+    return;
+  }
+
+  const metadataBytes = new TextEncoder().encode(JSON.stringify(metadata)).byteLength;
+  const totalBytes = files.reduce((sum, entry) => sum + entry.file.size, metadataBytes);
+
+  if (totalBytes > maxAssetBytes) {
+    throw new HttpError(
+      413,
+      `This deployment bundle is too large for Kale Deploy (${formatBytes(totalBytes)} uploaded, limit ${formatBytes(maxAssetBytes)}). This cap keeps the current deploy upload within Cloudflare's request envelope with room for multipart overhead.`
+    );
+  }
 }
 
 function createDeploymentArchiveManifest(
@@ -2592,21 +2750,98 @@ async function resolveProjectDatabaseId(
   return await provisionProjectDatabase(client, projectName, locationHint);
 }
 
+async function resolveProjectCacheNamespaceId(
+  client: CloudflareApiClient,
+  projectName: string
+): Promise<string> {
+  const title = buildProjectScopedResourceName("kale-cache", projectName, 63);
+  const existingNamespace = await client.findKvNamespaceByTitle(title);
+  if (existingNamespace) {
+    return existingNamespace.id;
+  }
+
+  const namespace = await client.createKvNamespace(title);
+  return namespace.id;
+}
+
+async function resolveProjectFilesBucketName(
+  client: CloudflareApiClient,
+  projectName: string
+): Promise<string> {
+  const bucketName = buildProjectScopedResourceName("kale-files", projectName, 63);
+  const existingBucket = await client.findR2BucketByName(bucketName);
+  if (existingBucket) {
+    return existingBucket.name;
+  }
+
+  const bucket = await client.createR2Bucket(bucketName);
+  return bucket.name;
+}
+
+function buildProjectScopedResourceName(prefix: string, projectName: string, maxLength: number): string {
+  const candidate = `${prefix}-${projectName}`;
+  if (candidate.length <= maxLength) {
+    return candidate;
+  }
+
+  const hash = stableProjectHash(projectName);
+  const availableProjectChars = Math.max(8, maxLength - prefix.length - hash.length - 2);
+  const trimmedProject = projectName.slice(0, availableProjectChars).replace(/-+$/u, "");
+  return `${prefix}-${trimmedProject}-${hash}`;
+}
+
+function stableProjectHash(value: string): string {
+  let hash = 2166136261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function requestsBinding(
+  metadata: DeploymentMetadata,
+  type: WorkerBinding["type"],
+  name: string
+): boolean {
+  return (metadata.workerUpload.bindings ?? []).some((binding) => binding.type === type && binding.name === name);
+}
+
 function withProjectBindings(
   metadata: DeploymentMetadata,
   databaseId: string,
   options: {
+    filesBucketName?: string;
+    cacheNamespaceId?: string;
     existingHasAssets: boolean;
     staticAssetsJwt?: string;
     staticAssetsConfig?: WorkerAssetsConfig;
   }
 ) {
   const existingBindings = metadata.workerUpload.bindings ?? [];
-  const mergedBindings = upsertBinding(existingBindings, {
+  let mergedBindings = upsertBinding(existingBindings, {
     type: "d1",
     name: "DB",
     id: databaseId
   });
+
+  if (options.cacheNamespaceId) {
+    mergedBindings = upsertBinding(mergedBindings, {
+      type: "kv_namespace",
+      name: "CACHE",
+      namespace_id: options.cacheNamespaceId
+    });
+  }
+
+  if (options.filesBucketName) {
+    mergedBindings = upsertBinding(mergedBindings, {
+      type: "r2_bucket",
+      name: "FILES",
+      bucket_name: options.filesBucketName
+    });
+  }
 
   const nextUpload = {
     ...metadata.workerUpload,
@@ -3098,6 +3333,22 @@ function serializeJsonForHtml(value: unknown): string {
     .replaceAll(">", "\\u003e");
 }
 
+function formatBytes(value: number): string {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+
+  if (value < 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 function isValidProjectName(projectName: string): boolean {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(projectName);
 }
@@ -3190,7 +3441,7 @@ function asHttpError(error: unknown): HttpError {
   return new HttpError(500, "Unexpected error.");
 }
 
-type HttpStatus = 400 | 401 | 403 | 404 | 409 | 415 | 500 | 503;
+type HttpStatus = 400 | 401 | 403 | 404 | 409 | 413 | 415 | 429 | 500 | 503;
 
 class HttpError extends Error {
   constructor(readonly status: HttpStatus, message: string) {
@@ -3265,9 +3516,43 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
       "course-site",
       "guestbook-or-form",
       "small-api",
-      "archive-or-bibliography",
-      "lightweight-ai-interface"
+      "archive-or-bibliography"
     ],
+    approval_required_project_types: [
+      "lightweight-ai-interface",
+      "vector-search",
+      "realtime-room"
+    ],
+    default_limits: {
+      max_validations_per_day: DEFAULT_PROJECT_POLICY.maxValidationsPerDay || null,
+      max_deployments_per_day: DEFAULT_PROJECT_POLICY.maxDeploymentsPerDay || null,
+      max_concurrent_builds: DEFAULT_PROJECT_POLICY.maxConcurrentBuilds,
+      max_asset_bytes: DEFAULT_PROJECT_POLICY.maxAssetBytes
+    },
+    limit_rationale: {
+      max_validations_per_day: "Not capped by default. Set only as an abuse-control override for a specific repository.",
+      max_deployments_per_day: "Not capped by default. Set only as an abuse-control override for a specific repository.",
+      max_concurrent_builds: "Limited because builds run on a shared Kale-owned runner.",
+      max_asset_bytes: "Limited because Kale Deploy currently receives each build artifact as one multipart upload and must stay within Cloudflare request-body limits with headroom for Worker code and metadata."
+    },
+    approval_required_bindings: [
+      "AI",
+      "VECTORIZE",
+      "ROOMS"
+    ],
+    self_service_bindings: [
+      "DB",
+      "FILES",
+      "CACHE"
+    ],
+    binding_rationale: {
+      DB: "Self-service because Kale already provisions one D1 database per project.",
+      FILES: "Self-service because Kale provisions one isolated R2 bucket per project when the repository requests FILES.",
+      CACHE: "Self-service because Kale provisions one isolated KV namespace per project when the repository requests CACHE.",
+      AI: "Approval-only because model usage is directly billable.",
+      VECTORIZE: "Approval-only because vector storage and queries are directly billable.",
+      ROOMS: "Approval-only because realtime state creates an always-on shared backend surface that needs moderation."
+    },
     languages: ["typescript", "javascript"],
     local_preflight: {
       commands: [
@@ -3352,12 +3637,12 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
       "filesystem-backed-runtime-state"
     ],
     bindings: [
-      { name: "DB", type: "d1", required: true, scope: "per-project" },
-      { name: "FILES", type: "r2", required: false, scope: "shared-or-per-project" },
-      { name: "CACHE", type: "kv", required: false, scope: "shared" },
-      { name: "AI", type: "ai", required: false, scope: "shared" },
-      { name: "VECTORIZE", type: "vectorize", required: false, scope: "shared-or-per-project" },
-      { name: "ROOMS", type: "durable_object_namespace", required: false, scope: "shared" }
+      { name: "DB", type: "d1", required: true, scope: "per-project", enabled_by_default: true },
+      { name: "FILES", type: "r2", required: false, scope: "per-project", enabled_by_default: true, self_service: true },
+      { name: "CACHE", type: "kv", required: false, scope: "per-project", enabled_by_default: true, self_service: true },
+      { name: "AI", type: "ai", required: false, scope: "shared", enabled_by_default: false, approval_required: true },
+      { name: "VECTORIZE", type: "vectorize", required: false, scope: "shared-or-per-project", enabled_by_default: false, approval_required: true },
+      { name: "ROOMS", type: "durable_object_namespace", required: false, scope: "shared", enabled_by_default: false, approval_required: true }
     ]
   };
 }
@@ -3867,8 +4152,49 @@ async function queueValidationJob(
   );
   const projectName = body.projectName
     ? normalizeRequestedProjectName(body.projectName, reservedProjectNames)
-    : suggestProjectName(repository.name, reservedProjectNames);
+    : await resolveRepositoryProjectName(
+        env.CONTROL_PLANE_DB,
+        repository.fullName,
+        repository.name,
+        reservedProjectNames
+      );
   const now = new Date().toISOString();
+  const repositoryFullName = repository.fullName;
+
+  try {
+    await assertRepositoryWithinJobLimits(
+      env,
+      repositoryFullName,
+      projectName,
+      "validate",
+      now
+    );
+  } catch (error) {
+    const httpError = asHttpError(error);
+    if (httpError.status === 429) {
+      return {
+        status: 429,
+        body: {
+          ok: false,
+          error: httpError.message,
+          repository: {
+            ownerLogin: repository.ownerLogin,
+            name: repository.name,
+            fullName: repository.fullName,
+            htmlUrl: repository.htmlUrl
+          },
+          projectName,
+          projectUrlPreview: buildProjectDeploymentUrl(env, projectName),
+          nextAction: /active build/i.test(httpError.message)
+            ? "wait_for_active_build"
+            : "wait_for_limit_reset"
+        }
+      };
+    }
+
+    throw error;
+  }
+
   const jobId = crypto.randomUUID();
   const statusUrl = `${serviceBaseUrl}/api/build-jobs/${jobId}/status`;
   const checkRun = await installationClient.createCheckRun({
@@ -3953,6 +4279,54 @@ async function queueValidationJob(
       nextAction: "poll_status"
     }
   };
+}
+
+async function assertRepositoryWithinJobLimits(
+  env: Env,
+  githubRepo: string,
+  projectName: string,
+  eventName: "push" | "validate",
+  now: string
+): Promise<void> {
+  const policy = await ensureProjectPolicy(env.CONTROL_PLANE_DB, githubRepo, projectName, now);
+  const activeBuilds = await countActiveBuildJobsForRepository(env.CONTROL_PLANE_DB, githubRepo);
+  if (policy.maxConcurrentBuilds > 0 && activeBuilds >= policy.maxConcurrentBuilds) {
+    throw new HttpError(
+      429,
+      `Kale Deploy already has ${policy.maxConcurrentBuilds} active build${policy.maxConcurrentBuilds === 1 ? "" : "s"} for this repository. Wait for the current build to finish before starting another one.`
+    );
+  }
+
+  const usageDate = now.slice(0, 10);
+  const currentCount = await countBuildJobsForRepositoryOnDate(
+    env.CONTROL_PLANE_DB,
+    githubRepo,
+    eventName,
+    usageDate
+  );
+  const limit = eventName === "validate" ? policy.maxValidationsPerDay : policy.maxDeploymentsPerDay;
+  if (limit > 0 && currentCount >= limit) {
+    throw new HttpError(
+      429,
+      eventName === "validate"
+        ? `This repository has reached its daily validation limit (${limit}/day). Try again tomorrow or reduce how often you run validate.`
+        : `This repository has reached its daily deployment limit (${limit}/day). Push again tomorrow or wait until the limit is raised.`
+    );
+  }
+}
+
+async function resolveRepositoryProjectName(
+  db: D1Database,
+  repositoryFullName: string,
+  repositoryName: string,
+  reservedProjectNames: Set<string>
+): Promise<string> {
+  const preferredProjectName = await getPreferredProjectNameForRepository(db, repositoryFullName);
+  if (preferredProjectName) {
+    return preferredProjectName;
+  }
+
+  return suggestProjectName(repositoryName, reservedProjectNames);
 }
 
 async function buildProjectStatusResponse(

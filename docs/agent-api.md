@@ -189,6 +189,7 @@ This endpoint is intentionally GitHub-first:
 - it validates a branch or commit that already exists in GitHub
 - it does not accept a raw local bundle upload
 - it does not deploy on success
+- it can return `429` if the repository already has the maximum number of active builds, or if an operator has set a repository-specific daily validation cap
 
 ## Register a repository
 
@@ -241,6 +242,12 @@ Successful response shape:
   "latestStatus": "live"
 }
 ```
+
+Policy notes:
+
+- advanced bindings such as `AI`, `VECTORIZE`, and `ROOMS` are approval-only because they create billable or always-on platform resources
+- `DB`, `FILES`, and `CACHE` are self-service production bindings because Kale provisions one isolated D1 database, R2 bucket, and KV namespace per project when the repository requests them
+- the control plane can reject validate or deploy activity when a repository already has the maximum number of active builds, or when an operator has set a repository-specific cap
 
 Conflict response:
 
