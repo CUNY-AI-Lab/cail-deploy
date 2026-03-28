@@ -5,6 +5,8 @@ export type ProjectRecord = {
   description?: string;
   deploymentUrl: string;
   databaseId?: string;
+  filesBucketName?: string;
+  cacheNamespaceId?: string;
   hasAssets: boolean;
   latestDeploymentId?: string;
   createdAt: string;

@@ -25,6 +25,7 @@ import {
   getBuildJob,
   getBuildJobByDeliveryId,
   getLatestBuildJobForProject,
+  getLatestProjectForRepository,
   getPreferredProjectNameForRepository,
   getProject,
   listExpiredRetainedFailedDeployments,
@@ -2287,6 +2288,7 @@ async function deployArtifact(
   assertDeploymentPolicy(metadata, policy);
   const projectClaim = await getProjectClaim(env.CONTROL_PLANE_DB, metadata.projectName, repositoryFullName);
   const existingRecord = projectClaim.project;
+  const repositoryRecord = existingRecord ?? await getLatestProjectForRepository(env.CONTROL_PLANE_DB, repositoryFullName);
   if (projectClaim.conflict) {
     throw new HttpError(409, `Project name '${metadata.projectName}' is already claimed by another GitHub repository.`);
   }
@@ -2297,6 +2299,9 @@ async function deployArtifact(
     githubRepo: metadata.githubRepo,
     description: metadata.description,
     deploymentUrl,
+    databaseId: repositoryRecord?.databaseId,
+    filesBucketName: repositoryRecord?.filesBucketName,
+    cacheNamespaceId: repositoryRecord?.cacheNamespaceId,
     hasAssets: false,
     createdAt: now,
     updatedAt: now
@@ -2322,21 +2327,17 @@ async function deployArtifact(
     apiToken: env.CLOUDFLARE_API_TOKEN
   });
 
-  const databaseId = await resolveProjectDatabaseId(
+  const { databaseId, filesBucketName, cacheNamespaceId } = await resolveProjectResources(
     client,
-    metadata.projectName,
-    existingRecord?.databaseId,
+    metadata,
+    repositoryRecord,
     env.D1_LOCATION_HINT
   );
-  const filesBucketName = requestsBinding(metadata, "r2_bucket", "FILES")
-    ? await resolveProjectFilesBucketName(client, metadata.projectName)
-    : undefined;
-  const cacheNamespaceId = requestsBinding(metadata, "kv_namespace", "CACHE")
-    ? await resolveProjectCacheNamespaceId(client, metadata.projectName)
-    : undefined;
   await putProject(env.CONTROL_PLANE_DB, {
     ...reservedRecord,
     databaseId,
+    filesBucketName,
+    cacheNamespaceId,
     hasAssets: existingRecord?.hasAssets ?? false,
     latestDeploymentId: existingRecord?.latestDeploymentId,
     updatedAt: now
@@ -2391,6 +2392,8 @@ async function deployArtifact(
     description: metadata.description,
     deploymentUrl,
     databaseId,
+    filesBucketName,
+    cacheNamespaceId,
     hasAssets: nextHasAssets,
     latestDeploymentId: deploymentId,
     createdAt: existingRecord?.createdAt ?? reservedRecord.createdAt,
@@ -2731,30 +2734,96 @@ async function provisionProjectDatabase(
   return database.uuid;
 }
 
+async function resolveProjectResources(
+  client: CloudflareApiClient,
+  metadata: DeploymentMetadata,
+  repositoryRecord: ProjectRecord | null,
+  locationHint?: string
+): Promise<{
+  databaseId: string;
+  filesBucketName?: string;
+  cacheNamespaceId?: string;
+}> {
+  const previousProjectName = repositoryRecord?.projectName !== metadata.projectName
+    ? repositoryRecord?.projectName
+    : undefined;
+
+  const databaseId = await resolveProjectDatabaseId(client, {
+    projectName: metadata.projectName,
+    existingDatabaseId: repositoryRecord?.databaseId,
+    previousProjectName,
+    locationHint
+  });
+
+  const filesBucketName = requestsBinding(metadata, "r2_bucket", "FILES")
+    ? await resolveProjectFilesBucketName(client, {
+        projectName: metadata.projectName,
+        existingBucketName: repositoryRecord?.filesBucketName,
+        previousProjectName
+      })
+    : undefined;
+
+  const cacheNamespaceId = requestsBinding(metadata, "kv_namespace", "CACHE")
+    ? await resolveProjectCacheNamespaceId(client, {
+        projectName: metadata.projectName,
+        existingNamespaceId: repositoryRecord?.cacheNamespaceId,
+        previousProjectName
+      })
+    : undefined;
+
+  return { databaseId, filesBucketName, cacheNamespaceId };
+}
+
 async function resolveProjectDatabaseId(
   client: CloudflareApiClient,
-  projectName: string,
-  existingDatabaseId: string | undefined,
-  locationHint?: string
+  options: {
+    projectName: string;
+    existingDatabaseId?: string;
+    previousProjectName?: string;
+    locationHint?: string;
+  }
 ): Promise<string> {
-  if (existingDatabaseId) {
-    return existingDatabaseId;
+  if (options.existingDatabaseId) {
+    return options.existingDatabaseId;
   }
 
-  const databaseName = `cail-${projectName}`;
+  if (options.previousProjectName) {
+    const previousDatabase = await client.findD1DatabaseByName(`cail-${options.previousProjectName}`);
+    if (previousDatabase) {
+      return previousDatabase.uuid;
+    }
+  }
+
+  const databaseName = `cail-${options.projectName}`;
   const existingDatabase = await client.findD1DatabaseByName(databaseName);
   if (existingDatabase) {
     return existingDatabase.uuid;
   }
 
-  return await provisionProjectDatabase(client, projectName, locationHint);
+  return await provisionProjectDatabase(client, options.projectName, options.locationHint);
 }
 
 async function resolveProjectCacheNamespaceId(
   client: CloudflareApiClient,
-  projectName: string
+  options: {
+    projectName: string;
+    existingNamespaceId?: string;
+    previousProjectName?: string;
+  }
 ): Promise<string> {
-  const title = buildProjectScopedResourceName("kale-cache", projectName, 63);
+  if (options.existingNamespaceId) {
+    return options.existingNamespaceId;
+  }
+
+  if (options.previousProjectName) {
+    const previousTitle = buildProjectScopedResourceName("kale-cache", options.previousProjectName, 63);
+    const previousNamespace = await client.findKvNamespaceByTitle(previousTitle);
+    if (previousNamespace) {
+      return previousNamespace.id;
+    }
+  }
+
+  const title = buildProjectScopedResourceName("kale-cache", options.projectName, 63);
   const existingNamespace = await client.findKvNamespaceByTitle(title);
   if (existingNamespace) {
     return existingNamespace.id;
@@ -2766,9 +2835,25 @@ async function resolveProjectCacheNamespaceId(
 
 async function resolveProjectFilesBucketName(
   client: CloudflareApiClient,
-  projectName: string
+  options: {
+    projectName: string;
+    existingBucketName?: string;
+    previousProjectName?: string;
+  }
 ): Promise<string> {
-  const bucketName = buildProjectScopedResourceName("kale-files", projectName, 63);
+  if (options.existingBucketName) {
+    return options.existingBucketName;
+  }
+
+  if (options.previousProjectName) {
+    const previousBucketName = buildProjectScopedResourceName("kale-files", options.previousProjectName, 63);
+    const previousBucket = await client.findR2BucketByName(previousBucketName);
+    if (previousBucket) {
+      return previousBucket.name;
+    }
+  }
+
+  const bucketName = buildProjectScopedResourceName("kale-files", options.projectName, 63);
   const existingBucket = await client.findR2BucketByName(bucketName);
   if (existingBucket) {
     return existingBucket.name;

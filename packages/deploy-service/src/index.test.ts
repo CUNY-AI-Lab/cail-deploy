@@ -940,6 +940,107 @@ test("deployments reject oversized total upload bundles before provisioning reso
   assert.match(body.error, /deployment bundle is too large/i);
 });
 
+test("deployments keep repo-scoped DB, FILES, and CACHE resources when a repo changes slugs", async (t) => {
+  const { env, db } = createTestContext();
+  db.putProject({
+    projectName: "old-slug",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/renameable-project",
+    deploymentUrl: "https://old-slug.cuny.qzz.io",
+    databaseId: "db-existing",
+    filesBucketName: "kale-files-old-slug",
+    cacheNamespaceId: "kv-existing",
+    hasAssets: false,
+    latestDeploymentId: "dep-old",
+    createdAt: "2026-03-28T10:00:00.000Z",
+    updatedAt: "2026-03-28T10:05:00.000Z"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.pathname === "/client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/new-slug") {
+      const form = await request.formData();
+      const metadataEntry = form.get("metadata");
+      assert.ok(metadataEntry instanceof File);
+      const workerUpload = JSON.parse(await metadataEntry.text()) as {
+        bindings: Array<Record<string, string>>;
+      };
+
+      const dbBinding = workerUpload.bindings.find((binding) => binding.name === "DB");
+      const cacheBinding = workerUpload.bindings.find((binding) => binding.name === "CACHE");
+      const filesBinding = workerUpload.bindings.find((binding) => binding.name === "FILES");
+      assert.equal(dbBinding?.id, "db-existing");
+      assert.equal(cacheBinding?.namespace_id, "kv-existing");
+      assert.equal(filesBinding?.bucket_name, "kale-files-old-slug");
+      return new Response("", { status: 200 });
+    }
+
+    if (
+      url.pathname.includes("/d1/database")
+      || url.pathname.includes("/storage/kv/namespaces")
+      || url.pathname.includes("/r2/buckets")
+    ) {
+      throw new Error(`Unexpected resource provisioning lookup during slug rename: ${request.method} ${request.url}`);
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const metadata = {
+    projectName: "new-slug",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/renameable-project",
+    workerUpload: {
+      main_module: "index.js",
+      compatibility_date: "2026-03-28",
+      bindings: [
+        { type: "d1", name: "DB", id: "placeholder-db" },
+        { type: "kv_namespace", name: "CACHE", namespace_id: "placeholder-cache" },
+        { type: "r2_bucket", name: "FILES", bucket_name: "placeholder-files" }
+      ]
+    }
+  };
+  const form = new FormData();
+  form.append("metadata", JSON.stringify(metadata));
+  form.append("index.js", new File(["export default { fetch() { return new Response('ok'); } };"], "index.js", {
+    type: "application/javascript"
+  }));
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: form
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    project: {
+      projectName: string;
+    };
+  };
+  assert.equal(body.project.projectName, "new-slug");
+
+  const renamedProject = db.selectProject("new-slug") as {
+    database_id: string | null;
+    files_bucket_name: string | null;
+    cache_namespace_id: string | null;
+  } | null;
+  assert.equal(renamedProject?.database_id, "db-existing");
+  assert.equal(renamedProject?.files_bucket_name, "kale-files-old-slug");
+  assert.equal(renamedProject?.cache_namespace_id, "kv-existing");
+});
+
 test("validate requires auth when Cloudflare Access is configured", async () => {
   const { env } = createTestContext({
     CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
@@ -1213,10 +1314,11 @@ function createTestContext(overrides: Partial<TestEnv> = {}): {
 } {
   const db = new FakeD1Database();
   const queue = new FakeQueue();
+  const archive = createArchiveBucketStub();
 
   const env: TestEnv = {
     CONTROL_PLANE_DB: db as unknown as D1Database,
-    DEPLOYMENT_ARCHIVE: {} as R2Bucket,
+    DEPLOYMENT_ARCHIVE: archive as unknown as R2Bucket,
     BUILD_QUEUE: queue as unknown as Queue<BuildRunnerJobRequest>,
     CLOUDFLARE_ACCOUNT_ID: "account-123",
     CLOUDFLARE_API_TOKEN: "cloudflare-token",
@@ -1436,6 +1538,20 @@ function repositoryRecord(name: string) {
   };
 }
 
+function createArchiveBucketStub() {
+  return {
+    async put() {},
+    async list() {
+      return {
+        objects: [],
+        truncated: false,
+        cursor: undefined
+      };
+    },
+    async delete() {}
+  };
+}
+
 class FakeQueue {
   readonly sent: BuildRunnerJobRequest[] = [];
 
@@ -1465,6 +1581,25 @@ class FakeD1Database {
     this.buildJobs.set(job.jobId, job);
   }
 
+  upsertProjectFromParams(params: unknown[]): void {
+    const project: ProjectRecord = {
+      projectName: String(params[0]),
+      ownerLogin: String(params[1]),
+      githubRepo: String(params[2]),
+      description: nullableString(params[3]) ?? undefined,
+      deploymentUrl: String(params[4]),
+      databaseId: nullableString(params[5]) ?? undefined,
+      filesBucketName: nullableString(params[6]) ?? undefined,
+      cacheNamespaceId: nullableString(params[7]) ?? undefined,
+      hasAssets: Number(params[8]) === 1,
+      latestDeploymentId: nullableString(params[9]) ?? undefined,
+      createdAt: String(params[10]),
+      updatedAt: String(params[11])
+    };
+
+    this.putProject(project);
+  }
+
   getBuildJob(jobId: string): BuildJobRecord | undefined {
     return this.buildJobs.get(jobId);
   }
@@ -1480,6 +1615,8 @@ class FakeD1Database {
         description: project.description ?? null,
         deployment_url: project.deploymentUrl,
         database_id: project.databaseId ?? null,
+        files_bucket_name: project.filesBucketName ?? null,
+        cache_namespace_id: project.cacheNamespaceId ?? null,
         has_assets: project.hasAssets ? 1 : 0,
         latest_deployment_id: project.latestDeploymentId ?? null,
         created_at: project.createdAt,
@@ -1500,6 +1637,8 @@ class FakeD1Database {
       description: project.description ?? null,
       deployment_url: project.deploymentUrl,
       database_id: project.databaseId ?? null,
+      files_bucket_name: project.filesBucketName ?? null,
+      cache_namespace_id: project.cacheNamespaceId ?? null,
       has_assets: project.hasAssets ? 1 : 0,
       latest_deployment_id: project.latestDeploymentId ?? null,
       created_at: project.createdAt,
@@ -1523,6 +1662,8 @@ class FakeD1Database {
       description: project.description ?? null,
       deployment_url: project.deploymentUrl,
       database_id: project.databaseId ?? null,
+      files_bucket_name: project.filesBucketName ?? null,
+      cache_namespace_id: project.cacheNamespaceId ?? null,
       has_assets: project.hasAssets ? 1 : 0,
       latest_deployment_id: project.latestDeploymentId ?? null,
       created_at: project.createdAt,
@@ -1668,6 +1809,10 @@ class FakePreparedStatement {
 
   async run(): Promise<Record<string, never>> {
     const normalized = normalizeSql(this.sql);
+
+    if (normalized.includes("insert into projects")) {
+      this.db.upsertProjectFromParams(this.params);
+    }
 
     if (normalized.includes("insert into build_jobs")) {
       this.db.upsertBuildJobFromParams(this.params);

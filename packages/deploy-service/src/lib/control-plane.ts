@@ -40,6 +40,8 @@ type ProjectRow = {
   description: string | null;
   deployment_url: string;
   database_id: string | null;
+  files_bucket_name: string | null;
+  cache_namespace_id: string | null;
   has_assets: number;
   latest_deployment_id: string | null;
   created_at: string;
@@ -119,6 +121,8 @@ export async function listProjects(db: D1Database): Promise<ProjectRecord[]> {
       description,
       deployment_url,
       database_id,
+      files_bucket_name,
+      cache_namespace_id,
       has_assets,
       latest_deployment_id,
       created_at,
@@ -141,6 +145,8 @@ export async function getProject(db: D1Database, projectName: string): Promise<P
       description,
       deployment_url,
       database_id,
+      files_bucket_name,
+      cache_namespace_id,
       has_assets,
       latest_deployment_id,
       created_at,
@@ -165,6 +171,8 @@ export async function getLatestProjectForRepository(
       description,
       deployment_url,
       database_id,
+      files_bucket_name,
+      cache_namespace_id,
       has_assets,
       latest_deployment_id,
       created_at,
@@ -317,17 +325,21 @@ export async function putProject(db: D1Database, project: ProjectRecord): Promis
       description,
       deployment_url,
       database_id,
+      files_bucket_name,
+      cache_namespace_id,
       has_assets,
       latest_deployment_id,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(project_name) DO UPDATE SET
       owner_login = excluded.owner_login,
       github_repo = excluded.github_repo,
       description = excluded.description,
       deployment_url = excluded.deployment_url,
       database_id = excluded.database_id,
+      files_bucket_name = excluded.files_bucket_name,
+      cache_namespace_id = excluded.cache_namespace_id,
       has_assets = excluded.has_assets,
       latest_deployment_id = excluded.latest_deployment_id,
       updated_at = excluded.updated_at
@@ -338,6 +350,8 @@ export async function putProject(db: D1Database, project: ProjectRecord): Promis
     project.description ?? null,
     project.deploymentUrl,
     project.databaseId ?? null,
+    project.filesBucketName ?? null,
+    project.cacheNamespaceId ?? null,
     project.hasAssets ? 1 : 0,
     project.latestDeploymentId ?? null,
     project.createdAt,
@@ -354,11 +368,13 @@ export async function claimProjectName(db: D1Database, project: ProjectRecord): 
       description,
       deployment_url,
       database_id,
+      files_bucket_name,
+      cache_namespace_id,
       has_assets,
       latest_deployment_id,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(project_name) DO NOTHING
   `).bind(
     project.projectName,
@@ -367,6 +383,8 @@ export async function claimProjectName(db: D1Database, project: ProjectRecord): 
     project.description ?? null,
     project.deploymentUrl,
     project.databaseId ?? null,
+    project.filesBucketName ?? null,
+    project.cacheNamespaceId ?? null,
     project.hasAssets ? 1 : 0,
     project.latestDeploymentId ?? null,
     project.createdAt,
@@ -718,6 +736,8 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     description: row.description ?? undefined,
     deploymentUrl: row.deployment_url,
     databaseId: row.database_id ?? undefined,
+    filesBucketName: row.files_bucket_name ?? undefined,
+    cacheNamespaceId: row.cache_namespace_id ?? undefined,
     hasAssets: row.has_assets === 1,
     latestDeploymentId: row.latest_deployment_id ?? undefined,
     createdAt: row.created_at,
