@@ -52,6 +52,8 @@ The intended auth model is now:
 
 The JSON endpoints above still exist, but for agent harnesses the preferred path is now MCP first.
 
+If a repository still needs GitHub approval, the agent should stop and hand the user the returned `guidedInstallUrl`. That GitHub approval is still a browser handoff even when the rest of the loop is agent-driven.
+
 The MCP tool surface is intentionally thin. It wraps the same control-plane behavior the JSON API already exposes:
 
 - `get_runtime_manifest`
@@ -83,6 +85,42 @@ The remote validate endpoint is intentionally GitHub-first. It validates a branc
 - Do not build around `app.listen(...)`, long-lived in-memory server state, or filesystem-backed application state.
 - Prefer server-rendered HTML plus small JSON APIs over heavy SPA infrastructure.
 - Prefer Hono for routing.
+
+## Good first app shapes
+
+Agents should bias toward app types that fit the platform well:
+
+- exhibit or archive sites
+- course or project sites
+- guestbooks, forms, and submissions
+- small APIs
+- bibliographies or lightweight searchable collections
+- lightweight AI interfaces that call Workers AI or external APIs
+
+These are usually a better fit than heavyweight front-end frameworks or traditional server stacks.
+
+## Deployment-ready repository checklist
+
+Before asking the user to validate or deploy, the repository should usually include:
+
+- `package.json`
+- `wrangler.jsonc`
+- `src/index.ts`
+- `AGENTS.md`
+
+It should also usually provide:
+
+- a root route at `/`
+- a health route at `/api/health`
+- `npm run check`
+- `npm run dev`
+
+It should not depend on:
+
+- `app.listen(...)`
+- Python runtime assumptions
+- native Node modules
+- filesystem-backed runtime state
 
 ## Expected binding names inside student apps
 

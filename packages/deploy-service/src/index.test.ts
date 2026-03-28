@@ -42,6 +42,13 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   const body = await response.json() as {
     well_known_runtime_url: string;
     reserved_project_names: string[];
+    good_fit_project_types: string[];
+    deployment_ready_repository: {
+      required_files: string[];
+      expected_routes: string[];
+      required_scripts: string[];
+      must_not_include: string[];
+    };
     agent_api: Record<string, string> & {
       mcp_endpoint: string;
       oauth_authorization_metadata: string;
@@ -49,6 +56,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
       auth: {
         headless_bootstrap_supported: boolean;
         browser_session_required_for_authorization: boolean;
+        human_handoff_rules: string[];
         required_for: string[];
       };
     };
@@ -66,6 +74,28 @@ test("runtime manifest advertises the agent API without duplicate well-known key
 
   assert.equal(body.well_known_runtime_url, "https://runtime.cuny.qzz.io/.well-known/cail-runtime.json");
   assert.deepEqual(body.reserved_project_names, ["runtime"]);
+  assert.deepEqual(body.good_fit_project_types, [
+    "exhibit-site",
+    "course-site",
+    "guestbook-or-form",
+    "small-api",
+    "archive-or-bibliography",
+    "lightweight-ai-interface"
+  ]);
+  assert.deepEqual(body.deployment_ready_repository.required_files, [
+    "package.json",
+    "wrangler.jsonc",
+    "src/index.ts",
+    "AGENTS.md"
+  ]);
+  assert.deepEqual(body.deployment_ready_repository.expected_routes, ["/", "/api/health"]);
+  assert.deepEqual(body.deployment_ready_repository.required_scripts, ["check", "dev"]);
+  assert.deepEqual(body.deployment_ready_repository.must_not_include, [
+    "app.listen(...)",
+    "python-runtime",
+    "native-node-modules",
+    "filesystem-backed-runtime-state"
+  ]);
   assert.equal(body.agent_api.runtime_manifest, body.well_known_runtime_url);
   assert.equal(body.agent_api.mcp_endpoint, "https://deploy.example/mcp");
   assert.equal(body.agent_api.oauth_authorization_metadata, "https://deploy.example/.well-known/oauth-authorization-server");
@@ -75,6 +105,10 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.equal(body.agent_api.build_job_status_template, "https://deploy.example/api/build-jobs/{jobId}/status");
   assert.equal(body.agent_api.auth.headless_bootstrap_supported, false);
   assert.equal(body.agent_api.auth.browser_session_required_for_authorization, true);
+  assert.deepEqual(body.agent_api.auth.human_handoff_rules, [
+    "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
+    "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven."
+  ]);
   assert.deepEqual(body.agent_api.auth.required_for, [
     "repository_status_template",
     "register_project",

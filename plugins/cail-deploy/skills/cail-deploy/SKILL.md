@@ -31,6 +31,19 @@ When there is no strong reason to do otherwise:
 - use KV for cache-like or configuration-like data
 - use Workers AI only when the app actually needs inference
 
+## Good first app shapes
+
+Bias toward projects that make Kale Deploy useful quickly:
+
+- exhibit or archive sites
+- course or project sites
+- guestbooks, forms, and submissions
+- small APIs
+- bibliographies or lightweight searchable collections
+- lightweight AI interfaces
+
+These are usually better targets than heavy SPA stacks or apps that assume a traditional server.
+
 ## Runtime constraints
 
 - JavaScript and TypeScript only
@@ -144,6 +157,19 @@ Create a minimal Hono starter with:
 
 If a slash command or scaffolding script is available, use it. Otherwise, write the files directly.
 
+## Deployment-ready checklist
+
+Before you ask the user to validate or deploy, make sure the repo usually has:
+
+- `package.json`
+- `wrangler.jsonc`
+- `src/index.ts`
+- `AGENTS.md`
+- a root route at `/`
+- `/api/health`
+- `npm run check`
+- `npm run dev`
+
 ## Preferred deployment loop for agents
 
 After scaffolding or adapting the repo, use this loop:
@@ -152,8 +178,9 @@ After scaffolding or adapting the repo, use this loop:
    - `npm run check`
    - `npx wrangler dev`
 2. Create or connect the GitHub repo.
-3. Connect the harness to the remote MCP server:
-   - `POST https://cail-deploy-service.ailab-452.workers.dev/mcp`
+3. If the harness is not already connected to Kale Deploy, connect it to the remote MCP server:
+   - `POST https://cuny.qzz.io/kale/mcp`
+   - Prefer the bundled plugin when available.
 4. Let the harness complete MCP OAuth through the browser:
    - protected resource metadata: `GET /.well-known/oauth-protected-resource/mcp`
    - authorization server metadata: `GET /.well-known/oauth-authorization-server`
@@ -165,7 +192,7 @@ After scaffolding or adapting the repo, use this loop:
    - `validate_project`
    - `get_build_job_status`
    - `get_project_status`
-6. If `installStatus` is not `installed`, give the user the returned `guidedInstallUrl`.
+6. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`.
 7. After the install step, continue with one of:
    - `validate_project` for a non-production branch or preflight build
    - push to the default branch for a real deployment
@@ -173,7 +200,7 @@ After scaffolding or adapting the repo, use this loop:
    - `get_build_job_status` for a validation job
    - `get_project_status` for deployment state
 
-Use the structured JSON endpoints instead of scraping GitHub check-run prose.
+Use the structured MCP or JSON responses instead of scraping GitHub check-run prose.
 
 ## Worked example
 

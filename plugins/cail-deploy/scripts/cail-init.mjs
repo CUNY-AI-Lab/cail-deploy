@@ -83,11 +83,26 @@ This repository targets CAIL Deploy on Cloudflare Workers.
 - Prefer small server-rendered HTML routes and lightweight JSON APIs.
 - Keep the project simple and editable for collaborators who may not be deeply technical.
 
+## Good first app shapes
+
+- exhibit or archive sites
+- course or project sites
+- guestbooks, forms, and submissions
+- small APIs
+- bibliographies or lightweight searchable collections
+- lightweight AI interfaces
+
 ## Deployment assumptions
 
 - Production bindings are attached by the CAIL Deploy service, not by this repository.
 - Keep \`wrangler.jsonc\` minimal and local-development-focused.
 - Run \`npm run check\` after structural changes.
+- Before asking Kale Deploy to validate or deploy, make sure this repo still has:
+  - \`package.json\`
+  - \`wrangler.jsonc\`
+  - \`src/index.ts\`
+  - a root route at \`/\`
+  - \`/api/health\`
 
 ## Standard binding names
 
@@ -104,6 +119,7 @@ This repository targets CAIL Deploy on Cloudflare Workers.
 - Do not use \`app.listen(...)\`, Express-style bootstraps, or long-lived in-memory server state.
 - Prefer Workers-compatible packages.
 - Use plain-language UX and error messages where possible.
+- If Kale Deploy returns a \`guidedInstallUrl\`, stop and hand that URL to the user for the GitHub approval step.
 `;
 }
 

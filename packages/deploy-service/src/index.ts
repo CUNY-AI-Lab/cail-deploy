@@ -3260,6 +3260,14 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     project_name_pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
     reserved_project_names: reservedProjectNames,
     recommended_framework: "hono",
+    good_fit_project_types: [
+      "exhibit-site",
+      "course-site",
+      "guestbook-or-form",
+      "small-api",
+      "archive-or-bibliography",
+      "lightweight-ai-interface"
+    ],
     languages: ["typescript", "javascript"],
     local_preflight: {
       commands: [
@@ -3269,6 +3277,22 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
       notes: [
         "Run npm run check before every push.",
         "Use wrangler dev for Worker-shaped runtime testing before GitHub deployment."
+      ]
+    },
+    deployment_ready_repository: {
+      required_files: [
+        "package.json",
+        "wrangler.jsonc",
+        "src/index.ts",
+        "AGENTS.md"
+      ],
+      expected_routes: ["/", "/api/health"],
+      required_scripts: ["check", "dev"],
+      must_not_include: [
+        "app.listen(...)",
+        "python-runtime",
+        "native-node-modules",
+        "filesystem-backed-runtime-state"
       ]
     },
     agent_api: {
@@ -3288,6 +3312,10 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
         broker: "mcp_oauth_with_cloudflare_access_authorization",
         headless_bootstrap_supported: false,
         browser_session_required_for_authorization: true,
+        human_handoff_rules: [
+          "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
+          "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven."
+        ],
         required_for: [
           "repository_status_template",
           "register_project",
