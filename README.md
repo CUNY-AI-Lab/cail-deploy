@@ -109,6 +109,7 @@ Implemented now:
 - Workers for Platforms project deployment
 - host-based project URLs on `*.cuny.qzz.io`
 - Codex and Claude plugin packaging
+- an AWS-hosted build runner with a stable Elastic IP and SSM-ready instance profile
 - no daily validate/deploy cap by default, but support for per-repository override caps
 - project-isolated `DB`, `FILES`, and `CACHE` provisioning
 - approval-only policy for advanced bindings such as AI, Vectorize, and Rooms
@@ -117,13 +118,16 @@ Still not finished:
 
 - fully polished onboarding with no human GitHub approval step
 - a richer admin surface for raising or lowering per-project caps
-- a permanent non-laptop runner host
+- institution-wide identity and support polish beyond the current pilot shape
 
 ## Guides
 
 - Student quickstart: [docs/quickstart-students.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/quickstart-students.md)
 - Support matrix: [docs/support-matrix.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/support-matrix.md)
 - Troubleshooting: [docs/troubleshooting.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/troubleshooting.md)
+- Operator runbook: [docs/runbook.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/runbook.md)
+- Pilot policy: [docs/pilot-policy.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/pilot-policy.md)
+- Pilot checklist: [docs/pilot-checklist.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/pilot-checklist.md)
 - Agent API: [docs/agent-api.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/agent-api.md)
 - Cloudflare Access auth: [docs/cloudflare-access-auth.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/cloudflare-access-auth.md)
 - GitHub App setup: [docs/github-app-setup.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/github-app-setup.md)
