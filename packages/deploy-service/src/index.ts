@@ -324,6 +324,12 @@ deployServiceApp.use("/.well-known/*", cors({
   allowHeaders: ["accept"]
 }));
 
+deployServiceApp.use("/mcp/.well-known/*", cors({
+  origin: "*",
+  allowMethods: ["GET", "OPTIONS"],
+  allowHeaders: ["accept", "mcp-protocol-version"]
+}));
+
 deployServiceApp.get("/healthz", (c) => c.json({ ok: true }));
 
 deployServiceApp.get("/.well-known/cail-runtime.json", (c) => {
@@ -340,19 +346,15 @@ deployServiceApp.get("/.well-known/kale-connection.json", (c) => {
   });
 });
 
-deployServiceApp.get("/.well-known/oauth-protected-resource/mcp", (c) => {
-  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  return c.json(buildOauthProtectedResourceMetadata(serviceBaseUrl), 200, {
-    "cache-control": "public, max-age=300"
-  });
-});
+deployServiceApp.get("/.well-known/oauth-protected-resource/mcp", serveOauthProtectedResourceMetadata);
+deployServiceApp.get("/.well-known/oauth-protected-resource", serveOauthProtectedResourceMetadata);
+deployServiceApp.get("/mcp/.well-known/oauth-protected-resource", serveOauthProtectedResourceMetadata);
 
-deployServiceApp.get("/.well-known/oauth-authorization-server", (c) => {
-  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  return c.json(buildOauthAuthorizationServerMetadata(serviceBaseUrl), 200, {
-    "cache-control": "public, max-age=300"
-  });
-});
+deployServiceApp.get("/.well-known/oauth-authorization-server", serveOauthAuthorizationServerMetadata);
+deployServiceApp.get("/.well-known/oauth-authorization-server/mcp", serveOauthAuthorizationServerMetadata);
+deployServiceApp.get("/mcp/.well-known/oauth-authorization-server", serveOauthAuthorizationServerMetadata);
+deployServiceApp.get("/.well-known/openid-configuration/mcp", serveOauthAuthorizationServerMetadata);
+deployServiceApp.get("/mcp/.well-known/openid-configuration", serveOauthAuthorizationServerMetadata);
 
 deployServiceApp.post("/oauth/register", async (c) => {
   try {
@@ -536,7 +538,7 @@ deployServiceApp.get("/", async (c) => {
   const marketingName = "Kale Deploy";
   const marketingSource = "From the CUNY AI Lab";
   const claudeSetupPrompt = `Connect ${marketingName} in this Claude Code environment. If you can run terminal commands yourself, run:\nclaude mcp add --transport http cail ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. Then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
-  const codexSetupPrompt = `Connect ${marketingName} in this Codex environment. If you can run terminal commands yourself, run:\ncodex mcp add cail --url ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. Then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
+  const codexSetupPrompt = `Connect ${marketingName} in this Codex environment. If you can run terminal commands yourself, run:\ncodex mcp add cail --url ${mcpEndpoint}\ncodex mcp list\nYou want Kale Deploy to show Auth: Not logged in, not Unsupported. Then run:\ncodex mcp login cail\nUse the newest browser URL from that exact login attempt, complete the sign-in flow, and then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
   const geminiSetupPrompt = `Connect ${marketingName} in this Gemini CLI environment. If you can run terminal commands yourself, run:\ngemini mcp add --transport http cail ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. Then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
   const buildPrompt = `Use ${marketingName} from the CUNY AI Lab to build me a small web app. If ${marketingName} is not connected yet, connect it first and verify that its tools are available. Then use Kale Deploy to register this repo, hand me any guided GitHub install link if approval is needed, validate the project, and deploy it through Kale.`;
 
@@ -3877,6 +3879,20 @@ function buildOauthAuthorizationServerMetadata(serviceBaseUrl: string) {
     scopes_supported: [MCP_REQUIRED_SCOPE],
     service_documentation: serviceBaseUrl
   };
+}
+
+function serveOauthProtectedResourceMetadata(c: Context<{ Bindings: Env }>) {
+  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+  return c.json(buildOauthProtectedResourceMetadata(serviceBaseUrl), 200, {
+    "cache-control": "public, max-age=300"
+  });
+}
+
+function serveOauthAuthorizationServerMetadata(c: Context<{ Bindings: Env }>) {
+  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+  return c.json(buildOauthAuthorizationServerMetadata(serviceBaseUrl), 200, {
+    "cache-control": "public, max-age=300"
+  });
 }
 
 function oauthUnauthorizedResponse(c: Context<{ Bindings: Env }>, env: Env): Response {

@@ -411,6 +411,17 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   assert.deepEqual(prm.authorization_servers, ["https://deploy.example"]);
   assert.equal(prm.resource, "https://deploy.example/mcp");
 
+  for (const aliasPath of [
+    "/.well-known/oauth-protected-resource",
+    "/mcp/.well-known/oauth-protected-resource"
+  ]) {
+    const aliasResponse = await fetchApp("GET", aliasPath, env, undefined, {
+      "mcp-protocol-version": "2024-11-05"
+    });
+    assert.equal(aliasResponse.status, 200, aliasPath);
+    assert.deepEqual(await aliasResponse.json(), prm, aliasPath);
+  }
+
   const metadataResponse = await fetchApp("GET", "/.well-known/oauth-authorization-server", env);
   assert.equal(metadataResponse.status, 200);
   const metadata = await metadataResponse.json() as {
@@ -421,6 +432,19 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   assert.equal(metadata.authorization_endpoint, "https://deploy.example/api/oauth/authorize");
   assert.equal(metadata.token_endpoint, "https://deploy.example/oauth/token");
   assert.equal(metadata.registration_endpoint, "https://deploy.example/oauth/register");
+
+  for (const aliasPath of [
+    "/.well-known/oauth-authorization-server/mcp",
+    "/mcp/.well-known/oauth-authorization-server",
+    "/.well-known/openid-configuration/mcp",
+    "/mcp/.well-known/openid-configuration"
+  ]) {
+    const aliasResponse = await fetchApp("GET", aliasPath, env, undefined, {
+      "mcp-protocol-version": "2024-11-05"
+    });
+    assert.equal(aliasResponse.status, 200, aliasPath);
+    assert.deepEqual(await aliasResponse.json(), metadata, aliasPath);
+  }
 
   const registerResponse = await fetchApp("POST", "/oauth/register", env, {
     client_name: "Gemini CLI",

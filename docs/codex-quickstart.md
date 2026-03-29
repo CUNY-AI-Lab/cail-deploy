@@ -8,9 +8,22 @@ Run:
 
 ```bash
 codex mcp add cail --url https://cuny.qzz.io/kale/mcp
+codex mcp list
 ```
 
-If Codex opens a browser, complete the CUNY sign-in flow there.
+After `codex mcp list`, Kale should show:
+
+- `Auth: Not logged in`
+
+If it still says `Unsupported`, the Kale server is outdated or misconfigured.
+
+Then run:
+
+```bash
+codex mcp login cail
+```
+
+Codex will print a browser URL. Use the newest URL from that exact login attempt and complete the CUNY sign-in flow there. Do not reuse an older localhost callback URL from a previous attempt.
 
 ## 2. Confirm the connection
 
