@@ -86,7 +86,7 @@ npx wrangler deploy --config packages/gateway-worker/wrangler.jsonc
 npx wrangler deploy --config packages/project-host-proxy/wrangler.jsonc
 ```
 
-The build runner is separate from the Workers deployment. See the runner hosting guide below before moving it off a laptop.
+The build runner is separate from the Workers deployment. See the runner hosting guide below before changing how it is hosted.
 
 ## Assistant and MCP Surface
 
@@ -118,8 +118,7 @@ Implemented now:
 Still not finished:
 
 - fully polished onboarding with no human GitHub approval step
-- per-project secrets and the GitHub-backed project-admin flow that will gate them
-- a richer admin surface for raising or lowering per-project caps
+- a richer admin surface for domains, redirects, and per-project caps
 - institution-wide support polish beyond the current pilot shape
 
 ## Guides

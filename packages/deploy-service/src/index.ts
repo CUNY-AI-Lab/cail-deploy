@@ -179,6 +179,38 @@ type CloudflareAccessRequestIdentity = {
   email: string;
 };
 
+type RepositoryWorkflowStage =
+  | "app_setup"
+  | "github_install"
+  | "name_conflict"
+  | "awaiting_push"
+  | "build_queued"
+  | "build_running"
+  | "build_failed"
+  | "live";
+
+type RepositoryInstallStatus = "app_unconfigured" | "installed" | "not_installed";
+
+type RepositoryCoveragePresentation = {
+  title: string;
+  body: string;
+};
+
+type RepositorySetupStagePresentation = {
+  headline: string;
+  summary: string;
+  userTitle: string;
+  userBody: string;
+  agentTitle: string;
+  agentBody: string;
+};
+
+type RepositoryBannerPresentation = {
+  className: string;
+  icon: string;
+  label: string;
+};
+
 type RepositoryLifecyclePayload = {
   ok: boolean;
   repository: {
@@ -193,7 +225,7 @@ type RepositoryLifecyclePayload = {
   existingRepositoryFullName?: string;
   suggestedProjectUrl: string;
   suggestedProjectNames?: Array<{ projectName: string; projectUrl: string }>;
-  installStatus: "app_unconfigured" | "installed" | "not_installed";
+  installStatus: RepositoryInstallStatus;
   installUrl?: string;
   guidedInstallUrl?: string;
   setupUrl: string;
@@ -6783,79 +6815,14 @@ function renderSetupPageContent(input: {
 }): string {
   const { lifecycle, appName, serviceBaseUrl, oauthBaseUrl, installUrl, installReturnObserved } = input;
   const settingsUrl = buildProjectControlPanelUrl(oauthBaseUrl, lifecycle.projectName);
-  const stage = lifecycle.workflowStage;
-
-  // ── Headline ──
-  let headline: string;
-  switch (stage) {
-    case "app_setup":
-      headline = "GitHub setup is not done yet";
-      break;
-    case "github_install":
-      headline = installReturnObserved
-        ? "GitHub did not grant access to this repo"
-        : "This repo needs GitHub approval";
-      break;
-    case "awaiting_push":
-      headline = installReturnObserved ? "GitHub is connected" : "Connected and ready";
-      break;
-    case "build_queued":
-      headline = "Build is queued";
-      break;
-    case "build_running":
-      headline = "Building now";
-      break;
-    case "build_failed":
-      headline = "Build failed";
-      break;
-    case "live":
-      headline = "Your project is live";
-      break;
-    case "name_conflict":
-      headline = "That project name is taken";
-      break;
-    default:
-      headline = "Checking status...";
-  }
-
-  // ── Summary (consolidated — replaces 4 separate cards) ──
-  let summary: string;
-  switch (stage) {
-    case "app_setup":
-      summary = `The ${appName} GitHub app needs to be created before any repo can deploy.`;
-      break;
-    case "github_install":
-      summary = installReturnObserved
-        ? "This repo was not included. Try the GitHub flow again."
-        : `Approve the ${appName} app for this repo, then come back here.`;
-      break;
-    case "awaiting_push":
-      summary = "Push to the default branch to start your first deploy.";
-      break;
-    case "build_queued":
-      summary = "Your build is in line. This page updates when it starts.";
-      break;
-    case "build_running":
-      summary = "This usually takes a minute or two.";
-      break;
-    case "build_failed":
-      summary = "Check the error below, fix the issue, and push again.";
-      break;
-    case "live":
-      summary = lifecycle.deploymentUrl
-        ? `Live at ${lifecycle.deploymentUrl}. Push to main to deploy updates.`
-        : "Push to main to deploy updates.";
-      break;
-    case "name_conflict":
-      summary = "Choose from the suggestions below.";
-      break;
-    default:
-      summary = "Something unexpected happened. Refresh or reopen the setup link.";
-  }
+  const stage = describeRepositorySetupStage(lifecycle, appName, {
+    installReturnObserved,
+    flowPhase: "setup"
+  });
 
   // ── Actions ──
   let actions: string;
-  switch (stage) {
+  switch (lifecycle.workflowStage) {
     case "app_setup":
       actions = `<div class="actions">
           <a class="button" href="${escapeHtml(`${serviceBaseUrl}/github/register`)}">Set up GitHub for Kale Deploy</a>
@@ -6913,8 +6880,8 @@ function renderSetupPageContent(input: {
     : "";
 
   return `<div class="setup-primary">
-      <h2 id="current-state-headline">${escapeHtml(headline)}</h2>
-      <p id="current-state-summary">${escapeHtml(summary)}</p>
+      <h2 id="current-state-headline">${escapeHtml(stage.headline)}</h2>
+      <p id="current-state-summary">${escapeHtml(stage.summary)}</p>
     </div>
     ${failureNotice}
     ${actions}`;
@@ -6974,10 +6941,18 @@ function renderRepositoryLiveRefreshPanel(input: {
   appName: string;
   installReturnObserved: boolean;
 }): string {
+  const setupStagePresentation = buildRepositorySetupStagePresentationMap(input.appName, {
+    installReturnObserved: input.installReturnObserved,
+    flowPhase: input.phase
+  });
+  const coveragePresentation = buildRepositoryCoveragePresentationMap(input.appName);
+  const bannerPresentation = buildRepositoryBannerPresentationMap();
   const bootstrap = serializeJsonForHtml({
-    appName: input.appName,
     phase: input.phase,
     installReturnObserved: input.installReturnObserved,
+    coveragePresentation,
+    setupStagePresentation,
+    bannerPresentation,
     lifecycle: input.lifecycle
   });
 
@@ -7028,9 +7003,10 @@ function renderRepositoryLiveRefreshScript(): string {
     "  }",
     "  var state = bootstrap.lifecycle;",
     "  if (!state || !state.repositoryStatusUrl) return;",
-    "  var phase = bootstrap.phase || 'setup';",
-    "  var appName = bootstrap.appName || 'CAIL Deploy';",
     "  var installReturnObserved = Boolean(bootstrap.installReturnObserved);",
+    "  var coveragePresentation = bootstrap.coveragePresentation || {};",
+    "  var setupStagePresentation = bootstrap.setupStagePresentation || {};",
+    "  var bannerPresentation = bootstrap.bannerPresentation || {};",
     "  var button = document.getElementById('live-refresh-button');",
     "  var summaryEl = document.getElementById('live-refresh-summary');",
     "  var resultEl = document.getElementById('live-refresh-result');",
@@ -7056,149 +7032,29 @@ function renderRepositoryLiveRefreshScript(): string {
     "  }",
     "",
     "  function describeCoverage(nextState) {",
-    "    switch (nextState.installStatus) {",
-    "      case 'installed':",
-    "        return {",
-    "          title: 'Connected',",
-    "          body: 'The ' + appName + ' GitHub app can access this repo.'",
-    "        };",
-    "      case 'not_installed':",
-    "        return {",
-    "          title: 'Not connected yet',",
-    "          body: 'Someone with repo access needs to approve the ' + appName + ' app.'",
-    "        };",
-    "      default:",
-    "        return {",
-    "          title: 'Not set up',",
-    "          body: 'The ' + appName + ' GitHub app hasn\\u2019t been created yet.'",
-    "        };",
-    "    }",
+    "    return coveragePresentation[nextState.installStatus] || coveragePresentation.app_unconfigured || {",
+    "      title: 'Not set up',",
+    "      body: 'Status is temporarily unavailable.'",
+    "    };",
     "  }",
     "",
     "  function describeStage(nextState) {",
-    "    switch (nextState.workflowStage) {",
-    "      case 'app_setup':",
-    "        return {",
-    "          headline: 'GitHub setup is not done yet',",
-    "          userTitle: 'Complete the one-time GitHub setup',",
-    "          userBody: 'The ' + appName + ' GitHub app needs to be created before any repo can be deployed. Follow the link above, then come back.',",
-    "          agentTitle: 'Waiting on GitHub setup',",
-    "          agentBody: 'Deploys are blocked until the GitHub app is created. The project can still be prepared in the meantime.'",
-    "        };",
-    "      case 'github_install':",
-    "        if (installReturnObserved) {",
-    "          return {",
-    "            headline: 'GitHub did not grant access to this repo',",
-    "            userTitle: 'Try the GitHub flow again',",
-    "            userBody: 'You came back from GitHub, but this repo wasn\\u2019t included. Open GitHub again, make sure this repo is selected, then come back.',",
-    "            agentTitle: 'Waiting for repo access',",
-    "            agentBody: 'GitHub access isn\\u2019t confirmed for this repo yet. Nothing to do until the GitHub step is done.'",
-    "          };",
-    "        }",
-    "        if (phase === 'install') {",
-    "          return {",
-    "            headline: 'Ready for GitHub approval',",
-    "            userTitle: 'Continue to GitHub',",
-    "            userBody: 'Approve this repo in the ' + appName + ' app on GitHub. You\\u2019ll be sent back here when it\\u2019s done.',",
-    "            agentTitle: 'Paused for GitHub',",
-    "            agentBody: 'The user is completing the GitHub approval step in their browser.'",
-    "          };",
-    "        }",
-    "        return {",
-    "          headline: 'This repo needs GitHub approval',",
-    "          userTitle: 'Approve GitHub access',",
-    "          userBody: 'Click the button below to approve the ' + appName + ' app for this repo. Come back here when you\\u2019re done.',",
-    "          agentTitle: 'Paused for GitHub',",
-    "          agentBody: 'Waiting for GitHub access to be approved for this repo.'",
-    "        };",
-    "      case 'awaiting_push':",
-    "        if (installReturnObserved) {",
-    "          return {",
-    "            headline: 'GitHub is connected',",
-    "            userTitle: 'Push to deploy',",
-    "            userBody: 'GitHub access is confirmed. Push to the default branch to start your first deploy, or ask for a validation check first.',",
-    "            agentTitle: 'Ready to go',",
-    "            agentBody: 'GitHub is confirmed. Validate, push to the default branch, and check for the live URL.'",
-    "          };",
-    "        }",
-    "        if (phase === 'install') {",
-    "          return {",
-    "            headline: 'Already connected',",
-    "            userTitle: 'Push to deploy',",
-    "            userBody: 'This repo already has GitHub access. Push to the default branch whenever you\\u2019re ready.',",
-    "            agentTitle: 'Ready to go',",
-    "            agentBody: 'GitHub is already connected. Validate or push to the default branch, then check for the live URL.'",
-    "          };",
-    "        }",
-    "        return {",
-    "          headline: 'Connected and ready',",
-    "          userTitle: 'Push to deploy',",
-    "          userBody: 'Push to the default branch to start your first deploy. Want a dry run first? Ask for a validation check.',",
-    "          agentTitle: 'Ready to go',",
-    "          agentBody: 'Validate the branch, push to the default branch, and check for the live URL.'",
-    "        };",
-    "      case 'build_queued':",
-    "        return {",
-    "          headline: 'Build is queued',",
-    "          userTitle: 'Nothing to do right now',",
-    "          userBody: 'Your build is in line. This page will update when it starts.',",
-    "          agentTitle: 'Build starting soon',",
-    "          agentBody: 'The build is queued. Keep checking until it finishes or fails.'",
-    "        };",
-    "      case 'build_running':",
-    "        return {",
-    "          headline: 'Building now',",
-    "          userTitle: 'Sit tight',",
-    "          userBody: 'Your project is being built. This usually takes a minute or two.',",
-    "          agentTitle: 'Build in progress',",
-    "          agentBody: 'A build is running. Keep checking until it goes live or fails.'",
-    "        };",
-    "      case 'build_failed':",
-    "        return {",
-    "          headline: 'Build failed',",
-    "          userTitle: 'Check the error below',",
-    "          userBody: 'Something went wrong. The details are below \\u2014 fix the issue and push again, or ask your agent to help.',",
-    "          agentTitle: 'Fix and retry',",
-    "          agentBody: 'The build failed. Read the error details below, fix the code, and push again.'",
-    "        };",
-    "      case 'live':",
-    "        return {",
-    "          headline: 'Your project is live',",
-    "          userTitle: 'Visit your site or keep building',",
-    "          userBody: 'Your site is live now. Push to main to deploy updates.',",
-    "          agentTitle: 'Auto-deploy is on',",
-    "          agentBody: 'Every push to main updates the live site.'",
-    "        };",
-    "      case 'name_conflict':",
-    "        return {",
-    "          headline: 'That project name is taken',",
-    "          userTitle: 'Pick a different name',",
-    "          userBody: 'Project names become part of the public URL. Choose from the suggestions below.',",
-    "          agentTitle: 'Re-register with a new name',",
-    "          agentBody: 'Pick an available name from the suggestions and re-register the project.'",
-    "        };",
-    "      default:",
-    "        return {",
-    "          headline: 'Checking status...',",
-    "          userTitle: 'Refresh this page',",
-    "          userBody: 'Something unexpected happened. Refresh or reopen the setup link.',",
-    "          agentTitle: 'Check status again',",
-    "          agentBody: 'The current state wasn\\u2019t recognized. Check the repository status and continue from whatever step it reports.'",
-    "        };",
-    "    }",
+    "    return setupStagePresentation[nextState.workflowStage] || {",
+    "      headline: 'Checking status...',",
+    "      summary: 'Something unexpected happened. Refresh or reopen the setup link.',",
+    "      userTitle: 'Refresh this page',",
+    "      userBody: 'Something unexpected happened. Refresh or reopen the setup link.',",
+    "      agentTitle: 'Check status again',",
+    "      agentBody: 'The current state wasn\\u2019t recognized. Check the repository status and continue from whatever step it reports.'",
+    "    };",
     "  }",
     "",
     "  function bannerState(nextState) {",
-    "    switch (nextState.workflowStage) {",
-    "      case 'live': return { className: 'status-ready', icon: '\\u2713', label: 'Live' };",
-    "      case 'build_running': return { className: 'status-pending', icon: '\\u21bb', label: 'Building' };",
-    "      case 'build_queued': return { className: 'status-pending', icon: '\\u25cf', label: 'Build queued' };",
-    "      case 'build_failed': return { className: 'status-danger', icon: '\\u26a0', label: 'Build failed' };",
-    "      case 'github_install': return { className: 'status-pending', icon: '\\u25cf', label: 'GitHub needed' };",
-    "      case 'awaiting_push': return { className: 'status-ready', icon: '\\u27a4', label: 'Ready to deploy' };",
-    "      case 'name_conflict': return { className: 'status-danger', icon: '\\u26a0', label: 'Name taken' };",
-    "      default: return { className: 'status-config', icon: '\\u2699', label: 'Setup needed' };",
-    "    }",
+    "    return bannerPresentation[nextState.workflowStage] || {",
+    "      className: 'status-config',",
+    "      icon: '\\u2699',",
+    "      label: 'Setup needed'",
+    "    };",
     "  }",
     "",
     "  function setResult(message, nextState) {",
@@ -7360,6 +7216,148 @@ function renderLifecycleSteps(currentStage: string): string {
   </ul>`;
 }
 
+function buildRepositoryCoveragePresentationMap(
+  appName: string
+): Record<RepositoryInstallStatus, RepositoryCoveragePresentation> {
+  return {
+    installed: {
+      title: "Connected",
+      body: `The ${appName} GitHub app can access this repo.`
+    },
+    not_installed: {
+      title: "Not connected yet",
+      body: `Someone with repo access needs to approve the ${appName} app.`
+    },
+    app_unconfigured: {
+      title: "Not set up",
+      body: `The ${appName} GitHub app hasn't been created yet.`
+    }
+  };
+}
+
+function buildRepositorySetupStagePresentationMap(
+  appName: string,
+  options?: {
+    installReturnObserved?: boolean;
+    flowPhase?: "install" | "setup";
+  }
+): Record<RepositoryWorkflowStage, RepositorySetupStagePresentation> {
+  const installReturnObserved = options?.installReturnObserved ?? false;
+  const flowPhase = options?.flowPhase ?? "setup";
+
+  return {
+    app_setup: {
+      headline: "GitHub setup is not done yet",
+      summary: `The ${appName} GitHub app needs to be created before any repo can deploy.`,
+      userTitle: "Complete the one-time GitHub setup",
+      userBody: `The ${appName} GitHub app needs to be created before any repo can be deployed. Follow the link above, then come back.`,
+      agentTitle: "Waiting on GitHub setup",
+      agentBody: "Deploys are blocked until the GitHub app is created. The project can still be prepared in the meantime."
+    },
+    github_install: {
+      headline: installReturnObserved
+        ? "GitHub did not grant access to this repo"
+        : flowPhase === "install"
+          ? "Ready for GitHub approval"
+          : "This repo needs GitHub approval",
+      summary: installReturnObserved
+        ? "This repo was not included. Try the GitHub flow again."
+        : `Approve the ${appName} app for this repo, then come back here.`,
+      userTitle: installReturnObserved
+        ? "Try the GitHub flow again"
+        : flowPhase === "install"
+          ? "Continue to GitHub"
+          : "Approve GitHub access",
+      userBody: installReturnObserved
+        ? "You came back from GitHub, but this repo wasn't included. Open GitHub again, make sure this repo is selected, then come back."
+        : flowPhase === "install"
+          ? `Approve this repo in the ${appName} app on GitHub. You'll be sent back here when it's done.`
+          : `Click the button below to approve the ${appName} app for this repo. Come back here when you're done.`,
+      agentTitle: installReturnObserved
+        ? "Waiting for repo access"
+        : "Paused for GitHub",
+      agentBody: installReturnObserved
+        ? "GitHub access isn't confirmed for this repo yet. Nothing to do until the GitHub step is done."
+        : flowPhase === "install"
+          ? "The user is completing the GitHub approval step in their browser."
+          : "Waiting for GitHub access to be approved for this repo."
+    },
+    awaiting_push: {
+      headline: installReturnObserved
+        ? "GitHub is connected"
+        : flowPhase === "install"
+          ? "Already connected"
+          : "Connected and ready",
+      summary: "Push to the default branch to start your first deploy.",
+      userTitle: "Push to deploy",
+      userBody: installReturnObserved
+        ? "GitHub access is confirmed. Push to the default branch to start your first deploy, or ask for a validation check first."
+        : flowPhase === "install"
+          ? "This repo already has GitHub access. Push to the default branch whenever you're ready."
+          : "Push to the default branch to start your first deploy. Want a dry run first? Ask for a validation check.",
+      agentTitle: "Ready to go",
+      agentBody: installReturnObserved
+        ? "GitHub is confirmed. Validate, push to the default branch, and check for the live URL."
+        : flowPhase === "install"
+          ? "GitHub is already connected. Validate or push to the default branch, then check for the live URL."
+          : "Validate the branch, push to the default branch, and check for the live URL."
+    },
+    build_queued: {
+      headline: "Build is queued",
+      summary: "Your build is in line. This page updates when it starts.",
+      userTitle: "Nothing to do right now",
+      userBody: "Your build is in line. This page will update when it starts.",
+      agentTitle: "Build starting soon",
+      agentBody: "The build is queued. Keep checking until it finishes or fails."
+    },
+    build_running: {
+      headline: "Building now",
+      summary: "This usually takes a minute or two.",
+      userTitle: "Sit tight",
+      userBody: "Your project is being built. This usually takes a minute or two.",
+      agentTitle: "Build in progress",
+      agentBody: "A build is running. Keep checking until it goes live or fails."
+    },
+    build_failed: {
+      headline: "Build failed",
+      summary: "Check the error below, fix the issue, and push again.",
+      userTitle: "Check the error below",
+      userBody: "Something went wrong. The details are below — fix the issue and push again, or ask your agent to help.",
+      agentTitle: "Fix and retry",
+      agentBody: "The build failed. Read the error details below, fix the code, and push again."
+    },
+    live: {
+      headline: "Your project is live",
+      summary: "Push to main to deploy updates.",
+      userTitle: "Visit your site or keep building",
+      userBody: "Your site is live now. Push to main to deploy updates.",
+      agentTitle: "Auto-deploy is on",
+      agentBody: "Every push to main updates the live site."
+    },
+    name_conflict: {
+      headline: "That project name is taken",
+      summary: "Choose from the suggestions below.",
+      userTitle: "Pick a different name",
+      userBody: "Project names become part of the public URL. Choose from the suggestions below.",
+      agentTitle: "Re-register with a new name",
+      agentBody: "Pick an available name from the suggestions and re-register the project."
+    }
+  };
+}
+
+function buildRepositoryBannerPresentationMap(): Record<RepositoryWorkflowStage, RepositoryBannerPresentation> {
+  return {
+    app_setup: { className: "status-config", icon: "\u2699", label: "Setup needed" },
+    github_install: { className: "status-pending", icon: "\u25cf", label: "GitHub needed" },
+    name_conflict: { className: "status-danger", icon: "\u26a0", label: "Name taken" },
+    awaiting_push: { className: "status-ready", icon: "\u27a4", label: "Ready to deploy" },
+    build_queued: { className: "status-pending", icon: "\u25cf", label: "Build queued" },
+    build_running: { className: "status-pending", icon: "\u21bb", label: "Building" },
+    build_failed: { className: "status-danger", icon: "\u26a0", label: "Build failed" },
+    live: { className: "status-ready", icon: "\u2713", label: "Live" }
+  };
+}
+
 function buildGuidedSetupUrl(
   serviceBaseUrl: string,
   repositoryFullName: string,
@@ -7376,27 +7374,8 @@ function buildGuidedSetupUrl(
 function describeRepositoryCoverage(
   lifecycle: RepositoryLifecyclePayload,
   appName: string
-): {
-  title: string;
-  body: string;
-} {
-  switch (lifecycle.installStatus) {
-    case "installed":
-      return {
-        title: "Connected",
-        body: `The ${appName} GitHub app can access this repo.`
-      };
-    case "not_installed":
-      return {
-        title: "Not connected yet",
-        body: `Someone with repo access needs to approve the ${appName} app.`
-      };
-    case "app_unconfigured":
-      return {
-        title: "Not set up",
-        body: `The ${appName} GitHub app hasn't been created yet.`
-      };
-  }
+) : RepositoryCoveragePresentation {
+  return buildRepositoryCoveragePresentationMap(appName)[lifecycle.installStatus];
 }
 
 function describeRepositorySetupStage(
@@ -7406,120 +7385,25 @@ function describeRepositorySetupStage(
     installReturnObserved?: boolean;
     flowPhase?: "install" | "setup";
   }
-): {
-  headline: string;
-  userTitle: string;
-  userBody: string;
-  agentTitle: string;
-  agentBody: string;
-} {
-  const installReturnObserved = options?.installReturnObserved ?? false;
-  const flowPhase = options?.flowPhase ?? "setup";
-
-  switch (lifecycle.workflowStage) {
-    case "app_setup":
-      return {
-        headline: "GitHub setup is not done yet",
-        userTitle: "Complete the one-time GitHub setup",
-        userBody: `The ${appName} GitHub app needs to be created before any repo can be deployed. Follow the link above, then come back.`,
-        agentTitle: "Waiting on GitHub setup",
-        agentBody: "Deploys are blocked until the GitHub app is created. The project can still be prepared in the meantime."
-      };
-    case "github_install":
-      return {
-        headline: installReturnObserved
-          ? "GitHub did not grant access to this repo"
-          : flowPhase === "install"
-            ? "Ready for GitHub approval"
-            : "This repo needs GitHub approval",
-        userTitle: installReturnObserved
-          ? "Try the GitHub flow again"
-          : flowPhase === "install"
-            ? "Continue to GitHub"
-            : "Approve GitHub access",
-        userBody: installReturnObserved
-          ? "You came back from GitHub, but this repo wasn't included. Open GitHub again, make sure this repo is selected, then come back."
-          : flowPhase === "install"
-            ? `Approve this repo in the ${appName} app on GitHub. You'll be sent back here when it's done.`
-            : `Click the button below to approve the ${appName} app for this repo. Come back here when you're done.`,
-        agentTitle: installReturnObserved
-          ? "Waiting for repo access"
-          : "Paused for GitHub",
-        agentBody: installReturnObserved
-          ? "GitHub access isn't confirmed for this repo yet. Nothing to do until the GitHub step is done."
-          : flowPhase === "install"
-            ? "The user is completing the GitHub approval step in their browser."
-            : "Waiting for GitHub access to be approved for this repo."
-      };
-    case "awaiting_push":
-      return {
-        headline: installReturnObserved
-          ? "GitHub is connected"
-          : flowPhase === "install"
-            ? "Already connected"
-            : "Connected and ready",
-        userTitle: "Push to deploy",
-        userBody: installReturnObserved
-          ? "GitHub access is confirmed. Push to the default branch to start your first deploy, or ask for a validation check first."
-          : flowPhase === "install"
-            ? "This repo already has GitHub access. Push to the default branch whenever you're ready."
-            : "Push to the default branch to start your first deploy. Want a dry run first? Ask for a validation check.",
-        agentTitle: "Ready to go",
-        agentBody: installReturnObserved
-          ? "GitHub is confirmed. Validate, push to the default branch, and check for the live URL."
-          : flowPhase === "install"
-            ? "GitHub is already connected. Validate or push to the default branch, then check for the live URL."
-            : "Validate the branch, push to the default branch, and check for the live URL."
-      };
-    case "build_queued":
-      return {
-        headline: "Build is queued",
-        userTitle: "Nothing to do right now",
-        userBody: "Your build is in line. This page will update when it starts.",
-        agentTitle: "Build starting soon",
-        agentBody: "The build is queued. Keep checking until it finishes or fails."
-      };
-    case "build_running":
-      return {
-        headline: "Building now",
-        userTitle: "Sit tight",
-        userBody: "Your project is being built. This usually takes a minute or two.",
-        agentTitle: "Build in progress",
-        agentBody: "A build is running. Keep checking until it goes live or fails."
-      };
-    case "build_failed":
-      return {
-        headline: "Build failed",
-        userTitle: "Check the error below",
-        userBody: "Something went wrong. The details are below \u2014 fix the issue and push again, or ask your agent to help.",
-        agentTitle: "Fix and retry",
-        agentBody: "The build failed. Read the error details below, fix the code, and push again."
-      };
-    case "live":
-      return {
-        headline: "Your project is live",
-        userTitle: "Visit your site or keep building",
-        userBody: "Your site is live now. Push to main to deploy updates.",
-        agentTitle: "Auto-deploy is on",
-        agentBody: "Every push to main updates the live site."
-      };
-    case "name_conflict":
-      return {
-        headline: "That project name is taken",
-        userTitle: "Pick a different name",
-        userBody: "Project names become part of the public URL. Choose from the suggestions below.",
-        agentTitle: "Re-register with a new name",
-        agentBody: "Pick an available name from the suggestions and re-register the project."
-      };
-  }
-
-  return {
+): RepositorySetupStagePresentation {
+  const fallback: RepositorySetupStagePresentation = {
     headline: "Checking status...",
+    summary: "Something unexpected happened. Refresh or reopen the setup link.",
     userTitle: "Refresh this page",
     userBody: "Something unexpected happened. Refresh or reopen the setup link.",
     agentTitle: "Check status again",
     agentBody: "The current state wasn't recognized. Check the repository status and continue from whatever step it reports."
   };
+  const stage = buildRepositorySetupStagePresentationMap(appName, options)[lifecycle.workflowStage as RepositoryWorkflowStage] ?? fallback;
+
+  if (lifecycle.workflowStage === "live" && lifecycle.deploymentUrl) {
+    return {
+      ...stage,
+      summary: `Live at ${lifecycle.deploymentUrl}. Push to main to deploy updates.`
+    };
+  }
+
+  return stage;
 }
 
 async function getProjectClaim(
@@ -7551,7 +7435,7 @@ async function getProjectClaim(
 }
 
 function resolveRepositoryWorkflowState(input: {
-  installStatus: "app_unconfigured" | "installed" | "not_installed";
+  installStatus: RepositoryInstallStatus;
   lifecycleStatus: "not_deployed" | "queued" | "running" | "live" | "failed";
   buildStatus?: BuildJobStatus;
   conflict: boolean;
@@ -7566,15 +7450,7 @@ function resolveRepositoryWorkflowState(input: {
     | "poll_status"
     | "inspect_failure"
     | "view_live_project";
-  stage:
-    | "app_setup"
-    | "github_install"
-    | "name_conflict"
-    | "awaiting_push"
-    | "build_queued"
-    | "build_running"
-    | "build_failed"
-    | "live";
+  stage: RepositoryWorkflowStage;
   summary: string;
 } {
   if (input.conflict) {
