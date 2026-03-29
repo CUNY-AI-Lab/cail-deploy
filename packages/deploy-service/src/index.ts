@@ -116,6 +116,7 @@ type Env = {
   CLOUDFLARE_ACCESS_ALLOWED_EMAILS?: string;
   CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS?: string;
   CLOUDFLARE_ACCESS_TEAM_DOMAIN?: string;
+  MCP_OAUTH_BASE_URL?: string;
   MCP_OAUTH_TOKEN_SECRET?: string;
   MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
   WFP_NAMESPACE: string;
@@ -359,7 +360,7 @@ deployServiceApp.get("/mcp/.well-known/openid-configuration", serveOauthAuthoriz
 deployServiceApp.post("/oauth/register", async (c) => {
   try {
     const secret = resolveMcpOauthSecret(c.env);
-    const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+    const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
     const body = await c.req.json<{
       redirect_uris?: string[];
       client_name?: string;
@@ -373,7 +374,7 @@ deployServiceApp.post("/oauth/register", async (c) => {
     const redirectUris = (body.redirect_uris ?? []).map((value) => normalizeRedirectUri(String(value)));
     const client = await registerPublicOAuthClient({
       secret,
-      issuer: serviceBaseUrl,
+      issuer: oauthBaseUrl,
       clientName: body.client_name,
       redirectUris
     });
@@ -401,6 +402,7 @@ deployServiceApp.get("/api/oauth/authorize", async (c) => {
     const identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
     const secret = resolveMcpOauthSecret(c.env);
     const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+    const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
     const clientId = c.req.query("client_id");
     const redirectUri = c.req.query("redirect_uri");
     const responseType = c.req.query("response_type");
@@ -420,7 +422,7 @@ deployServiceApp.get("/api/oauth/authorize", async (c) => {
     const client = await verifyRegisteredOAuthClient({
       clientId,
       secret,
-      issuer: serviceBaseUrl
+      issuer: oauthBaseUrl
     });
     const normalizedRedirectUri = normalizeRedirectUri(redirectUri);
     if (!client.redirectUris.includes(normalizedRedirectUri)) {
@@ -429,7 +431,7 @@ deployServiceApp.get("/api/oauth/authorize", async (c) => {
 
     const { code } = await createAuthorizationCode({
       secret,
-      issuer: serviceBaseUrl,
+      issuer: oauthBaseUrl,
       clientId: client.clientId,
       redirectUri: normalizedRedirectUri,
       codeChallenge,
@@ -453,7 +455,7 @@ deployServiceApp.get("/api/oauth/authorize", async (c) => {
 deployServiceApp.post("/oauth/token", async (c) => {
   try {
     const secret = resolveMcpOauthSecret(c.env);
-    const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+    const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
     const form = await c.req.formData();
     const grantType = getRequiredOauthFormField(form, "grant_type");
     if (grantType !== "authorization_code") {
@@ -467,7 +469,7 @@ deployServiceApp.post("/oauth/token", async (c) => {
     const client = await verifyRegisteredOAuthClient({
       clientId,
       secret,
-      issuer: serviceBaseUrl
+      issuer: oauthBaseUrl
     });
 
     if (!client.redirectUris.includes(redirectUri)) {
@@ -477,7 +479,7 @@ deployServiceApp.post("/oauth/token", async (c) => {
     const authorizationCode = await verifyAuthorizationCode({
       code,
       secret,
-      issuer: serviceBaseUrl
+      issuer: oauthBaseUrl
     });
 
     if (authorizationCode.clientId !== client.clientId || authorizationCode.redirectUri !== redirectUri) {
@@ -501,7 +503,7 @@ deployServiceApp.post("/oauth/token", async (c) => {
 
     const accessToken = await mintMcpAccessToken({
       secret,
-      issuer: serviceBaseUrl,
+      issuer: oauthBaseUrl,
       clientId: client.clientId,
       email: authorizationCode.email,
       subject: authorizationCode.subject,
@@ -3805,7 +3807,7 @@ async function requireMcpRequestIdentity(request: Request, env: Env): Promise<Au
   const payload = await verifyMcpAccessToken({
     token: bearerToken,
     secret,
-    issuer: resolveServiceBaseUrl(env, request.url)
+    issuer: resolveMcpOauthBaseUrl(env, request.url)
   });
 
   return {
@@ -3856,41 +3858,47 @@ function resolveMcpOauthSecret(env: Env): string {
   return secret;
 }
 
-function buildOauthProtectedResourceMetadata(serviceBaseUrl: string) {
+function resolveMcpOauthBaseUrl(env: Env, requestUrl: string): string {
+  return resolveConfiguredEnvValue(env.MCP_OAUTH_BASE_URL)?.replace(/\/$/, "") ?? resolveServiceBaseUrl(env, requestUrl);
+}
+
+function buildOauthProtectedResourceMetadata(serviceBaseUrl: string, oauthBaseUrl: string) {
   return {
     resource: `${serviceBaseUrl}/mcp`,
-    authorization_servers: [serviceBaseUrl],
+    authorization_servers: [oauthBaseUrl],
     scopes_supported: [MCP_REQUIRED_SCOPE],
     resource_name: "CAIL Deploy MCP",
     resource_documentation: serviceBaseUrl
   };
 }
 
-function buildOauthAuthorizationServerMetadata(serviceBaseUrl: string) {
+function buildOauthAuthorizationServerMetadata(oauthBaseUrl: string, serviceDocumentationUrl: string) {
   return {
-    issuer: serviceBaseUrl,
-    authorization_endpoint: `${serviceBaseUrl}/api/oauth/authorize`,
-    token_endpoint: `${serviceBaseUrl}/oauth/token`,
-    registration_endpoint: `${serviceBaseUrl}/oauth/register`,
+    issuer: oauthBaseUrl,
+    authorization_endpoint: `${oauthBaseUrl}/api/oauth/authorize`,
+    token_endpoint: `${oauthBaseUrl}/oauth/token`,
+    registration_endpoint: `${oauthBaseUrl}/oauth/register`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code"],
     token_endpoint_auth_methods_supported: ["none"],
     code_challenge_methods_supported: ["S256"],
     scopes_supported: [MCP_REQUIRED_SCOPE],
-    service_documentation: serviceBaseUrl
+    service_documentation: serviceDocumentationUrl
   };
 }
 
 function serveOauthProtectedResourceMetadata(c: Context<{ Bindings: Env }>) {
   const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  return c.json(buildOauthProtectedResourceMetadata(serviceBaseUrl), 200, {
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
+  return c.json(buildOauthProtectedResourceMetadata(serviceBaseUrl, oauthBaseUrl), 200, {
     "cache-control": "public, max-age=300"
   });
 }
 
 function serveOauthAuthorizationServerMetadata(c: Context<{ Bindings: Env }>) {
   const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  return c.json(buildOauthAuthorizationServerMetadata(serviceBaseUrl), 200, {
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
+  return c.json(buildOauthAuthorizationServerMetadata(oauthBaseUrl, serviceBaseUrl), 200, {
     "cache-control": "public, max-age=300"
   });
 }
@@ -3942,6 +3950,7 @@ function buildProtectedAgentApiAuthErrorPayload(env: Env, serviceBaseUrl: string
 }
 
 function buildConnectionHealthPayload(env: Env, serviceBaseUrl: string, identity?: AgentRequestIdentity) {
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(env, serviceBaseUrl);
   const appSlug = resolveGitHubAppSlug(env);
   const appName = resolveGitHubAppName(env);
   const authenticated = Boolean(identity && identity.type !== "anonymous");
@@ -3952,8 +3961,8 @@ function buildConnectionHealthPayload(env: Env, serviceBaseUrl: string, identity
     connectionHealthUrl: `${serviceBaseUrl}/.well-known/kale-connection.json`,
     mcpEndpoint: `${serviceBaseUrl}/mcp`,
     oauthProtectedResourceMetadata: `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`,
-    oauthAuthorizationMetadata: `${serviceBaseUrl}/.well-known/oauth-authorization-server`,
-    authorizationUrl: `${serviceBaseUrl}/api/oauth/authorize`,
+    oauthAuthorizationMetadata: `${oauthBaseUrl}/.well-known/oauth-authorization-server`,
+    authorizationUrl: `${oauthBaseUrl}/api/oauth/authorize`,
     githubAppName: appName,
     githubAppInstallUrl: appSlug ? githubAppInstallUrl(appSlug) : undefined,
     authenticated,
@@ -4592,7 +4601,8 @@ function normalizeWorkerRequest(request: Request, basePath: string): Request {
 function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
   const publicRuntimeUrl = resolvePublicRuntimeManifestUrl(env, serviceBaseUrl);
   const reservedProjectNames = Array.from(resolveReservedProjectNames(env, serviceBaseUrl)).sort();
-  const oauthAuthorizationMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-authorization-server`;
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(env, serviceBaseUrl);
+  const oauthAuthorizationMetadataUrl = `${oauthBaseUrl}/.well-known/oauth-authorization-server`;
   const oauthProtectedResourceMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`;
   return {
     name: "cail-runtime",
@@ -4721,8 +4731,8 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
         scheme: "oauth2.1",
         authorization_metadata_url: oauthAuthorizationMetadataUrl,
         protected_resource_metadata_url: oauthProtectedResourceMetadataUrl,
-        dynamic_client_registration_endpoint: `${serviceBaseUrl}/oauth/register`,
-        browser_login_url: `${serviceBaseUrl}/api/oauth/authorize`
+        dynamic_client_registration_endpoint: `${oauthBaseUrl}/oauth/register`,
+        browser_login_url: `${oauthBaseUrl}/api/oauth/authorize`
       },
       tools: [
         "get_runtime_manifest",

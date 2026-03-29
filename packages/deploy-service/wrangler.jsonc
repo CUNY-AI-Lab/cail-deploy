@@ -31,6 +31,7 @@
     "CLOUDFLARE_ACCESS_TEAM_DOMAIN": "https://ailab-452.cloudflareaccess.com",
     "CLOUDFLARE_ACCESS_AUD": "8400834949e15a0383b90a51dece46024c0afdc158ec561f63783aa463ead033",
     "CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS": "cuny.edu",
+    "MCP_OAUTH_BASE_URL": "https://cail-deploy-service.ailab-452.workers.dev",
     "MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS": "3600",
     "WFP_NAMESPACE": "cail-production",
     "PROJECT_BASE_URL": "https://cail-gateway.ailab-452.workers.dev",

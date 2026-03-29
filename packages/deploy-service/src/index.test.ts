@@ -127,7 +127,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   ]);
   assert.equal(body.agent_api.runtime_manifest, body.well_known_runtime_url);
   assert.equal(body.agent_api.mcp_endpoint, "https://deploy.example/mcp");
-  assert.equal(body.agent_api.oauth_authorization_metadata, "https://deploy.example/.well-known/oauth-authorization-server");
+  assert.equal(body.agent_api.oauth_authorization_metadata, "https://auth.example/.well-known/oauth-authorization-server");
   assert.equal(body.agent_api.oauth_protected_resource_metadata, "https://deploy.example/.well-known/oauth-protected-resource/mcp");
   assert.equal(body.agent_api.repository_status_template, "https://deploy.example/api/repositories/{owner}/{repo}/status");
   assert.equal(body.agent_api.validate_project, "https://deploy.example/api/validate");
@@ -150,9 +150,9 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.equal(body.agent_api.project_secrets_template, "https://deploy.example/api/projects/{projectName}/secrets");
   assert.equal(body.mcp.endpoint, "https://deploy.example/mcp");
   assert.equal(body.mcp.transport, "streamable_http");
-  assert.equal(body.mcp.auth.authorization_metadata_url, "https://deploy.example/.well-known/oauth-authorization-server");
+  assert.equal(body.mcp.auth.authorization_metadata_url, "https://auth.example/.well-known/oauth-authorization-server");
   assert.equal(body.mcp.auth.protected_resource_metadata_url, "https://deploy.example/.well-known/oauth-protected-resource/mcp");
-  assert.equal(body.mcp.auth.dynamic_client_registration_endpoint, "https://deploy.example/oauth/register");
+  assert.equal(body.mcp.auth.dynamic_client_registration_endpoint, "https://auth.example/oauth/register");
   assert.deepEqual(body.mcp.tools, [
     "get_runtime_manifest",
     "test_connection",
@@ -170,7 +170,8 @@ test("runtime manifest advertises the agent API without duplicate well-known key
 
 test("friendly base-path hosting works under /kale", async () => {
   const { env } = createTestContext({
-    DEPLOY_SERVICE_BASE_URL: "https://ailab.gc.cuny.edu/kale"
+    DEPLOY_SERVICE_BASE_URL: "https://ailab.gc.cuny.edu/kale",
+    MCP_OAUTH_BASE_URL: "https://auth.ailab.gc.cuny.edu"
   });
 
   const homepage = await fetchWorker("GET", "/kale/", env);
@@ -186,9 +187,9 @@ test("friendly base-path hosting works under /kale", async () => {
     authorization_endpoint: string;
     token_endpoint: string;
   };
-  assert.equal(metadata.issuer, "https://ailab.gc.cuny.edu/kale");
-  assert.equal(metadata.authorization_endpoint, "https://ailab.gc.cuny.edu/kale/api/oauth/authorize");
-  assert.equal(metadata.token_endpoint, "https://ailab.gc.cuny.edu/kale/oauth/token");
+  assert.equal(metadata.issuer, "https://auth.ailab.gc.cuny.edu");
+  assert.equal(metadata.authorization_endpoint, "https://auth.ailab.gc.cuny.edu/api/oauth/authorize");
+  assert.equal(metadata.token_endpoint, "https://auth.ailab.gc.cuny.edu/oauth/token");
 });
 
 test("public connection health explains the MCP auth handoff", async () => {
@@ -203,6 +204,8 @@ test("public connection health explains the MCP auth handoff", async () => {
     nextAction: string;
     mcpEndpoint: string;
     connectionHealthUrl: string;
+    oauthAuthorizationMetadata: string;
+    authorizationUrl: string;
     deploymentTrigger: string;
     localFolderUploadSupported: boolean;
   };
@@ -212,6 +215,8 @@ test("public connection health explains the MCP auth handoff", async () => {
   assert.equal(body.nextAction, "connect_mcp_or_complete_browser_login");
   assert.equal(body.mcpEndpoint, "https://deploy.example/mcp");
   assert.equal(body.connectionHealthUrl, "https://deploy.example/.well-known/kale-connection.json");
+  assert.equal(body.oauthAuthorizationMetadata, "https://auth.example/.well-known/oauth-authorization-server");
+  assert.equal(body.authorizationUrl, "https://auth.example/api/oauth/authorize");
   assert.equal(body.deploymentTrigger, "github_push_to_default_branch");
   assert.equal(body.localFolderUploadSupported, false);
 });
@@ -408,7 +413,7 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   const prmResponse = await fetchApp("GET", "/.well-known/oauth-protected-resource/mcp", env);
   assert.equal(prmResponse.status, 200);
   const prm = await prmResponse.json() as { authorization_servers: string[]; resource: string };
-  assert.deepEqual(prm.authorization_servers, ["https://deploy.example"]);
+  assert.deepEqual(prm.authorization_servers, ["https://auth.example"]);
   assert.equal(prm.resource, "https://deploy.example/mcp");
 
   for (const aliasPath of [
@@ -425,13 +430,15 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   const metadataResponse = await fetchApp("GET", "/.well-known/oauth-authorization-server", env);
   assert.equal(metadataResponse.status, 200);
   const metadata = await metadataResponse.json() as {
+    issuer: string;
     authorization_endpoint: string;
     token_endpoint: string;
     registration_endpoint: string;
   };
-  assert.equal(metadata.authorization_endpoint, "https://deploy.example/api/oauth/authorize");
-  assert.equal(metadata.token_endpoint, "https://deploy.example/oauth/token");
-  assert.equal(metadata.registration_endpoint, "https://deploy.example/oauth/register");
+  assert.equal(metadata.issuer, "https://auth.example");
+  assert.equal(metadata.authorization_endpoint, "https://auth.example/api/oauth/authorize");
+  assert.equal(metadata.token_endpoint, "https://auth.example/oauth/token");
+  assert.equal(metadata.registration_endpoint, "https://auth.example/oauth/register");
 
   for (const aliasPath of [
     "/.well-known/oauth-authorization-server/mcp",
@@ -476,7 +483,7 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   assert.equal(redirect.searchParams.get("state"), "test-state");
 
   const tokenResponse = await fetchRaw(
-    new Request("https://deploy.example/oauth/token", {
+    new Request("https://auth.example/oauth/token", {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded"
@@ -1873,6 +1880,7 @@ function createTestContext(overrides: Partial<TestEnv> = {}): {
     PROJECT_BASE_URL: "https://gateway.example",
     PROJECT_HOST_SUFFIX: "cuny.qzz.io",
     DEPLOY_SERVICE_BASE_URL: "https://deploy.example",
+    MCP_OAUTH_BASE_URL: "https://auth.example",
     DEPLOY_API_TOKEN: "deploy-token",
     MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
     GITHUB_APP_ID: "3196468",
@@ -2046,7 +2054,7 @@ async function createPkceChallenge(verifier: string): Promise<string> {
 }
 
 async function issueTestMcpAccessToken(env: TestEnv, email: string): Promise<string> {
-  const serviceBaseUrl = env.DEPLOY_SERVICE_BASE_URL ?? "https://deploy.example";
+  const oauthBaseUrl = env.MCP_OAUTH_BASE_URL ?? env.DEPLOY_SERVICE_BASE_URL ?? "https://deploy.example";
   const secret = env.MCP_OAUTH_TOKEN_SECRET ?? "mcp-oauth-secret";
   const subject = `user:${email}`;
   const token = await new SignJWT({
@@ -2056,7 +2064,7 @@ async function issueTestMcpAccessToken(env: TestEnv, email: string): Promise<str
     auth_source: "mcp_oauth"
   })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-    .setIssuer(serviceBaseUrl)
+    .setIssuer(oauthBaseUrl)
     .setAudience("cail-mcp")
     .setSubject(subject)
     .setIssuedAt()
@@ -2532,6 +2540,7 @@ type TestEnv = {
   CLOUDFLARE_ACCESS_ALLOWED_EMAILS?: string;
   CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS?: string;
   CLOUDFLARE_ACCESS_TEAM_DOMAIN?: string;
+  MCP_OAUTH_BASE_URL?: string;
   WFP_NAMESPACE: string;
   PROJECT_BASE_URL: string;
   PROJECT_HOST_SUFFIX?: string;
