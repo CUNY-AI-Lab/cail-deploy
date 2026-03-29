@@ -42,6 +42,9 @@ Agents should prefer the structured control-plane endpoints over scraping GitHub
 - `POST /api/validate`: validate a GitHub-visible branch or commit without deploying it
 - `GET /api/build-jobs/<jobId>/status`: poll a specific validation or deployment job
 - `GET /api/projects/<project-name>/status`: return structured deployment state, including `status`, `deployment_url`, `error_kind`, `error_message`, and `error_detail`
+- `GET /api/projects/<project-name>/secrets`: list stored project secret names and metadata, never values
+- `PUT /api/projects/<project-name>/secrets/<SECRET_NAME>`: create or update one project secret
+- `DELETE /api/projects/<project-name>/secrets/<SECRET_NAME>`: remove one project secret
 
 The intended auth model is now:
 
@@ -64,6 +67,9 @@ The MCP tool surface is intentionally thin. It wraps the same control-plane beha
 - `validate_project`
 - `get_project_status`
 - `get_build_job_status`
+- `list_project_secrets`
+- `set_project_secret`
+- `delete_project_secret`
 
 The intended long-term model is:
 
@@ -169,6 +175,14 @@ Those caps are intentionally narrow:
 - daily validate or deploy caps remain available as per-project overrides, but they are not enabled by default
 
 Assistants should not promise AI, vector search, realtime rooms, or large asset hosting unless the user has explicit approval.
+
+Per-project secrets now use an extra GitHub-backed admin check:
+
+- ordinary deploys still use only MCP OAuth plus the shared GitHub App install
+- secret management may ask the user to confirm their GitHub account separately
+- Kale then checks that the linked GitHub user has write, maintain, or admin access to the repository that owns the project
+
+This second GitHub user-authorization step is intentionally limited to sensitive project-admin actions such as secrets.
 
 ## Naming conventions
 

@@ -33,6 +33,7 @@ export type WorkerBinding =
   | { type: "d1"; name: string; id: string }
   | { type: "kv_namespace"; name: string; namespace_id: string }
   | { type: "r2_bucket"; name: string; bucket_name: string }
+  | { type: "secret_text"; name: string; text: string }
   | { type: "assets"; name: string }
   | { type: "ai"; name: string }
   | { type: "vectorize"; name: string; index_name: string }

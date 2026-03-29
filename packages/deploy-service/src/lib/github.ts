@@ -87,6 +87,24 @@ export type GitHubCommit = {
   sha: string;
 };
 
+export type GitHubAuthenticatedUser = {
+  id: number;
+  login: string;
+  name?: string | null;
+  html_url?: string;
+  email?: string | null;
+};
+
+export type GitHubUserRepository = GitHubRepository & {
+  permissions?: {
+    admin?: boolean;
+    maintain?: boolean;
+    push?: boolean;
+    pull?: boolean;
+    triage?: boolean;
+  };
+};
+
 type GitHubAppClientOptions = {
   appId: string;
   privateKey: string;
@@ -96,6 +114,15 @@ type GitHubAppClientOptions = {
 type GitHubInstallationAccessToken = {
   token?: string;
   expires_at?: string;
+};
+
+type GitHubUserAccessTokenResponse = {
+  access_token?: string;
+  token_type?: string;
+  scope?: string;
+  expires_in?: number;
+  refresh_token?: string;
+  refresh_token_expires_in?: number;
 };
 
 type GitHubCreateCheckRunInput = {
@@ -254,6 +281,35 @@ export class GitHubInstallationClient {
   }
 }
 
+export class GitHubUserClient {
+  constructor(
+    private readonly apiBaseUrl: string,
+    readonly accessToken: string,
+    readonly accessTokenExpiresAt?: string
+  ) {}
+
+  async getAuthenticatedUser(): Promise<GitHubAuthenticatedUser> {
+    return this.request<GitHubAuthenticatedUser>("/user", {
+      method: "GET"
+    });
+  }
+
+  async getRepository(owner: string, repo: string): Promise<GitHubUserRepository> {
+    return this.request<GitHubUserRepository>(`/repos/${owner}/${repo}`, {
+      method: "GET"
+    });
+  }
+
+  private async request<T>(path: string, init: RequestInit): Promise<T> {
+    const response = await fetch(`${this.apiBaseUrl}${path}`, {
+      ...init,
+      headers: createJsonHeaders(this.accessToken)
+    });
+
+    return readGitHubJson<T>(response);
+  }
+}
+
 export async function createGitHubAppFromManifest(
   code: string,
   options?: { apiBaseUrl?: string }
@@ -265,6 +321,71 @@ export async function createGitHubAppFromManifest(
   });
 
   return readGitHubJson<GitHubManifestConversion>(response);
+}
+
+export async function exchangeGitHubUserCode(input: {
+  clientId: string;
+  clientSecret: string;
+  code: string;
+  redirectUri: string;
+  apiBaseUrl?: string;
+}): Promise<{
+  accessToken: string;
+  accessTokenExpiresAt?: string;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
+}> {
+  const response = await fetch(`${resolveGitHubWebBaseUrl(input.apiBaseUrl)}/login/oauth/access_token`, {
+    method: "POST",
+    headers: createPublicJsonHeaders(),
+    body: JSON.stringify({
+      client_id: input.clientId,
+      client_secret: input.clientSecret,
+      code: input.code,
+      redirect_uri: input.redirectUri
+    })
+  });
+
+  const payload = await readGitHubJson<GitHubUserAccessTokenResponse>(response);
+  return normalizeGitHubUserTokenResponse(payload);
+}
+
+export async function refreshGitHubUserAccessToken(input: {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+  apiBaseUrl?: string;
+}): Promise<{
+  accessToken: string;
+  accessTokenExpiresAt?: string;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
+}> {
+  const response = await fetch(`${resolveGitHubWebBaseUrl(input.apiBaseUrl)}/login/oauth/access_token`, {
+    method: "POST",
+    headers: createPublicJsonHeaders(),
+    body: JSON.stringify({
+      client_id: input.clientId,
+      client_secret: input.clientSecret,
+      grant_type: "refresh_token",
+      refresh_token: input.refreshToken
+    })
+  });
+
+  const payload = await readGitHubJson<GitHubUserAccessTokenResponse>(response);
+  return normalizeGitHubUserTokenResponse(payload);
+}
+
+export function createGitHubUserClient(input: {
+  accessToken: string;
+  accessTokenExpiresAt?: string;
+  apiBaseUrl?: string;
+}): GitHubUserClient {
+  return new GitHubUserClient(
+    input.apiBaseUrl ?? DEFAULT_GITHUB_API_BASE_URL,
+    input.accessToken,
+    input.accessTokenExpiresAt
+  );
 }
 
 export async function verifyGitHubWebhookSignature(
@@ -341,6 +462,53 @@ function formatGitHubError(status: number, payload: unknown): string {
   }
 
   return `GitHub API request failed with ${status}.`;
+}
+
+function normalizeGitHubUserTokenResponse(payload: GitHubUserAccessTokenResponse): {
+  accessToken: string;
+  accessTokenExpiresAt?: string;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
+} {
+  if (!payload.access_token) {
+    throw new Error("GitHub did not return a user access token.");
+  }
+
+  return {
+    accessToken: payload.access_token,
+    accessTokenExpiresAt: expiresInToIsoString(payload.expires_in),
+    refreshToken: payload.refresh_token,
+    refreshTokenExpiresAt: expiresInToIsoString(payload.refresh_token_expires_in)
+  };
+}
+
+function expiresInToIsoString(value: number | undefined): string | undefined {
+  if (!Number.isFinite(value) || !value || value <= 0) {
+    return undefined;
+  }
+
+  return new Date(Date.now() + value * 1000).toISOString();
+}
+
+export function resolveGitHubWebBaseUrl(apiBaseUrl: string | undefined): string {
+  const apiUrl = new URL(apiBaseUrl ?? DEFAULT_GITHUB_API_BASE_URL);
+
+  if (apiUrl.origin === DEFAULT_GITHUB_API_BASE_URL) {
+    return "https://github.com";
+  }
+
+  if (apiUrl.pathname === "/api/v3") {
+    apiUrl.pathname = "";
+    return apiUrl.toString().replace(/\/$/, "");
+  }
+
+  if (apiUrl.host.startsWith("api.") && apiUrl.pathname === "/") {
+    apiUrl.host = apiUrl.host.slice(4);
+    return apiUrl.toString().replace(/\/$/, "");
+  }
+
+  apiUrl.pathname = "";
+  return apiUrl.toString().replace(/\/$/, "");
 }
 
 function base64UrlEncodeJson(value: object): string {

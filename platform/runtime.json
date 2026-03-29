@@ -106,6 +106,7 @@
     "validate_project": "https://cuny.qzz.io/kale/api/validate",
     "build_job_status_template": "https://cuny.qzz.io/kale/api/build-jobs/{jobId}/status",
     "project_status_template": "https://cuny.qzz.io/kale/api/projects/{projectName}/status",
+    "project_secrets_template": "https://cuny.qzz.io/kale/api/projects/{projectName}/secrets",
     "github_install": "https://cuny.qzz.io/kale/github/install",
     "github_setup": "https://cuny.qzz.io/kale/github/setup",
     "auth": {
@@ -115,14 +116,16 @@
       "browser_session_required_for_authorization": true,
       "human_handoff_rules": [
         "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
-        "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven."
+        "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
+        "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access."
       ],
       "required_for": [
         "repository_status_template",
         "register_project",
         "validate_project",
         "project_status_template",
-        "build_job_status_template"
+        "build_job_status_template",
+        "project_secrets_template"
       ]
     }
   },
@@ -143,7 +146,10 @@
       "register_project",
       "validate_project",
       "get_project_status",
-      "get_build_job_status"
+      "get_build_job_status",
+      "list_project_secrets",
+      "set_project_secret",
+      "delete_project_secret"
     ]
   },
   "disallowed": [

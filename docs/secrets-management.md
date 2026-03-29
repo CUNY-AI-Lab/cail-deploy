@@ -1,8 +1,14 @@
 # Per-Project Secrets Management
 
-## Problem
+## Status
 
-Kale Deploy provisions infrastructure bindings (DB, FILES, CACHE) automatically, but there is no mechanism for students to attach their own secrets or API keys to a deployed Worker. A project that needs `OPENAI_API_KEY` or `DATABASE_URL` pointing to an external service has no way to set those values today.
+Kale Deploy now supports per-project secret management:
+
+- secrets are stored in the control plane with application-layer encryption
+- the build runner never sees secret values
+- secrets are injected into deployed Workers as `secret_text` bindings
+- live projects attempt a hot update immediately when a secret changes
+- ordinary deploys still avoid the second GitHub user-auth step
 
 ## Research Summary
 
@@ -72,16 +78,18 @@ Every major PaaS follows the same architecture:
 
 ### Storage: `project_secrets` table in the control-plane D1
 
-Encrypt secret values at the application layer using AES-256-GCM via `crypto.subtle` (available in Workers). Store the encryption key as a Worker secret (`SECRETS_ENCRYPTION_KEY`).
+Encrypt secret values at the application layer using AES-256-GCM via `crypto.subtle` (available in Workers). Store the encryption key as a Worker secret (`CONTROL_PLANE_ENCRYPTION_KEY`).
 
 ```sql
 CREATE TABLE project_secrets (
   project_name TEXT NOT NULL,
-  secret_name  TEXT NOT NULL,
-  encrypted_value BLOB NOT NULL,
-  iv           BLOB NOT NULL,
-  created_at   TEXT NOT NULL,
-  updated_at   TEXT NOT NULL,
+  secret_name TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  github_user_id INTEGER NOT NULL,
+  github_login TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
   PRIMARY KEY (project_name, secret_name)
 );
 ```
@@ -104,11 +112,22 @@ Expose through the existing MCP tool surface and control-plane API:
 - `delete_project_secret(projectName, secretName)` -- remove
 - `list_project_secrets(projectName)` -- returns names and timestamps only, never values
 
-Auth: same MCP OAuth / Cloudflare Access identity that protects `register_project` and other control-plane operations, scoped to projects the user owns.
+Auth: Kale's permanent project-admin rule:
+
+- Cloudflare Access confirms the user is a CUNY person.
+- GitHub user auth confirms that the same person has write or admin access to the project repository.
+
+This second GitHub user-auth step should appear only when someone is managing secrets or another sensitive project setting. Ordinary Kale deploys should continue to rely only on the shared GitHub App installation flow.
+
+In practice this means secret CRUD should be allowed only when:
+
+1. the current Kale identity is authenticated through Access or MCP OAuth,
+2. the user has linked a GitHub account to Kale, and
+3. GitHub reports write, maintain, or admin access on the repository that owns the Kale project.
 
 ### Student-side usage
 
-Students declare secret names in their `wrangler.jsonc` as a signal, but never values. The deploy service is already the authority for production bindings. In student code, secrets are accessed as standard Worker environment variables:
+The deploy service is the authority for production bindings. In student code, secrets are accessed as standard Worker environment variables:
 
 ```typescript
 app.get('/api/chat', async (c) => {
@@ -132,7 +151,7 @@ Secrets flow from the control-plane D1 directly to the Cloudflare Workers API. T
 
 Cloudflare launched an account-level Secrets Store in April 2025. It allows centralized secrets shared across Workers via `secrets_store_secrets` bindings. This could be useful for platform-wide secrets (e.g., a shared API key used by all tenants) but is not designed for per-tenant isolation. Per-project unique secrets still need the per-script secrets API described above.
 
-## Implementation Scope
+## Implemented Scope
 
 ### Contract changes
 
@@ -149,9 +168,9 @@ Add `secret_text` to the `WorkerBinding` union in `build-contract`:
 - New API routes for secret CRUD, protected by the existing auth layer.
 - New MCP tools: `set_project_secret`, `delete_project_secret`, `list_project_secrets`.
 - Modify the deploy path (around the existing binding-merge logic) to read and inject stored secrets.
-- New `SECRETS_ENCRYPTION_KEY` Worker secret.
+- New `CONTROL_PLANE_ENCRYPTION_KEY` Worker secret.
 
 ### CloudflareApiClient changes
 
 - New method: `setUserWorkerSecret(namespace, scriptName, secretName, secretValue)` for hot updates.
-- Optionally: `deleteUserWorkerSecret(namespace, scriptName, secretName)`.
+- New method: `deleteUserWorkerSecret(namespace, scriptName, secretName)`.

@@ -4,6 +4,7 @@ import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validatio
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import * as z from "zod/v4";
+import { SignJWT, jwtVerify } from "jose";
 
 import { baseStyles, faviconLink, logoHtml } from "./ui";
 import { prepareStaticAssetsUpload } from "./lib/assets";
@@ -21,17 +22,24 @@ import {
   countActiveBuildJobsForRepository,
   countBuildJobsForRepositoryOnDate,
   consumeOauthGrant,
+  deleteProjectSecret,
+  deleteGitHubUserAuthByGitHubUserId,
   ensureProjectPolicy,
   getBuildJob,
   getBuildJobByDeliveryId,
+  getGitHubUserAuth,
   getLatestBuildJobForProject,
   getLatestProjectForRepository,
   getPreferredProjectNameForRepository,
   getProject,
+  listProjectSecretMetadata,
+  listProjectSecrets,
   listExpiredRetainedFailedDeployments,
   listProjects,
   listRetainedSuccessfulDeployments,
+  putGitHubUserAuth,
   putBuildJob,
+  putProjectSecret,
   putProject,
   releaseWebhookDelivery,
   insertDeployment,
@@ -40,13 +48,19 @@ import {
 import {
   GitHubAppClient,
   GitHubInstallationClient,
+  createGitHubUserClient,
   createGitHubAppFromManifest,
+  exchangeGitHubUserCode,
+  refreshGitHubUserAccessToken,
   type GitHubCheckRunConclusion,
   type GitHubCheckRunOutput,
   type GitHubAppManifest,
+  type GitHubAuthenticatedUser,
   type GitHubManifestConversion,
   type GitHubRepository,
   type GitHubRepositoryInstallation,
+  type GitHubUserRepository,
+  resolveGitHubWebBaseUrl,
   verifyGitHubWebhookSignature
 } from "./lib/github";
 import {
@@ -59,6 +73,7 @@ import {
   verifyMcpAccessToken,
   verifyRegisteredOAuthClient
 } from "./lib/mcp-oauth";
+import { decryptStoredText, encryptStoredText } from "./lib/sealed-data";
 import type {
   BuildJobEventName,
   BuildJobStatus,
@@ -82,6 +97,8 @@ type Env = {
   BUILD_QUEUE: Queue<BuildRunnerJobRequest>;
   DEPLOY_API_TOKEN?: string;
   GITHUB_APP_ID?: string;
+  GITHUB_APP_CLIENT_ID?: string;
+  GITHUB_APP_CLIENT_SECRET?: string;
   GITHUB_APP_NAME?: string;
   GITHUB_APP_MANIFEST_ORG?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
@@ -89,6 +106,7 @@ type Env = {
   GITHUB_API_BASE_URL?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   BUILD_RUNNER_TOKEN?: string;
+  CONTROL_PLANE_ENCRYPTION_KEY?: string;
   DEPLOY_SERVICE_BASE_URL?: string;
   RETAIN_SUCCESSFUL_ARTIFACTS?: string;
   FAILED_ARTIFACT_RETENTION_DAYS?: string;
@@ -197,7 +215,74 @@ type RepositoryLifecyclePayload = {
   updatedAt?: string;
 };
 
-type ApiResponseStatus = 200 | 202 | 400 | 401 | 403 | 404 | 409 | 413 | 429 | 500 | 503;
+type GitHubUserAuthStatePayload = {
+  subject: string;
+  email: string;
+  repositoryFullName?: string;
+  projectName?: string;
+  returnTo?: string;
+};
+
+type ProjectSecretMetadataPayload = {
+  secretName: string;
+  githubLogin: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ProjectSecretsListPayload = {
+  ok: true;
+  projectName: string;
+  repositoryFullName: string;
+  connectedGitHubLogin: string;
+  secrets: ProjectSecretMetadataPayload[];
+  count: number;
+  summary: string;
+};
+
+type ProjectSecretMutationPayload = {
+  ok: true;
+  projectName: string;
+  repositoryFullName: string;
+  connectedGitHubLogin: string;
+  secretName: string;
+  liveDeploymentDetected: boolean;
+  liveUpdateApplied: boolean;
+  nextAction: "none" | "redeploy_to_apply_secret";
+  summary: string;
+  warning?: string;
+};
+
+type ProjectSecretsAuthErrorPayload = {
+  error: string;
+  summary: string;
+  nextAction:
+    | "sign_in_to_kale"
+    | "connect_github_user"
+    | "request_repository_write_access"
+    | "operator_configure_github_user_auth";
+  projectName: string;
+  repositoryFullName: string;
+  connectGitHubUserUrl?: string;
+  connectionHealthUrl: string;
+};
+
+type ProjectSecretsAuthorization =
+  | {
+      ok: true;
+      project: ProjectRecord;
+      repositoryFullName: string;
+      githubLogin: string;
+      githubUserId: number;
+      serviceBaseUrl: string;
+    }
+  | {
+      ok: false;
+      status: 401 | 403 | 503;
+      body: ProjectSecretsAuthErrorPayload;
+    };
+
+type ApiResponseStatus = 200 | 202 | 400 | 401 | 403 | 404 | 409 | 413 | 429 | 500 | 502 | 503;
 
 export const deployServiceApp = new Hono<{ Bindings: Env }>();
 const DEFAULT_SUCCESSFUL_ARTIFACT_RETENTION = 2;
@@ -1569,6 +1654,97 @@ deployServiceApp.get("/api/auth/session", async (c) => {
   }, 410);
 });
 
+// Reserved for future project-admin actions such as per-project secrets.
+// Ordinary deploys should not send users through this second GitHub auth step.
+deployServiceApp.get("/api/github/user-auth/start", async (c) => {
+  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+
+  try {
+    const identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
+    const authConfig = resolveGitHubUserAuthConfig(c.env, serviceBaseUrl);
+    const repositoryContext = parseOptionalRepositoryContext({
+      repositoryFullName: c.req.query("repositoryFullName") ?? undefined,
+      repositoryUrl: c.req.query("repositoryUrl") ?? undefined,
+      projectName: c.req.query("projectName") ?? undefined
+    }, c.env, serviceBaseUrl);
+    const state = await createGitHubUserAuthStateToken({
+      secret: resolveMcpOauthSecret(c.env),
+      issuer: serviceBaseUrl,
+      subject: identity.subject,
+      email: identity.email,
+      repositoryFullName: repositoryContext?.repositoryFullName,
+      projectName: repositoryContext?.projectName,
+      returnTo: normalizeOptionalGitHubUserAuthReturnTo(c.req.query("returnTo"), serviceBaseUrl)
+    });
+
+    return Response.redirect(buildGitHubUserAuthorizeUrl(authConfig, state), 302);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderGitHubUserAuthErrorPage(httpError.message, serviceBaseUrl), httpError.status);
+  }
+});
+
+deployServiceApp.get("/github/user-auth/callback", async (c) => {
+  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+
+  try {
+    if (!code || !state) {
+      throw new HttpError(400, "GitHub did not return the user authorization code and state.");
+    }
+
+    const authConfig = resolveGitHubUserAuthConfig(c.env, serviceBaseUrl);
+    const statePayload = await verifyGitHubUserAuthStateToken({
+      secret: resolveMcpOauthSecret(c.env),
+      issuer: serviceBaseUrl,
+      token: state
+    });
+    const tokenResponse = await exchangeGitHubUserCode({
+      clientId: authConfig.clientId,
+      clientSecret: authConfig.clientSecret,
+      code,
+      redirectUri: authConfig.callbackUrl,
+      apiBaseUrl: c.env.GITHUB_API_BASE_URL
+    });
+    const userClient = createGitHubUserClient({
+      accessToken: tokenResponse.accessToken,
+      accessTokenExpiresAt: tokenResponse.accessTokenExpiresAt,
+      apiBaseUrl: c.env.GITHUB_API_BASE_URL
+    });
+    const githubUser = await userClient.getAuthenticatedUser();
+    const encryptionKey = resolveControlPlaneEncryptionKey(c.env);
+    const accessTokenEncrypted = await sealStoredToken(encryptionKey, tokenResponse.accessToken);
+    const refreshTokenEncrypted = tokenResponse.refreshToken
+      ? await sealStoredToken(encryptionKey, tokenResponse.refreshToken)
+      : undefined;
+    const now = new Date().toISOString();
+
+    await deleteGitHubUserAuthByGitHubUserId(c.env.CONTROL_PLANE_DB, githubUser.id);
+    await putGitHubUserAuth(c.env.CONTROL_PLANE_DB, {
+      accessSubject: statePayload.subject,
+      accessEmail: statePayload.email,
+      githubUserId: githubUser.id,
+      githubLogin: githubUser.login,
+      accessTokenEncrypted,
+      accessTokenExpiresAt: tokenResponse.accessTokenExpiresAt,
+      refreshTokenEncrypted,
+      refreshTokenExpiresAt: tokenResponse.refreshTokenExpiresAt,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    return c.html(renderGitHubUserAuthSuccessPage({
+      serviceBaseUrl,
+      githubUser,
+      state: statePayload
+    }));
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderGitHubUserAuthErrorPage(httpError.message, serviceBaseUrl), httpError.status);
+  }
+});
+
 deployServiceApp.get("/api/projects", async (c) => {
   if (!isAuthorized(c.req.raw, c.env.DEPLOY_API_TOKEN)) {
     return c.json({ error: "Unauthorized." }, 401);
@@ -1660,6 +1836,94 @@ deployServiceApp.get("/api/projects/:projectName/status", async (c) => {
 
   const result = await buildProjectStatusResponse(c.env, c.req.param("projectName"));
   return c.json(result.body, { status: result.status });
+});
+
+deployServiceApp.get("/api/projects/:projectName/secrets", async (c) => {
+  let identity: AgentRequestIdentity;
+
+  try {
+    identity = await requireAgentRequestIdentity(c.req.raw, c.env);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
+  }
+
+  try {
+    const authorization = await authorizeProjectSecretsAccess(
+      c.env,
+      c.req.raw.url,
+      identity,
+      c.req.param("projectName")
+    );
+    if (!authorization.ok) {
+      return c.json(authorization.body, { status: authorization.status });
+    }
+
+    const payload = await buildProjectSecretsListPayload(c.env, authorization.project, authorization.githubLogin);
+    return c.json(payload);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.json({ error: httpError.message }, { status: httpError.status });
+  }
+});
+
+deployServiceApp.put("/api/projects/:projectName/secrets/:secretName", async (c) => {
+  let identity: AgentRequestIdentity;
+
+  try {
+    identity = await requireAgentRequestIdentity(c.req.raw, c.env);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
+  }
+
+  try {
+    const authorization = await authorizeProjectSecretsAccess(
+      c.env,
+      c.req.raw.url,
+      identity,
+      c.req.param("projectName")
+    );
+    if (!authorization.ok) {
+      return c.json(authorization.body, { status: authorization.status });
+    }
+
+    const body = await c.req.json<{ value?: string }>();
+    const payload = await setProjectSecretValue(c.env, authorization, c.req.param("secretName"), body.value);
+    return c.json(payload);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.json({ error: httpError.message }, { status: httpError.status });
+  }
+});
+
+deployServiceApp.delete("/api/projects/:projectName/secrets/:secretName", async (c) => {
+  let identity: AgentRequestIdentity;
+
+  try {
+    identity = await requireAgentRequestIdentity(c.req.raw, c.env);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
+  }
+
+  try {
+    const authorization = await authorizeProjectSecretsAccess(
+      c.env,
+      c.req.raw.url,
+      identity,
+      c.req.param("projectName")
+    );
+    if (!authorization.ok) {
+      return c.json(authorization.body, { status: authorization.status });
+    }
+
+    const payload = await removeProjectSecretValue(c.env, authorization, c.req.param("secretName"));
+    return c.json(payload);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.json({ error: httpError.message }, { status: httpError.status });
+  }
 });
 
 deployServiceApp.get("/api/build-jobs/:jobId/status", async (c) => {
@@ -2278,15 +2542,449 @@ async function completeBuildJobFailure(
   return failedJob;
 }
 
+async function authorizeProjectSecretsAccess(
+  env: Env,
+  requestUrl: string,
+  identity: AgentRequestIdentity,
+  projectName: string
+): Promise<ProjectSecretsAuthorization> {
+  const serviceBaseUrl = resolveServiceBaseUrl(env, requestUrl);
+  const connection = buildConnectionHealthPayload(env, serviceBaseUrl, identity);
+  let authenticatedIdentity: AuthenticatedAgentRequestIdentity;
+
+  try {
+    authenticatedIdentity = requireAuthenticatedIdentity(identity);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return {
+      ok: false,
+      status: 401,
+      body: {
+        error: httpError.message,
+        summary: "Sign in to Kale Deploy before managing project secrets.",
+        nextAction: "sign_in_to_kale",
+        projectName,
+        repositoryFullName: "unknown",
+        connectionHealthUrl: connection.connectionHealthUrl
+      }
+    };
+  }
+
+  const project = await getProject(env.CONTROL_PLANE_DB, projectName);
+  if (!project) {
+    throw new HttpError(404, `Project '${projectName}' does not exist yet.`);
+  }
+
+  const repositoryFullName = project.githubRepo;
+  const authConfig = tryResolveGitHubUserAuthConfig(env, serviceBaseUrl);
+  if (!authConfig) {
+    return {
+      ok: false,
+      status: 503,
+      body: {
+        error: "GitHub-backed project administration is not configured on this deployment.",
+        summary: "Kale Deploy cannot manage project secrets until GitHub-backed admin checks are configured by the operator.",
+        nextAction: "operator_configure_github_user_auth",
+        projectName,
+        repositoryFullName,
+        connectionHealthUrl: connection.connectionHealthUrl
+      }
+    };
+  }
+
+  const linked = await getGitHubUserAuth(env.CONTROL_PLANE_DB, authenticatedIdentity.subject);
+  if (!linked) {
+    return {
+      ok: false,
+      status: 403,
+      body: {
+        error: "Confirm your GitHub account before managing project secrets.",
+        summary: "This signed-in CUNY identity has not yet confirmed a GitHub account for Kale project administration.",
+        nextAction: "connect_github_user",
+        projectName,
+        repositoryFullName,
+        connectGitHubUserUrl: buildGitHubUserSecretsConnectUrl(serviceBaseUrl, repositoryFullName, projectName),
+        connectionHealthUrl: connection.connectionHealthUrl
+      }
+    };
+  }
+
+  const githubUserSession = await resolveGitHubUserSession(env, authConfig, linked);
+  const repositoryAccess = await fetchGitHubUserRepositoryAccess(
+    env,
+    githubUserSession.accessToken,
+    repositoryFullName
+  );
+
+  if (!repositoryAccess.allowed) {
+    if (repositoryAccess.shouldReconnect) {
+      return {
+        ok: false,
+        status: 403,
+        body: {
+          error: "Reconnect GitHub before managing project secrets.",
+          summary: "Kale Deploy could not verify your current GitHub user authorization for this project.",
+          nextAction: "connect_github_user",
+          projectName,
+          repositoryFullName,
+          connectGitHubUserUrl: buildGitHubUserSecretsConnectUrl(serviceBaseUrl, repositoryFullName, projectName),
+          connectionHealthUrl: connection.connectionHealthUrl
+        }
+      };
+    }
+
+    return {
+      ok: false,
+      status: 403,
+      body: {
+        error: "GitHub write access is required to manage project secrets.",
+        summary: `The linked GitHub user ${githubUserSession.githubLogin} does not have write or admin access to ${repositoryFullName}.`,
+        nextAction: "request_repository_write_access",
+        projectName,
+        repositoryFullName,
+        connectionHealthUrl: connection.connectionHealthUrl
+      }
+    };
+  }
+
+  return {
+    ok: true,
+    project,
+    repositoryFullName,
+    githubLogin: githubUserSession.githubLogin,
+    githubUserId: githubUserSession.githubUserId,
+    serviceBaseUrl
+  };
+}
+
+async function resolveGitHubUserSession(
+  env: Env,
+  authConfig: { clientId: string; clientSecret: string; callbackUrl: string; authorizeUrl: string },
+  linked: Awaited<ReturnType<typeof getGitHubUserAuth>>
+): Promise<{ accessToken: string; githubLogin: string; githubUserId: number }> {
+  if (!linked) {
+    throw new HttpError(403, "GitHub user authorization is required.");
+  }
+
+  const encryptionKey = resolveControlPlaneEncryptionKey(env);
+  if (!isExpiredOrNearExpiry(linked.accessTokenExpiresAt)) {
+    return {
+      accessToken: await unsealStoredToken(encryptionKey, linked.accessTokenEncrypted),
+      githubLogin: linked.githubLogin,
+      githubUserId: linked.githubUserId
+    };
+  }
+
+  if (!linked.refreshTokenEncrypted) {
+    throw new HttpError(403, "GitHub user authorization must be refreshed.");
+  }
+
+  try {
+    const refreshToken = await unsealStoredToken(encryptionKey, linked.refreshTokenEncrypted);
+    const refreshed = await refreshGitHubUserAccessToken({
+      clientId: authConfig.clientId,
+      clientSecret: authConfig.clientSecret,
+      refreshToken,
+      apiBaseUrl: env.GITHUB_API_BASE_URL
+    });
+    const now = new Date().toISOString();
+
+    await putGitHubUserAuth(env.CONTROL_PLANE_DB, {
+      accessSubject: linked.accessSubject,
+      accessEmail: linked.accessEmail,
+      githubUserId: linked.githubUserId,
+      githubLogin: linked.githubLogin,
+      accessTokenEncrypted: await sealStoredToken(encryptionKey, refreshed.accessToken),
+      accessTokenExpiresAt: refreshed.accessTokenExpiresAt,
+      refreshTokenEncrypted: refreshed.refreshToken
+        ? await sealStoredToken(encryptionKey, refreshed.refreshToken)
+        : linked.refreshTokenEncrypted,
+      refreshTokenExpiresAt: refreshed.refreshTokenExpiresAt ?? linked.refreshTokenExpiresAt,
+      createdAt: linked.createdAt,
+      updatedAt: now
+    });
+
+    return {
+      accessToken: refreshed.accessToken,
+      githubLogin: linked.githubLogin,
+      githubUserId: linked.githubUserId
+    };
+  } catch (error) {
+    console.error("Refreshing stored GitHub user token failed.", error);
+    await deleteGitHubUserAuthByGitHubUserId(env.CONTROL_PLANE_DB, linked.githubUserId);
+    throw new HttpError(403, "GitHub user authorization must be refreshed.");
+  }
+}
+
+async function fetchGitHubUserRepositoryAccess(
+  env: Env,
+  accessToken: string,
+  repositoryFullName: string
+): Promise<{ allowed: boolean; shouldReconnect: boolean }> {
+  const [owner, repo] = splitRepositoryFullName(repositoryFullName);
+
+  try {
+    const repository = await createGitHubUserClient({
+      accessToken,
+      apiBaseUrl: env.GITHUB_API_BASE_URL
+    }).getRepository(owner, repo);
+
+    return {
+      allowed: hasGitHubRepositoryWriteAccess(repository),
+      shouldReconnect: false
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "GitHub repository access could not be checked.";
+    if (/failed with 401\b/u.test(message)) {
+      return { allowed: false, shouldReconnect: true };
+    }
+    if (/failed with 404\b/u.test(message)) {
+      return { allowed: false, shouldReconnect: false };
+    }
+    throw error;
+  }
+}
+
+async function buildProjectSecretsListPayload(
+  env: Env,
+  project: ProjectRecord,
+  githubLogin: string
+): Promise<ProjectSecretsListPayload> {
+  const secrets = await listProjectSecretMetadata(env.CONTROL_PLANE_DB, project.projectName);
+
+  return {
+    ok: true,
+    projectName: project.projectName,
+    repositoryFullName: project.githubRepo,
+    connectedGitHubLogin: githubLogin,
+    secrets: secrets.map((secret) => ({
+      secretName: secret.secretName,
+      githubLogin: secret.githubLogin,
+      createdAt: secret.createdAt,
+      updatedAt: secret.updatedAt
+    })),
+    count: secrets.length,
+    summary: secrets.length === 0
+      ? `No project secrets are stored for ${project.projectName} yet.`
+      : `${secrets.length} project secret${secrets.length === 1 ? "" : "s"} configured for ${project.projectName}.`
+  };
+}
+
+async function setProjectSecretValue(
+  env: Env,
+  authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
+  secretNameInput: string,
+  secretValue: string | undefined
+): Promise<ProjectSecretMutationPayload> {
+  const secretName = assertValidProjectSecretName(secretNameInput);
+  const secretText = assertValidProjectSecretValue(secretValue);
+  const encryptionKey = resolveControlPlaneEncryptionKey(env);
+  const sealed = await encryptStoredText(encryptionKey, secretText);
+  const now = new Date().toISOString();
+  const existing = await listProjectSecretMetadata(env.CONTROL_PLANE_DB, authorization.project.projectName);
+  const existingSecret = existing.find((secret) => secret.secretName === secretName);
+
+  await putProjectSecret(env.CONTROL_PLANE_DB, {
+    projectName: authorization.project.projectName,
+    secretName,
+    ciphertext: sealed.ciphertext,
+    iv: sealed.iv,
+    githubUserId: authorization.githubUserId,
+    githubLogin: authorization.githubLogin,
+    createdAt: existingSecret?.createdAt ?? now,
+    updatedAt: now
+  });
+
+  return await syncProjectSecretToLiveWorker(env, authorization, secretName, secretText, "set");
+}
+
+async function removeProjectSecretValue(
+  env: Env,
+  authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
+  secretNameInput: string
+): Promise<ProjectSecretMutationPayload> {
+  const secretName = assertValidProjectSecretName(secretNameInput);
+  await deleteProjectSecret(env.CONTROL_PLANE_DB, authorization.project.projectName, secretName);
+  return await syncProjectSecretToLiveWorker(env, authorization, secretName, undefined, "delete");
+}
+
+async function syncProjectSecretToLiveWorker(
+  env: Env,
+  authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
+  secretName: string,
+  secretValue: string | undefined,
+  operation: "set" | "delete"
+): Promise<ProjectSecretMutationPayload> {
+  const liveDeploymentDetected = Boolean(authorization.project.latestDeploymentId);
+  if (!liveDeploymentDetected) {
+    return {
+      ok: true,
+      projectName: authorization.project.projectName,
+      repositoryFullName: authorization.repositoryFullName,
+      connectedGitHubLogin: authorization.githubLogin,
+      secretName,
+      liveDeploymentDetected: false,
+      liveUpdateApplied: false,
+      nextAction: "none",
+      summary: operation === "set"
+        ? `Saved ${secretName} for ${authorization.project.projectName}. It will be injected automatically on the first deployment.`
+        : `Removed ${secretName} from ${authorization.project.projectName}.`
+    };
+  }
+
+  try {
+    const client = new CloudflareApiClient({
+      accountId: env.CLOUDFLARE_ACCOUNT_ID,
+      apiToken: resolveRequiredCloudflareApiToken(env)
+    });
+
+    if (operation === "set") {
+      await client.setUserWorkerSecret(env.WFP_NAMESPACE, authorization.project.projectName, secretName, secretValue ?? "");
+    } else {
+      await client.deleteUserWorkerSecret(env.WFP_NAMESPACE, authorization.project.projectName, secretName);
+    }
+
+    return {
+      ok: true,
+      projectName: authorization.project.projectName,
+      repositoryFullName: authorization.repositoryFullName,
+      connectedGitHubLogin: authorization.githubLogin,
+      secretName,
+      liveDeploymentDetected: true,
+      liveUpdateApplied: true,
+      nextAction: "none",
+      summary: operation === "set"
+        ? `Saved ${secretName} and updated the live Worker for ${authorization.project.projectName}.`
+        : `Removed ${secretName} from both Kale storage and the live Worker for ${authorization.project.projectName}.`
+    };
+  } catch (error) {
+    console.error("Applying project secret to the live Worker failed.", error);
+    return {
+      ok: true,
+      projectName: authorization.project.projectName,
+      repositoryFullName: authorization.repositoryFullName,
+      connectedGitHubLogin: authorization.githubLogin,
+      secretName,
+      liveDeploymentDetected: true,
+      liveUpdateApplied: false,
+      nextAction: "redeploy_to_apply_secret",
+      summary: operation === "set"
+        ? `Saved ${secretName}, but the live Worker was not updated immediately.`
+        : `Removed ${secretName} from Kale storage, but the live Worker still needs a redeploy to pick up the change.`,
+      warning: "The desired secret state is stored safely in Kale Deploy. Push a new commit to the default branch to apply this change to the live Worker."
+    };
+  }
+}
+
+async function buildProjectSecretBindings(
+  env: Env,
+  metadata: DeploymentMetadata
+): Promise<WorkerBinding[]> {
+  const secrets = await listProjectSecrets(env.CONTROL_PLANE_DB, metadata.projectName);
+  if (secrets.length === 0) {
+    return [];
+  }
+
+  const existingBindingNames = new Set((metadata.workerUpload.bindings ?? []).map((binding) => binding.name));
+  const conflicts = secrets.filter((secret) => existingBindingNames.has(secret.secretName)).map((secret) => secret.secretName);
+  if (conflicts.length > 0) {
+    throw new HttpError(
+      400,
+      `This deployment already defines bindings that are reserved by stored Kale project secrets: ${conflicts.join(", ")}. Rename the binding in the repo or remove the stored project secret first.`
+    );
+  }
+
+  const encryptionKey = resolveControlPlaneEncryptionKey(env);
+  return await Promise.all(
+    secrets.map(async (secret) => ({
+      type: "secret_text" as const,
+      name: secret.secretName,
+      text: await decryptStoredText(encryptionKey, {
+        ciphertext: secret.ciphertext,
+        iv: secret.iv
+      })
+    }))
+  );
+}
+
+function assertValidProjectSecretName(value: string): string {
+  const normalized = value.trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]{0,127}$/u.test(normalized)) {
+    throw new HttpError(
+      400,
+      "Project secret names must start with a letter and contain only uppercase letters, numbers, and underscores."
+    );
+  }
+
+  if (isReservedProjectSecretName(normalized)) {
+    throw new HttpError(
+      400,
+      `${normalized} is reserved by Kale Deploy. Choose another project secret name.`
+    );
+  }
+
+  return normalized;
+}
+
+function assertValidProjectSecretValue(value: string | undefined): string {
+  if (typeof value !== "string" || !value.length) {
+    throw new HttpError(400, "Project secret values must be a non-empty string.");
+  }
+
+  if (value.length > 32_768) {
+    throw new HttpError(400, "Project secret values must stay under 32 KB.");
+  }
+
+  return value;
+}
+
+function isReservedProjectSecretName(name: string): boolean {
+  return new Set(["DB", "FILES", "CACHE", "AI", "VECTORIZE", "ROOMS"]).has(name);
+}
+
+function hasGitHubRepositoryWriteAccess(repository: GitHubUserRepository): boolean {
+  return Boolean(
+    repository.permissions?.admin
+    || repository.permissions?.maintain
+    || repository.permissions?.push
+  );
+}
+
+function splitRepositoryFullName(repositoryFullName: string): [string, string] {
+  const [owner, repo] = repositoryFullName.split("/", 2);
+  if (!owner || !repo) {
+    throw new HttpError(400, "Repository names must be in owner/repo form.");
+  }
+
+  return [owner, repo];
+}
+
+function buildGitHubUserSecretsConnectUrl(
+  serviceBaseUrl: string,
+  repositoryFullName: string,
+  projectName: string
+): string {
+  const url = new URL(`${serviceBaseUrl}/api/github/user-auth/start`);
+  url.searchParams.set("repositoryFullName", repositoryFullName);
+  url.searchParams.set("projectName", projectName);
+  return url.toString();
+}
+
+function isExpiredOrNearExpiry(expiresAt: string | undefined): boolean {
+  if (!expiresAt) {
+    return false;
+  }
+
+  return Date.parse(expiresAt) <= Date.now() + 60_000;
+}
+
 async function deployArtifact(
   env: Env,
   metadata: DeploymentMetadata,
   files: Array<{ name: string; file: File }>,
   options?: { jobId?: string; headSha?: string }
 ): Promise<DeployArtifactResult> {
-  if (!env.CLOUDFLARE_API_TOKEN) {
-    throw new HttpError(500, "Missing CLOUDFLARE_API_TOKEN secret.");
-  }
+  const cloudflareApiToken = resolveRequiredCloudflareApiToken(env);
 
   assertAllowedProjectName(metadata.projectName, env, env.DEPLOY_SERVICE_BASE_URL);
   const deploymentUrl = buildProjectDeploymentUrl(env, metadata.projectName);
@@ -2332,7 +3030,7 @@ async function deployArtifact(
   const archiveManifest = createDeploymentArchiveManifest(metadata, workerFiles, staticAssets, options);
   const client = new CloudflareApiClient({
     accountId: env.CLOUDFLARE_ACCOUNT_ID,
-    apiToken: env.CLOUDFLARE_API_TOKEN
+    apiToken: cloudflareApiToken
   });
 
   const { databaseId, filesBucketName, cacheNamespaceId } = await resolveProjectResources(
@@ -2352,9 +3050,11 @@ async function deployArtifact(
   });
   const staticAssetsResult = await prepareStaticAssetsUpload(client, env.WFP_NAMESPACE, metadata.projectName, staticAssets, files);
   const nextHasAssets = Boolean(staticAssets?.files.length || existingRecord?.hasAssets);
+  const secretBindings = await buildProjectSecretBindings(env, metadata);
   const workerUpload = withProjectBindings(metadata, databaseId, {
     filesBucketName,
     cacheNamespaceId,
+    secretBindings,
     existingHasAssets: existingRecord?.hasAssets ?? false,
     staticAssetsJwt: staticAssetsResult.completionJwt,
     staticAssetsConfig: staticAssets?.config ?? metadata.workerUpload.assets?.config
@@ -2453,6 +3153,9 @@ function assertDeploymentPolicy(
         if (binding.name !== "FILES") {
           invalidBindings.push(`${binding.name} (${binding.type})`);
         }
+        break;
+      case "secret_text":
+        invalidBindings.push(`${binding.name} (${binding.type})`);
         break;
       case "ai":
         if (binding.name !== "AI" || !policy.aiEnabled) {
@@ -2875,6 +3578,7 @@ function withProjectBindings(
   options: {
     filesBucketName?: string;
     cacheNamespaceId?: string;
+    secretBindings?: WorkerBinding[];
     existingHasAssets: boolean;
     staticAssetsJwt?: string;
     staticAssetsConfig?: WorkerAssetsConfig;
@@ -2901,6 +3605,10 @@ function withProjectBindings(
       name: "FILES",
       bucket_name: options.filesBucketName
     });
+  }
+
+  for (const secretBinding of options.secretBindings ?? []) {
+    mergedBindings = upsertBinding(mergedBindings, secretBinding);
   }
 
   const nextUpload = {
@@ -3276,6 +3984,78 @@ function renderOauthAuthorizationErrorPage(message: string): string {
 </html>`;
 }
 
+function renderGitHubUserAuthSuccessPage(input: {
+  serviceBaseUrl: string;
+  githubUser: GitHubAuthenticatedUser;
+  state: GitHubUserAuthStatePayload;
+}): string {
+  const repositoryContext = input.state.repositoryFullName
+    ? parseOptionalRepositoryContext(
+        {
+          repositoryFullName: input.state.repositoryFullName,
+          projectName: input.state.projectName
+        },
+        { PROJECT_HOST_SUFFIX: undefined, DEPLOY_SERVICE_BASE_URL: input.serviceBaseUrl },
+        input.serviceBaseUrl
+      )
+    : undefined;
+  const setupUrl = repositoryContext
+    ? `${input.serviceBaseUrl}/github/setup?repositoryFullName=${encodeURIComponent(repositoryContext.repositoryFullName)}&projectName=${encodeURIComponent(repositoryContext.projectName)}`
+    : `${input.serviceBaseUrl}/github/setup`;
+  const continueUrl = input.state.returnTo ?? setupUrl;
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kale Deploy GitHub Connected</title>
+    ${faviconLink()}
+    ${baseStyles("")}
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <div class="logo">${logoHtml("44px")}</div>
+        <h1>GitHub is connected to Kale Deploy</h1>
+        <p><strong>${escapeHtml(input.githubUser.login)}</strong> is now linked for GitHub-backed project administration in Kale Deploy.</p>
+        ${repositoryContext ? `<div class="notice"><p>This authorization is ready for <code>${escapeHtml(repositoryContext.repositoryFullName)}</code>.</p></div>` : ""}
+        <div class="actions">
+          <a class="button" href="${escapeHtml(continueUrl)}">Continue in Kale Deploy</a>
+          <a class="button secondary" href="${escapeHtml(input.serviceBaseUrl)}">Return to Kale Deploy</a>
+        </div>
+        <p>Return to your agent and continue. Kale can now use this GitHub account for sensitive project-admin actions such as secret management.</p>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
+function renderGitHubUserAuthErrorPage(message: string, serviceBaseUrl: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kale Deploy GitHub Connection Error</title>
+    ${faviconLink()}
+    ${baseStyles("")}
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <div class="logo">${logoHtml("44px")}</div>
+        <h1>GitHub could not be connected to Kale Deploy</h1>
+        <p>${escapeHtml(message)}</p>
+        <div class="actions">
+          <a class="button" href="${escapeHtml(serviceBaseUrl)}">Return to Kale Deploy</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
 function resolveServiceBaseUrl(env: Env, requestUrl: string): string {
   return env.DEPLOY_SERVICE_BASE_URL?.replace(/\/$/, "") ?? new URL(requestUrl).origin;
 }
@@ -3309,6 +4089,190 @@ function resolveConfiguredEnvValue(value: string | undefined): string | undefine
   return trimmed;
 }
 
+function resolveRequiredCloudflareApiToken(env: Env): string {
+  const token = resolveConfiguredEnvValue(env.CLOUDFLARE_API_TOKEN);
+  if (!token) {
+    throw new HttpError(500, "Missing CLOUDFLARE_API_TOKEN secret.");
+  }
+
+  return token;
+}
+
+function requireAuthenticatedIdentity(identity: AgentRequestIdentity): AuthenticatedAgentRequestIdentity {
+  if (identity.type === "anonymous") {
+    throw new HttpError(503, "Kale Deploy needs institutional sign-in before it can evaluate project admin access.");
+  }
+
+  return identity;
+}
+
+function resolveGitHubUserAuthConfig(
+  env: Env,
+  serviceBaseUrl: string
+): {
+  clientId: string;
+  clientSecret: string;
+  callbackUrl: string;
+  authorizeUrl: string;
+} {
+  const clientId = resolveConfiguredEnvValue(env.GITHUB_APP_CLIENT_ID);
+  const clientSecret = resolveConfiguredEnvValue(env.GITHUB_APP_CLIENT_SECRET);
+
+  if (!clientId || !clientSecret) {
+    throw new HttpError(503, "GitHub user authorization is not configured on this deployment.");
+  }
+
+  const callbackUrl = `${serviceBaseUrl}/github/user-auth/callback`;
+  const authorizeUrl = `${resolveGitHubWebBaseUrl(env.GITHUB_API_BASE_URL)}/login/oauth/authorize`;
+
+  return {
+    clientId,
+    clientSecret,
+    callbackUrl,
+    authorizeUrl
+  };
+}
+
+function tryResolveGitHubUserAuthConfig(
+  env: Env,
+  serviceBaseUrl: string
+):
+  | {
+      clientId: string;
+      clientSecret: string;
+      callbackUrl: string;
+      authorizeUrl: string;
+    }
+  | null {
+  try {
+    return resolveGitHubUserAuthConfig(env, serviceBaseUrl);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    if (httpError.status === 503) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function resolveControlPlaneEncryptionKey(env: Env): string {
+  const secret = resolveConfiguredEnvValue(env.CONTROL_PLANE_ENCRYPTION_KEY);
+  if (!secret) {
+    throw new HttpError(503, "Encrypted project-admin storage is not configured on this deployment.");
+  }
+
+  return secret;
+}
+
+async function createGitHubUserAuthStateToken(input: {
+  secret: string;
+  issuer: string;
+  subject: string;
+  email: string;
+  repositoryFullName?: string;
+  projectName?: string;
+  returnTo?: string;
+}): Promise<string> {
+  return new SignJWT({
+    email: input.email,
+    repository_full_name: input.repositoryFullName,
+    project_name: input.projectName,
+    return_to: input.returnTo
+  })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setIssuer(input.issuer)
+    .setAudience("github-user-auth-state")
+    .setSubject(input.subject)
+    .setIssuedAt()
+    .setExpirationTime("10m")
+    .sign(new TextEncoder().encode(input.secret));
+}
+
+async function verifyGitHubUserAuthStateToken(input: {
+  token: string;
+  secret: string;
+  issuer: string;
+}): Promise<GitHubUserAuthStatePayload> {
+  const { payload } = await jwtVerify(input.token, new TextEncoder().encode(input.secret), {
+    issuer: input.issuer,
+    audience: "github-user-auth-state"
+  });
+
+  const subject = typeof payload.sub === "string" && payload.sub ? payload.sub : undefined;
+  const email = typeof payload.email === "string" && payload.email ? payload.email.toLowerCase() : undefined;
+  if (!subject || !email) {
+    throw new Error("GitHub user authorization state was incomplete.");
+  }
+
+  return {
+    subject,
+    email,
+    repositoryFullName: typeof payload.repository_full_name === "string" && payload.repository_full_name
+      ? payload.repository_full_name
+      : undefined,
+    projectName: typeof payload.project_name === "string" && payload.project_name
+      ? payload.project_name
+      : undefined,
+    returnTo: typeof payload.return_to === "string" && payload.return_to
+      ? payload.return_to
+      : undefined
+  };
+}
+
+function normalizeOptionalGitHubUserAuthReturnTo(value: string | undefined, serviceBaseUrl: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const url = new URL(trimmed, serviceBaseUrl);
+  if (url.origin !== new URL(serviceBaseUrl).origin) {
+    throw new HttpError(400, "GitHub returnTo URLs must stay on this Kale Deploy origin.");
+  }
+
+  return url.toString();
+}
+
+async function sealStoredToken(secret: string, plaintext: string): Promise<string> {
+  return JSON.stringify(await encryptStoredText(secret, plaintext));
+}
+
+async function unsealStoredToken(secret: string, value: string): Promise<string> {
+  const payload = parseSealedTokenPayload(value);
+  return decryptStoredText(secret, payload);
+}
+
+function parseSealedTokenPayload(value: string): { ciphertext: string; iv: string } {
+  try {
+    const parsed = JSON.parse(value) as { ciphertext?: string; iv?: string };
+    if (!parsed.ciphertext || !parsed.iv) {
+      throw new Error("Stored token payload was incomplete.");
+    }
+    return {
+      ciphertext: parsed.ciphertext,
+      iv: parsed.iv
+    };
+  } catch (error) {
+    throw new Error("Stored token payload could not be decrypted.");
+  }
+}
+
+function buildGitHubUserAuthorizeUrl(
+  config: {
+    clientId: string;
+    callbackUrl: string;
+    authorizeUrl: string;
+  },
+  state: string
+): string {
+  const url = new URL(config.authorizeUrl);
+  url.searchParams.set("client_id", config.clientId);
+  url.searchParams.set("redirect_uri", config.callbackUrl);
+  url.searchParams.set("state", state);
+  return url.toString();
+}
+
 function githubAppInstallUrl(appSlug: string): string {
   return `https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`;
 }
@@ -3322,6 +4286,7 @@ function buildGitHubAppManifest(env: Env, serviceBaseUrl: string): GitHubAppMani
   const webhookUrl = `${serviceBaseUrl}/github/webhook`;
   const setupUrl = `${serviceBaseUrl}/github/setup`;
   const redirectUrl = `${serviceBaseUrl}/github/manifest/callback`;
+  const callbackUrl = `${serviceBaseUrl}/github/user-auth/callback`;
 
   return {
     name: appName,
@@ -3332,6 +4297,7 @@ function buildGitHubAppManifest(env: Env, serviceBaseUrl: string): GitHubAppMani
       active: true
     },
     redirect_url: redirectUrl,
+    callback_urls: [callbackUrl],
     setup_url: setupUrl,
     public: true,
     default_events: ["push"],
@@ -3709,6 +4675,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
       validate_project: `${serviceBaseUrl}/api/validate`,
       build_job_status_template: `${serviceBaseUrl}/api/build-jobs/{jobId}/status`,
       project_status_template: `${serviceBaseUrl}/api/projects/{projectName}/status`,
+      project_secrets_template: `${serviceBaseUrl}/api/projects/{projectName}/secrets`,
       github_install: `${serviceBaseUrl}/github/install`,
       github_setup: `${serviceBaseUrl}/github/setup`,
       auth: {
@@ -3718,14 +4685,16 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
         browser_session_required_for_authorization: true,
         human_handoff_rules: [
           "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
-          "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven."
+          "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
+          "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access."
         ],
         required_for: [
           "repository_status_template",
           "register_project",
           "validate_project",
           "project_status_template",
-          "build_job_status_template"
+          "build_job_status_template",
+          "project_secrets_template"
         ]
       }
     },
@@ -3746,7 +4715,10 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
         "register_project",
         "validate_project",
         "get_project_status",
-        "get_build_job_status"
+        "get_build_job_status",
+        "list_project_secrets",
+        "set_project_secret",
+        "delete_project_secret"
       ]
     },
     disallowed: [
@@ -3783,7 +4755,8 @@ function createDeployServiceMcpServer(
         "Use register_project to determine the canonical slug and guided GitHub install URL.",
         "Use validate_project for a build-only check before asking the user to go live.",
         "If guidedInstallUrl is present, the next step still requires a human browser handoff to GitHub.",
-        "CAIL Deploy uses standard MCP OAuth on /mcp; let your harness open the browser login flow automatically."
+        "CAIL Deploy uses standard MCP OAuth on /mcp; let your harness open the browser login flow automatically.",
+        "Only use the GitHub user-authorization step when managing sensitive project-admin features such as secrets."
       ].join(" "),
       jsonSchemaValidator: new CfWorkerJsonSchemaValidator()
     }
@@ -3952,6 +4925,69 @@ function createDeployServiceMcpServer(
         summarizeBuildJobStatusPayload(status.body as Record<string, unknown>),
         status.body
       );
+    }
+  );
+
+  server.registerTool(
+    "list_project_secrets",
+    {
+      title: "List project secrets",
+      description: "List stored secret names for a Kale project. Secret values are never returned.",
+      inputSchema: {
+        projectName: z.string().describe("CAIL project slug in lowercase kebab-case.")
+      }
+    },
+    async ({ projectName }) => {
+      const authorization = await authorizeProjectSecretsAccess(env, requestUrl, identity, projectName);
+      if (!authorization.ok) {
+        return createMcpToolErrorResult(authorization.body.summary, authorization.body);
+      }
+
+      const payload = await buildProjectSecretsListPayload(env, authorization.project, authorization.githubLogin);
+      return createMcpToolResult(payload.summary, payload);
+    }
+  );
+
+  server.registerTool(
+    "set_project_secret",
+    {
+      title: "Set project secret",
+      description: "Create or update a project secret. Secret values are write-only and never returned.",
+      inputSchema: {
+        projectName: z.string().describe("CAIL project slug in lowercase kebab-case."),
+        secretName: z.string().describe("Secret name, usually uppercase like OPENAI_API_KEY."),
+        value: z.string().describe("Secret value to store for this project.")
+      }
+    },
+    async ({ projectName, secretName, value }) => {
+      const authorization = await authorizeProjectSecretsAccess(env, requestUrl, identity, projectName);
+      if (!authorization.ok) {
+        return createMcpToolErrorResult(authorization.body.summary, authorization.body);
+      }
+
+      const payload = await setProjectSecretValue(env, authorization, secretName, value);
+      return createMcpToolResult(payload.summary, payload);
+    }
+  );
+
+  server.registerTool(
+    "delete_project_secret",
+    {
+      title: "Delete project secret",
+      description: "Remove a stored project secret by name.",
+      inputSchema: {
+        projectName: z.string().describe("CAIL project slug in lowercase kebab-case."),
+        secretName: z.string().describe("Secret name to remove.")
+      }
+    },
+    async ({ projectName, secretName }) => {
+      const authorization = await authorizeProjectSecretsAccess(env, requestUrl, identity, projectName);
+      if (!authorization.ok) {
+        return createMcpToolErrorResult(authorization.body.summary, authorization.body);
+      }
+
+      const payload = await removeProjectSecretValue(env, authorization, secretName);
+      return createMcpToolResult(payload.summary, payload);
     }
   );
 

@@ -54,6 +54,7 @@ This repository is the control plane and delivery stack for Kale Deploy, the pub
   - connecting GitHub
   - watching setup progress
   - opening the live site
+- Do not introduce a second GitHub user-auth step into the ordinary deploy flow. Reserve that for future sensitive project-admin features such as secrets.
 
 ## Checks
 

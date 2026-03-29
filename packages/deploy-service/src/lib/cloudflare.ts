@@ -147,6 +147,39 @@ export class CloudflareApiClient {
     });
   }
 
+  async setUserWorkerSecret(
+    namespace: string,
+    scriptName: string,
+    secretName: string,
+    secretValue: string
+  ): Promise<void> {
+    await this.jsonRequest(
+      `/workers/dispatch/namespaces/${namespace}/scripts/${scriptName}/secrets`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          name: secretName,
+          text: secretValue,
+          type: "secret_text"
+        })
+      }
+    );
+  }
+
+  async deleteUserWorkerSecret(
+    namespace: string,
+    scriptName: string,
+    secretName: string
+  ): Promise<void> {
+    await this.rawRequest(
+      `/workers/dispatch/namespaces/${namespace}/scripts/${scriptName}/secrets/${encodeURIComponent(secretName)}`,
+      {
+        method: "DELETE"
+      },
+      [404]
+    );
+  }
+
   async createAssetsUploadSession(
     namespace: string,
     scriptName: string,
@@ -219,7 +252,7 @@ export class CloudflareApiClient {
     return envelope;
   }
 
-  private async rawRequest(path: string, init: RequestInit): Promise<Response> {
+  private async rawRequest(path: string, init: RequestInit, allowedStatuses: number[] = []): Promise<Response> {
     const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${this.options.accountId}${path}`, {
       ...init,
       headers: {
@@ -228,7 +261,7 @@ export class CloudflareApiClient {
       }
     });
 
-    if (!response.ok) {
+    if (!response.ok && !allowedStatuses.includes(response.status)) {
       throw new Error(`Cloudflare API request failed with ${response.status}.`);
     }
 

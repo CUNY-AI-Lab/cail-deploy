@@ -118,8 +118,9 @@ Implemented now:
 Still not finished:
 
 - fully polished onboarding with no human GitHub approval step
+- per-project secrets and the GitHub-backed project-admin flow that will gate them
 - a richer admin surface for raising or lowering per-project caps
-- institution-wide identity and support polish beyond the current pilot shape
+- institution-wide support polish beyond the current pilot shape
 
 ## Guides
 

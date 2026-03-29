@@ -67,6 +67,9 @@ Current MCP tools:
 - `validate_project`
 - `get_project_status`
 - `get_build_job_status`
+- `list_project_secrets`
+- `set_project_secret`
+- `delete_project_secret`
 
 Public connection-health document:
 
@@ -135,6 +138,46 @@ Token exchange:
 - `POST https://cuny.qzz.io/kale/oauth/token`
 
 The `/api/oauth/authorize` route is where Cloudflare Access applies. The token endpoint stays public so the harness can complete the standard OAuth exchange.
+
+Ordinary deploys stop here. Secret management is the first exception:
+
+- normal deploys do not require a second GitHub user-authorization step
+- secret management may ask the user to confirm their GitHub account in the browser
+- Kale then checks that the linked GitHub user has write, maintain, or admin access to the repository that owns the project
+
+That second GitHub confirmation is not part of the normal deploy loop. It is reserved for sensitive project-admin actions.
+
+## Manage project secrets
+
+Endpoints:
+
+- `GET https://cuny.qzz.io/kale/api/projects/<projectName>/secrets`
+- `PUT https://cuny.qzz.io/kale/api/projects/<projectName>/secrets/<SECRET_NAME>`
+- `DELETE https://cuny.qzz.io/kale/api/projects/<projectName>/secrets/<SECRET_NAME>`
+
+MCP tools:
+
+- `list_project_secrets`
+- `set_project_secret`
+- `delete_project_secret`
+
+Behavior:
+
+- secret values are write-only and are never returned after creation
+- Kale stores the desired secret state in its control plane and injects it as `secret_text` during deploy
+- if a project is already live, Kale also tries to push the secret change directly to the live Worker without waiting for a redeploy
+- if that live update fails, the secret is still saved and will apply on the next deploy
+
+Example:
+
+```bash
+curl -X PUT https://cuny.qzz.io/kale/api/projects/my-project/secrets/OPENAI_API_KEY \
+  -H 'authorization: Bearer <token>' \
+  -H 'content-type: application/json' \
+  -d '{
+    "value": "sk-..."
+  }'
+```
 
 ## Validate a branch or commit without deploying
 

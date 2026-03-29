@@ -23,6 +23,39 @@ export type ProjectPolicyRecord = ProjectPolicySettings & {
   updatedAt: string;
 };
 
+export type GitHubUserAuthRecord = {
+  accessSubject: string;
+  accessEmail: string;
+  githubUserId: number;
+  githubLogin: string;
+  accessTokenEncrypted: string;
+  accessTokenExpiresAt?: string;
+  refreshTokenEncrypted?: string;
+  refreshTokenExpiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProjectSecretRecord = {
+  projectName: string;
+  secretName: string;
+  ciphertext: string;
+  iv: string;
+  githubUserId: number;
+  githubLogin: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProjectSecretMetadata = {
+  projectName: string;
+  secretName: string;
+  githubUserId: number;
+  githubLogin: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export const DEFAULT_PROJECT_POLICY: ProjectPolicySettings = Object.freeze({
   aiEnabled: false,
   vectorizeEnabled: false,
@@ -109,6 +142,30 @@ type ProjectPolicyRow = {
 
 type CountRow = {
   count: number;
+};
+
+type GitHubUserAuthRow = {
+  access_subject: string;
+  access_email: string;
+  github_user_id: number;
+  github_login: string;
+  access_token_encrypted: string;
+  access_token_expires_at: string | null;
+  refresh_token_encrypted: string | null;
+  refresh_token_expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ProjectSecretRow = {
+  project_name: string;
+  secret_name: string;
+  ciphertext: string;
+  iv: string;
+  github_user_id: number;
+  github_login: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export async function listProjects(db: D1Database): Promise<ProjectRecord[]> {
@@ -241,6 +298,176 @@ export async function getPreferredProjectNameForRepository(
   ]);
 
   return policy?.projectName ?? project?.projectName;
+}
+
+export async function putGitHubUserAuth(
+  db: D1Database,
+  record: GitHubUserAuthRecord
+): Promise<void> {
+  await db.prepare(`
+    INSERT INTO github_user_auth (
+      access_subject,
+      access_email,
+      github_user_id,
+      github_login,
+      access_token_encrypted,
+      access_token_expires_at,
+      refresh_token_encrypted,
+      refresh_token_expires_at,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(access_subject) DO UPDATE SET
+      access_email = excluded.access_email,
+      github_user_id = excluded.github_user_id,
+      github_login = excluded.github_login,
+      access_token_encrypted = excluded.access_token_encrypted,
+      access_token_expires_at = excluded.access_token_expires_at,
+      refresh_token_encrypted = excluded.refresh_token_encrypted,
+      refresh_token_expires_at = excluded.refresh_token_expires_at,
+      updated_at = excluded.updated_at
+  `).bind(
+    record.accessSubject,
+    record.accessEmail,
+    record.githubUserId,
+    record.githubLogin,
+    record.accessTokenEncrypted,
+    record.accessTokenExpiresAt ?? null,
+    record.refreshTokenEncrypted ?? null,
+    record.refreshTokenExpiresAt ?? null,
+    record.createdAt,
+    record.updatedAt
+  ).run();
+}
+
+export async function getGitHubUserAuth(
+  db: D1Database,
+  accessSubject: string
+): Promise<GitHubUserAuthRecord | null> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT
+      access_subject,
+      access_email,
+      github_user_id,
+      github_login,
+      access_token_encrypted,
+      access_token_expires_at,
+      refresh_token_encrypted,
+      refresh_token_expires_at,
+      created_at,
+      updated_at
+    FROM github_user_auth
+    WHERE access_subject = ?
+  `).bind(accessSubject).first<GitHubUserAuthRow>();
+
+  return row ? toGitHubUserAuthRecord(row) : null;
+}
+
+export async function deleteGitHubUserAuthByGitHubUserId(
+  db: D1Database,
+  githubUserId: number
+): Promise<void> {
+  await db.prepare(`
+    DELETE FROM github_user_auth
+    WHERE github_user_id = ?
+  `).bind(githubUserId).run();
+}
+
+export async function listProjectSecretMetadata(
+  db: D1Database,
+  projectName: string
+): Promise<ProjectSecretMetadata[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      project_name,
+      secret_name,
+      github_user_id,
+      github_login,
+      created_at,
+      updated_at
+    FROM project_secrets
+    WHERE project_name = ?
+    ORDER BY secret_name ASC
+  `).bind(projectName).all<Omit<ProjectSecretRow, "ciphertext" | "iv">>();
+
+  return result.results.map((row) => ({
+    projectName: row.project_name,
+    secretName: row.secret_name,
+    githubUserId: row.github_user_id,
+    githubLogin: row.github_login,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }));
+}
+
+export async function listProjectSecrets(
+  db: D1Database,
+  projectName: string
+): Promise<ProjectSecretRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      project_name,
+      secret_name,
+      ciphertext,
+      iv,
+      github_user_id,
+      github_login,
+      created_at,
+      updated_at
+    FROM project_secrets
+    WHERE project_name = ?
+    ORDER BY secret_name ASC
+  `).bind(projectName).all<ProjectSecretRow>();
+
+  return result.results.map(toProjectSecretRecord);
+}
+
+export async function putProjectSecret(
+  db: D1Database,
+  record: ProjectSecretRecord
+): Promise<void> {
+  await db.prepare(`
+    INSERT INTO project_secrets (
+      project_name,
+      secret_name,
+      ciphertext,
+      iv,
+      github_user_id,
+      github_login,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(project_name, secret_name) DO UPDATE SET
+      ciphertext = excluded.ciphertext,
+      iv = excluded.iv,
+      github_user_id = excluded.github_user_id,
+      github_login = excluded.github_login,
+      updated_at = excluded.updated_at
+  `).bind(
+    record.projectName,
+    record.secretName,
+    record.ciphertext,
+    record.iv,
+    record.githubUserId,
+    record.githubLogin,
+    record.createdAt,
+    record.updatedAt
+  ).run();
+}
+
+export async function deleteProjectSecret(
+  db: D1Database,
+  projectName: string,
+  secretName: string
+): Promise<void> {
+  await db.prepare(`
+    DELETE FROM project_secrets
+    WHERE project_name = ?
+      AND secret_name = ?
+  `).bind(projectName, secretName).run();
 }
 
 export async function ensureProjectPolicy(
@@ -745,6 +972,21 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
   };
 }
 
+function toGitHubUserAuthRecord(row: GitHubUserAuthRow): GitHubUserAuthRecord {
+  return {
+    accessSubject: row.access_subject,
+    accessEmail: row.access_email,
+    githubUserId: row.github_user_id,
+    githubLogin: row.github_login,
+    accessTokenEncrypted: row.access_token_encrypted,
+    accessTokenExpiresAt: row.access_token_expires_at ?? undefined,
+    refreshTokenEncrypted: row.refresh_token_encrypted ?? undefined,
+    refreshTokenExpiresAt: row.refresh_token_expires_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function toBuildJobRecord(row: BuildJobRow): BuildJobRecord {
   return {
     jobId: row.job_id,
@@ -787,6 +1029,20 @@ function toProjectPolicyRecord(row: ProjectPolicyRow): ProjectPolicyRecord {
     updatedAt: row.updated_at
   };
 }
+
+function toProjectSecretRecord(row: ProjectSecretRow): ProjectSecretRecord {
+  return {
+    projectName: row.project_name,
+    secretName: row.secret_name,
+    ciphertext: row.ciphertext,
+    iv: row.iv,
+    githubUserId: row.github_user_id,
+    githubLogin: row.github_login,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 
 function toDeploymentRecord(row: DeploymentRow): DeploymentRecord {
   return {

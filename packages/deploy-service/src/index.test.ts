@@ -11,6 +11,7 @@ import type {
 
 import deployServiceWorker, { deployServiceApp } from "./index";
 import { CloudflareApiClient } from "./lib/cloudflare";
+import { encryptStoredText } from "./lib/sealed-data";
 
 const TEST_PRIVATE_KEY = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -135,15 +136,18 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.equal(body.agent_api.auth.browser_session_required_for_authorization, true);
   assert.deepEqual(body.agent_api.auth.human_handoff_rules, [
     "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
-    "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven."
+    "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
+    "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access."
   ]);
   assert.deepEqual(body.agent_api.auth.required_for, [
     "repository_status_template",
     "register_project",
     "validate_project",
     "project_status_template",
-    "build_job_status_template"
+    "build_job_status_template",
+    "project_secrets_template"
   ]);
+  assert.equal(body.agent_api.project_secrets_template, "https://deploy.example/api/projects/{projectName}/secrets");
   assert.equal(body.mcp.endpoint, "https://deploy.example/mcp");
   assert.equal(body.mcp.transport, "streamable_http");
   assert.equal(body.mcp.auth.authorization_metadata_url, "https://deploy.example/.well-known/oauth-authorization-server");
@@ -156,7 +160,10 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     "register_project",
     "validate_project",
     "get_project_status",
-    "get_build_job_status"
+    "get_build_job_status",
+    "list_project_secrets",
+    "set_project_secret",
+    "delete_project_secret"
   ]);
   assert.ok(!("well_known_runtime" in body.agent_api));
 });
@@ -519,6 +526,361 @@ test("mcp validate_project returns structured install guidance instead of a prot
   assert.equal(result.result.isError, true);
   assert.equal(result.result.structuredContent?.nextAction, "install_github_app");
   assert.match(result.result.structuredContent?.installUrl ?? "", /github\.com\/apps\/cail-deploy\/installations\/new/);
+});
+
+test("mcp project secret tools return a clear GitHub connect handoff when repo-admin auth is missing", async () => {
+  const { env, db } = createTestContext({
+    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
+  });
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-29T12:00:00.000Z",
+    updatedAt: "2026-03-29T12:05:00.000Z"
+  });
+  const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
+
+  const response = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: {
+        name: "list_project_secrets",
+        arguments: {
+          projectName: "cail-assets-build-test"
+        }
+      }
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+
+  assert.equal(response.status, 200);
+  const result = await response.json() as {
+    result: {
+      isError?: boolean;
+      structuredContent?: {
+        nextAction?: string;
+        connectGitHubUserUrl?: string;
+      };
+    };
+  };
+  assert.equal(result.result.isError, true);
+  assert.equal(result.result.structuredContent?.nextAction, "connect_github_user");
+  assert.match(result.result.structuredContent?.connectGitHubUserUrl ?? "", /\/api\/github\/user-auth\/start\?/);
+});
+
+test("github user auth start redirects to GitHub with signed repository context", async (t) => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+
+  const response = await fetchApp(
+    "GET",
+    "/api/github/user-auth/start?repositoryFullName=szweibel/cail-assets-build-test&projectName=cail-assets-build-test",
+    env,
+    undefined,
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+
+  assert.equal(response.status, 302);
+  const location = new URL(response.headers.get("location") ?? "");
+  assert.equal(location.origin, "https://github.com");
+  assert.equal(location.pathname, "/login/oauth/authorize");
+  assert.equal(location.searchParams.get("client_id"), env.GITHUB_APP_CLIENT_ID);
+  assert.equal(location.searchParams.get("redirect_uri"), "https://deploy.example/github/user-auth/callback");
+  assert.ok(location.searchParams.get("state"));
+});
+
+test("github user auth callback stores the linked GitHub account for later project-admin checks", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.origin === "https://access.example" && url.pathname === "/cdn-cgi/access/certs") {
+      return jsonResponse({
+        keys: [
+          {
+            ...TEST_ACCESS_PRIVATE_KEY.publicKey,
+            use: "sig",
+            alg: "RS256",
+            kid: "test-access-key"
+          }
+        ]
+      });
+    }
+
+    if (url.origin === "https://github.com" && url.pathname === "/login/oauth/access_token") {
+      return jsonResponse({
+        access_token: "github-user-token",
+        expires_in: 3600,
+        refresh_token: "github-refresh-token",
+        refresh_token_expires_in: 86400
+      });
+    }
+
+    if (url.origin === "https://api.github.com" && url.pathname === "/user") {
+      return jsonResponse({
+        id: 9001,
+        login: "szweibel"
+      });
+    }
+
+    if (url.origin === "https://api.github.com" && url.pathname === "/repos/szweibel/cail-assets-build-test/installation") {
+      return jsonResponse({ id: 42, account: { login: "szweibel" } });
+    }
+
+    if (url.origin === "https://api.github.com" && url.pathname === "/repos/szweibel/cail-assets-build-test") {
+      return jsonResponse({
+        id: 7,
+        name: "cail-assets-build-test",
+        full_name: "szweibel/cail-assets-build-test",
+        default_branch: "main",
+        html_url: "https://github.com/szweibel/cail-assets-build-test",
+        clone_url: "https://github.com/szweibel/cail-assets-build-test.git",
+        private: false,
+        owner: { login: "szweibel" },
+        permissions: {
+          admin: false,
+          maintain: false,
+          push: true,
+          pull: true
+        }
+      });
+    }
+
+    return originalFetch(input, init);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const startResponse = await fetchApp(
+    "GET",
+    "/api/github/user-auth/start?repositoryFullName=szweibel/cail-assets-build-test&projectName=cail-assets-build-test",
+    env,
+    undefined,
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+  const state = new URL(startResponse.headers.get("location") ?? "").searchParams.get("state");
+  assert.ok(state);
+
+  const callbackResponse = await fetchApp(
+    "GET",
+    `/github/user-auth/callback?code=github-code-123&state=${encodeURIComponent(state ?? "")}`,
+    env
+  );
+  assert.equal(callbackResponse.status, 200);
+  assert.match(await callbackResponse.text(), /GitHub is connected to Kale Deploy/);
+  const stored = db.selectGitHubUserAuth("user:person@cuny.edu");
+  assert.ok(stored);
+  assert.equal(stored?.github_login, "szweibel");
+  assert.equal(stored?.github_user_id, 9001);
+  assert.equal(typeof stored?.access_token_encrypted, "string");
+  assert.equal(typeof stored?.refresh_token_encrypted, "string");
+});
+
+test("project secrets API returns a GitHub connect handoff before repo-admin access is confirmed", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-29T12:00:00.000Z",
+    updatedAt: "2026-03-29T12:05:00.000Z"
+  });
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+
+  const response = await fetchApp(
+    "GET",
+    "/api/projects/cail-assets-build-test/secrets",
+    env,
+    undefined,
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+
+  assert.equal(response.status, 403);
+  const body = await response.json() as {
+    nextAction: string;
+    repositoryFullName: string;
+    connectGitHubUserUrl?: string;
+  };
+  assert.equal(body.nextAction, "connect_github_user");
+  assert.equal(body.repositoryFullName, "szweibel/cail-assets-build-test");
+  assert.match(body.connectGitHubUserUrl ?? "", /\/api\/github\/user-auth\/start\?/);
+});
+
+test("project secrets can be stored, listed, and synced to the live worker", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-29T12:00:00.000Z",
+    updatedAt: "2026-03-29T12:05:00.000Z"
+  });
+  db.putGitHubUserAuth({
+    access_subject: "user:person@cuny.edu",
+    access_email: "person@cuny.edu",
+    github_user_id: 9001,
+    github_login: "szweibel",
+    access_token_encrypted: await sealStoredValueForTest(env, "github-user-token"),
+    access_token_expires_at: "2030-01-01T00:00:00.000Z",
+    refresh_token_encrypted: null,
+    refresh_token_expires_at: null,
+    created_at: "2026-03-29T12:00:00.000Z",
+    updated_at: "2026-03-29T12:00:00.000Z"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.origin === "https://access.example" && url.pathname === "/cdn-cgi/access/certs") {
+      return jsonResponse({
+        keys: [
+          {
+            ...TEST_ACCESS_PRIVATE_KEY.publicKey,
+            use: "sig",
+            alg: "RS256",
+            kid: "test-access-key"
+          }
+        ]
+      });
+    }
+
+    if (url.origin === "https://api.github.com" && url.pathname === "/repos/szweibel/cail-assets-build-test") {
+      return jsonResponse({
+        id: 7,
+        name: "cail-assets-build-test",
+        full_name: "szweibel/cail-assets-build-test",
+        default_branch: "main",
+        html_url: "https://github.com/szweibel/cail-assets-build-test",
+        clone_url: "https://github.com/szweibel/cail-assets-build-test.git",
+        private: false,
+        owner: { login: "szweibel" },
+        permissions: {
+          admin: false,
+          maintain: false,
+          push: true,
+          pull: true
+        }
+      });
+    }
+
+    if (
+      url.origin === "https://api.cloudflare.com"
+      && url.pathname === "/client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/cail-assets-build-test/secrets"
+      && request.method === "PUT"
+    ) {
+      const body = await request.json() as { name: string; text: string; type: string };
+      assert.deepEqual(body, {
+        name: "OPENAI_API_KEY",
+        text: "sk-test-secret",
+        type: "secret_text"
+      });
+      return jsonResponse({ success: true, errors: [], result: {} });
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const setResponse = await fetchApp(
+    "PUT",
+    "/api/projects/cail-assets-build-test/secrets/OPENAI_API_KEY",
+    env,
+    { value: "sk-test-secret" },
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+  assert.equal(setResponse.status, 200);
+  const setBody = await setResponse.json() as {
+    liveUpdateApplied: boolean;
+    connectedGitHubLogin: string;
+    summary: string;
+  };
+  assert.equal(setBody.liveUpdateApplied, true);
+  assert.equal(setBody.connectedGitHubLogin, "szweibel");
+  assert.match(setBody.summary, /updated the live Worker/i);
+
+  const stored = db.selectProjectSecret("cail-assets-build-test", "OPENAI_API_KEY");
+  assert.ok(stored);
+  assert.equal(typeof stored?.ciphertext, "string");
+  assert.equal(typeof stored?.iv, "string");
+
+  const listResponse = await fetchApp(
+    "GET",
+    "/api/projects/cail-assets-build-test/secrets",
+    env,
+    undefined,
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+  assert.equal(listResponse.status, 200);
+  const listBody = await listResponse.json() as {
+    count: number;
+    connectedGitHubLogin: string;
+    secrets: Array<{ secretName: string }>;
+  };
+  assert.equal(listBody.count, 1);
+  assert.equal(listBody.connectedGitHubLogin, "szweibel");
+  assert.deepEqual(listBody.secrets.map((secret) => secret.secretName), ["OPENAI_API_KEY"]);
 });
 
 test("project registration returns structured state for an existing project", async () => {
@@ -1106,6 +1468,94 @@ test("deployments keep repo-scoped DB, FILES, and CACHE resources when a repo ch
   assert.equal(renamedProject?.cache_namespace_id, "kv-existing");
 });
 
+test("deployments inject stored project secrets as secret_text bindings", async (t) => {
+  const { env, db } = createTestContext();
+  db.putProject({
+    projectName: "secret-app",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/secret-app",
+    deploymentUrl: "https://secret-app.cuny.qzz.io",
+    databaseId: "db-existing",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-29T12:00:00.000Z",
+    updatedAt: "2026-03-29T12:05:00.000Z"
+  });
+  const sealed = await encryptStoredText(
+    env.CONTROL_PLANE_ENCRYPTION_KEY ?? "test-control-plane-encryption-key",
+    "sk-live-secret"
+  );
+  db.putProjectSecret({
+    project_name: "secret-app",
+    secret_name: "OPENAI_API_KEY",
+    ciphertext: sealed.ciphertext,
+    iv: sealed.iv,
+    github_user_id: 9001,
+    github_login: "szweibel",
+    created_at: "2026-03-29T12:00:00.000Z",
+    updated_at: "2026-03-29T12:00:00.000Z"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.pathname === "/client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/secret-app") {
+      const form = await request.formData();
+      const metadataEntry = form.get("metadata");
+      assert.ok(metadataEntry instanceof File);
+      const workerUpload = JSON.parse(await metadataEntry.text()) as {
+        bindings: Array<Record<string, string>>;
+      };
+
+      const secretBinding = workerUpload.bindings.find((binding) => binding.name === "OPENAI_API_KEY");
+      assert.deepEqual(secretBinding, {
+        type: "secret_text",
+        name: "OPENAI_API_KEY",
+        text: "sk-live-secret"
+      });
+      return new Response("", { status: 200 });
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const metadata = {
+    projectName: "secret-app",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/secret-app",
+    workerUpload: {
+      main_module: "index.js",
+      compatibility_date: "2026-03-29",
+      bindings: [
+        { type: "d1", name: "DB", id: "placeholder-db" }
+      ]
+    }
+  };
+  const form = new FormData();
+  form.append("metadata", JSON.stringify(metadata));
+  form.append("index.js", new File(["export default { fetch() { return new Response('ok'); } };"], "index.js", {
+    type: "application/javascript"
+  }));
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: form
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 200);
+});
+
 test("validate requires auth when Cloudflare Access is configured", async () => {
   const { env } = createTestContext({
     CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
@@ -1402,10 +1852,13 @@ function createTestContext(overrides: Partial<TestEnv> = {}): {
     DEPLOY_API_TOKEN: "deploy-token",
     MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
     GITHUB_APP_ID: "3196468",
+    GITHUB_APP_CLIENT_ID: "Iv1.test-client-id",
+    GITHUB_APP_CLIENT_SECRET: "test-client-secret",
     GITHUB_APP_PRIVATE_KEY: TEST_PRIVATE_KEY,
     GITHUB_APP_SLUG: "cail-deploy",
     GITHUB_APP_NAME: "CAIL Deploy",
     GITHUB_APP_MANIFEST_ORG: "CUNY-AI-Lab",
+    CONTROL_PLANE_ENCRYPTION_KEY: "test-control-plane-encryption-key",
     ...overrides
   };
 
@@ -1589,6 +2042,11 @@ async function issueTestMcpAccessToken(env: TestEnv, email: string): Promise<str
   return token;
 }
 
+async function sealStoredValueForTest(env: TestEnv, plaintext: string): Promise<string> {
+  const secret = env.CONTROL_PLANE_ENCRYPTION_KEY ?? "test-control-plane-encryption-key";
+  return JSON.stringify(await encryptStoredText(secret, plaintext));
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -1636,6 +2094,8 @@ class FakeQueue {
 class FakeD1Database {
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly buildJobs = new Map<string, BuildJobRecord>();
+  private readonly githubUserAuth = new Map<string, Record<string, unknown>>();
+  private readonly projectSecrets = new Map<string, Record<string, unknown>>();
   private readonly usedOauthGrants = new Set<string>();
 
   withSession(): this {
@@ -1652,6 +2112,34 @@ class FakeD1Database {
 
   putBuildJob(job: BuildJobRecord): void {
     this.buildJobs.set(job.jobId, job);
+  }
+
+  putGitHubUserAuth(row: {
+    access_subject: string;
+    access_email: string;
+    github_user_id: number;
+    github_login: string;
+    access_token_encrypted: string;
+    access_token_expires_at: string | null;
+    refresh_token_encrypted: string | null;
+    refresh_token_expires_at: string | null;
+    created_at: string;
+    updated_at: string;
+  }): void {
+    this.githubUserAuth.set(row.access_subject, row);
+  }
+
+  putProjectSecret(row: {
+    project_name: string;
+    secret_name: string;
+    ciphertext: string;
+    iv: string;
+    github_user_id: number;
+    github_login: string;
+    created_at: string;
+    updated_at: string;
+  }): void {
+    this.projectSecrets.set(`${row.project_name}:${row.secret_name}`, row);
   }
 
   upsertProjectFromParams(params: unknown[]): void {
@@ -1675,6 +2163,62 @@ class FakeD1Database {
 
   getBuildJob(jobId: string): BuildJobRecord | undefined {
     return this.buildJobs.get(jobId);
+  }
+
+  selectGitHubUserAuth(accessSubject: string): Record<string, unknown> | null {
+    return this.githubUserAuth.get(accessSubject) ?? null;
+  }
+
+  selectProjectSecret(projectName: string, secretName: string): Record<string, unknown> | null {
+    return this.projectSecrets.get(`${projectName}:${secretName}`) ?? null;
+  }
+
+  listProjectSecrets(projectName: string): Record<string, unknown>[] {
+    return Array.from(this.projectSecrets.values())
+      .filter((secret) => secret.project_name === projectName)
+      .sort((left, right) => String(left.secret_name).localeCompare(String(right.secret_name)));
+  }
+
+  upsertGitHubUserAuthFromParams(params: unknown[]): void {
+    this.putGitHubUserAuth({
+      access_subject: String(params[0]),
+      access_email: String(params[1]),
+      github_user_id: Number(params[2]),
+      github_login: String(params[3]),
+      access_token_encrypted: String(params[4]),
+      access_token_expires_at: nullableString(params[5]),
+      refresh_token_encrypted: nullableString(params[6]),
+      refresh_token_expires_at: nullableString(params[7]),
+      created_at: String(params[8]),
+      updated_at: String(params[9])
+    });
+  }
+
+  upsertProjectSecretFromParams(params: unknown[]): void {
+    const key = `${String(params[0])}:${String(params[1])}`;
+    const existing = this.projectSecrets.get(key);
+    this.putProjectSecret({
+      project_name: String(params[0]),
+      secret_name: String(params[1]),
+      ciphertext: String(params[2]),
+      iv: String(params[3]),
+      github_user_id: Number(params[4]),
+      github_login: String(params[5]),
+      created_at: existing?.created_at ? String(existing.created_at) : String(params[6]),
+      updated_at: String(params[7])
+    });
+  }
+
+  deleteGitHubUserAuthByGitHubUserId(githubUserId: number): void {
+    for (const [accessSubject, row] of this.githubUserAuth.entries()) {
+      if (Number(row.github_user_id) === githubUserId) {
+        this.githubUserAuth.delete(accessSubject);
+      }
+    }
+  }
+
+  deleteProjectSecret(projectName: string, secretName: string): void {
+    this.projectSecrets.delete(`${projectName}:${secretName}`);
   }
 
   listProjects(): Record<string, unknown>[] {
@@ -1842,6 +2386,10 @@ class FakePreparedStatement {
       return this.db.selectLatestPushBuildJob(String(this.params[0])) as T | null;
     }
 
+    if (normalized.includes("from github_user_auth") && normalized.includes("where access_subject = ?")) {
+      return this.db.selectGitHubUserAuth(String(this.params[0])) as T | null;
+    }
+
     if (normalized.includes("select count(*) as count from build_jobs")
       && normalized.includes("json_extract(repository_json, '$.fullname') = ?")
       && normalized.includes("status in ('queued', 'in_progress', 'deploying')")) {
@@ -1877,6 +2425,10 @@ class FakePreparedStatement {
       return { results: this.db.listProjects() as T[] };
     }
 
+    if (normalized.includes("from project_secrets") && normalized.includes("where project_name = ?")) {
+      return { results: this.db.listProjectSecrets(String(this.params[0])) as T[] };
+    }
+
     return { results: [] };
   }
 
@@ -1889,6 +2441,22 @@ class FakePreparedStatement {
 
     if (normalized.includes("insert into build_jobs")) {
       this.db.upsertBuildJobFromParams(this.params);
+    }
+
+    if (normalized.includes("insert into github_user_auth")) {
+      this.db.upsertGitHubUserAuthFromParams(this.params);
+    }
+
+    if (normalized.includes("insert into project_secrets")) {
+      this.db.upsertProjectSecretFromParams(this.params);
+    }
+
+    if (normalized.includes("delete from github_user_auth") && normalized.includes("where github_user_id = ?")) {
+      this.db.deleteGitHubUserAuthByGitHubUserId(Number(this.params[0]));
+    }
+
+    if (normalized.includes("delete from project_secrets") && normalized.includes("where project_name = ?") && normalized.includes("and secret_name = ?")) {
+      this.db.deleteProjectSecret(String(this.params[0]), String(this.params[1]));
     }
 
     return {};
@@ -1948,8 +2516,11 @@ type TestEnv = {
   MCP_OAUTH_TOKEN_SECRET?: string;
   MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
   GITHUB_APP_ID?: string;
+  GITHUB_APP_CLIENT_ID?: string;
+  GITHUB_APP_CLIENT_SECRET?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_APP_SLUG?: string;
   GITHUB_APP_NAME?: string;
   GITHUB_APP_MANIFEST_ORG?: string;
+  CONTROL_PLANE_ENCRYPTION_KEY?: string;
 };

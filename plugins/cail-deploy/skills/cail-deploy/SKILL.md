@@ -214,6 +214,16 @@ After scaffolding or adapting the repo, use this loop:
 
 Use the structured MCP or JSON responses instead of scraping GitHub check-run prose.
 
+Do not ask the user to confirm a second GitHub account connection for ordinary deploys.
+
+Only ask for the extra GitHub user-auth step when you are managing project secrets:
+
+- `list_project_secrets`
+- `set_project_secret`
+- `delete_project_secret`
+
+If one of those tools returns `nextAction="connect_github_user"`, stop and hand the user the returned `connectGitHubUserUrl`.
+
 ## Worked example
 
 For a repo `szweibel/cail-deploy-smoke-test`:

@@ -117,6 +117,7 @@ If the control plane looks unhealthy:
 2. Check `https://cail-deploy-service.ailab-452.workers.dev/healthz`.
 3. Check `https://cail-gateway.ailab-452.workers.dev/healthz`.
 4. Check `https://runtime.cuny.qzz.io/.well-known/cail-runtime.json`.
+5. Check `https://cuny.qzz.io/kale/github/app` and confirm the app ID and slug are still populated.
 
 If the project host is broken but the control plane is healthy:
 
