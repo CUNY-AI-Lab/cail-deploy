@@ -1,7 +1,6 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { SignJWT, jwtVerify } from "jose";
 
 import { createDeployServiceMcpServer as createDeployServiceMcpSurface } from "./deploy-service-mcp";
 import { HttpError, asHttpError } from "./http-error";
@@ -37,14 +36,15 @@ import {
 import {
   buildProjectControlPanelUrl,
   describeGitHubUserAuthContinueLabel,
-  readProjectControlFlash,
   renderGitHubUserAuthErrorPage,
   renderGitHubUserAuthSuccessPage,
-  renderProjectAdminEntryPage,
-  renderProjectControlPanelAuthErrorPage,
-  renderProjectControlPanelGatePage,
-  renderProjectControlPanelPage
 } from "./project-control-ui";
+import {
+  createProjectAdminEntryResponse,
+  createProjectControlPanelResponse,
+  createProjectControlSecretDeleteResponse,
+  createProjectControlSecretSetResponse
+} from "./project-control-controller";
 import {
   buildProjectSecretBindings,
   buildProjectSecretsListPayload,
@@ -1454,284 +1454,63 @@ deployServiceApp.delete("/api/projects/:projectName/secrets/:secretName", async 
 });
 
 deployServiceApp.get("/projects/control", async (c) => {
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  const requestUrl = new URL(c.req.raw.url);
-
-  if (requestUrl.origin !== new URL(oauthBaseUrl).origin) {
-    const redirectUrl = new URL(`${oauthBaseUrl}/projects/control`);
-    for (const [key, value] of requestUrl.searchParams.entries()) {
-      redirectUrl.searchParams.append(key, value);
-    }
-    return Response.redirect(redirectUrl.toString(), 302);
-  }
-
-  let identity: CloudflareAccessRequestIdentity;
-
-  try {
-    identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
-  }
-
-  try {
-    const projectNameInput = c.req.query("projectName") ?? undefined;
-    const repositoryFullName = c.req.query("repositoryFullName") ?? undefined;
-    const repositoryUrl = c.req.query("repositoryUrl") ?? undefined;
-
-    if (projectNameInput?.trim()) {
-      const projectName = normalizeRequestedProjectName(
-        projectNameInput,
-        resolveReservedProjectNames(c.env, serviceBaseUrl)
-      );
-      return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName), 302);
-    }
-
-    if (repositoryFullName?.trim() || repositoryUrl?.trim()) {
-      const repositoryContext = parseOptionalRepositoryContext({
-        repositoryFullName,
-        repositoryUrl
-      }, c.env, serviceBaseUrl);
-      if (!repositoryContext) {
-        throw new HttpError(400, "Enter a GitHub repository in owner/repo form.");
-      }
-      return Response.redirect(
-        buildGuidedSetupUrl(serviceBaseUrl, repositoryContext.repositoryFullName, repositoryContext.projectName),
-        302
-      );
-    }
-
-    return c.html(renderProjectAdminEntryPage({
-      oauthBaseUrl,
-      serviceBaseUrl,
-      signedInEmail: identity.email
-    }));
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.html(renderProjectAdminEntryPage({
-      oauthBaseUrl,
-      serviceBaseUrl,
-      signedInEmail: identity.email,
-      errorMessage: httpError.message
-    }), httpError.status === 400 || httpError.status === 409 ? 400 : httpError.status);
-  }
+  return createProjectAdminEntryResponse({
+    env: c.env,
+    request: c.req.raw,
+    requireCloudflareAccessIdentity,
+    resolveMcpOauthBaseUrl,
+    resolveServiceBaseUrl,
+    normalizeRequestedProjectName,
+    resolveReservedProjectNames,
+    parseOptionalRepositoryContext
+  });
 });
 
 deployServiceApp.get("/projects/:projectName/control", async (c) => {
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-  const requestUrl = new URL(c.req.raw.url);
-  if (requestUrl.origin !== new URL(oauthBaseUrl).origin) {
-    const redirectUrl = new URL(`${oauthBaseUrl}/projects/${encodeURIComponent(c.req.param("projectName"))}/control`);
-    const flash = c.req.query("flash");
-    const message = c.req.query("message");
-    if (flash) {
-      redirectUrl.searchParams.set("flash", flash);
-    }
-    if (message) {
-      redirectUrl.searchParams.set("message", message);
-    }
-    return Response.redirect(redirectUrl.toString(), 302);
-  }
-
-  let identity: CloudflareAccessRequestIdentity;
-
-  try {
-    identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
-  }
-
-  const projectName = c.req.param("projectName");
-
-  try {
-    const authorization = await authorizeProjectSecretsAccess(
-      c.env,
-      c.req.raw.url,
-      identity,
-      projectName,
-      PROJECT_ADMIN_AUTH_DEPENDENCIES
-    );
-    const flash = readProjectControlFlash(c.req.raw.url);
-
-    if (!authorization.ok) {
-      const connectUrl = authorization.body.nextAction === "connect_github_user"
-        ? buildGitHubUserSecretsConnectUrl(oauthBaseUrl, projectName, {
-            returnTo: buildProjectControlPanelUrl(oauthBaseUrl, projectName)
-          })
-        : authorization.body.connectGitHubUserUrl;
-      return c.html(renderProjectControlPanelGatePage({
-        oauthBaseUrl,
-        summary: authorization.body.summary,
-        connectUrl,
-        flash
-      }), 403);
-    }
-
-    const [statusResult, secretsPayload, formToken] = await Promise.all([
-      buildProjectStatusResponse(c.env, projectName, { includeSensitive: true }),
-      buildProjectSecretsListPayload(c.env, authorization.project, authorization.githubLogin),
-      createProjectControlFormToken({
-        secret: resolveMcpOauthSecret(c.env),
-        issuer: oauthBaseUrl,
-        subject: identity.subject,
-        projectName
-      })
-    ]);
-
-    return c.html(renderProjectControlPanelPage({
-      oauthBaseUrl,
-      signedInEmail: identity.email,
-      projectName: authorization.project.projectName,
-      repositoryFullName: authorization.project.githubRepo,
-      statusSlug: typeof statusResult.body.status === "string" ? statusResult.body.status : "unknown",
-      deploymentUrl: typeof statusResult.body.deployment_url === "string" ? statusResult.body.deployment_url : authorization.project.deploymentUrl,
-      buildLogUrl: typeof statusResult.body.build_log_url === "string" ? statusResult.body.build_log_url : undefined,
-      errorMessage: typeof statusResult.body.error_message === "string" ? statusResult.body.error_message : undefined,
-      updatedAt: typeof statusResult.body.updated_at === "string" ? statusResult.body.updated_at : authorization.project.updatedAt,
-      repoUrl: `https://github.com/${authorization.project.githubRepo}`,
-      setupUrl: buildGuidedSetupUrl(
-        resolveServiceBaseUrl(c.env, c.req.raw.url),
-        authorization.project.githubRepo,
-        authorization.project.projectName
-      ),
-      secrets: {
-        count: secretsPayload.count,
-        secrets: secretsPayload.secrets
-      },
-      formToken,
-      flash
-    }));
-  } catch (error) {
-    const httpError = asHttpError(error);
-    if (httpError.status === 404) {
-      const connectUrl = buildGitHubUserSecretsConnectUrl(oauthBaseUrl, projectName, {
-        returnTo: buildProjectControlPanelUrl(oauthBaseUrl, projectName)
-      });
-      return c.html(renderProjectControlPanelGatePage({
-        oauthBaseUrl,
-        summary: "Project settings are only visible to people who can manage this Kale project.",
-        connectUrl
-      }), 403);
-    }
-
-    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
-  }
+  return createProjectControlPanelResponse({
+    env: c.env,
+    request: c.req.raw,
+    projectName: c.req.param("projectName"),
+    requireCloudflareAccessIdentity,
+    resolveMcpOauthBaseUrl,
+    resolveServiceBaseUrl,
+    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
+      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
+    buildProjectStatusResponse,
+    buildProjectSecretsListPayload,
+    resolveMcpOauthSecret
+  });
 });
 
 deployServiceApp.post("/projects/:projectName/control/secrets", async (c) => {
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-  let identity: CloudflareAccessRequestIdentity;
-
-  try {
-    identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
-  }
-
-  const projectName = c.req.param("projectName");
-
-  try {
-    const form = await c.req.formData();
-    await verifyProjectControlFormToken({
-      secret: resolveMcpOauthSecret(c.env),
-      issuer: oauthBaseUrl,
-      token: getRequiredProjectControlFormField(form, "formToken"),
-      subject: identity.subject,
-      projectName
-    });
-
-    const authorization = await authorizeProjectSecretsAccess(
-      c.env,
-      c.req.raw.url,
-      identity,
-      projectName,
-      PROJECT_ADMIN_AUTH_DEPENDENCIES
-    );
-    if (!authorization.ok) {
-      return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
-        flash: "error",
-        message: authorization.body.summary
-      }), 302);
-    }
-
-    const result = await setProjectSecretValue(
-      c.env,
-      PROJECT_SECRETS_CONFIG,
-      authorization,
-      getRequiredProjectControlFormField(form, "secretName"),
-      getRequiredProjectControlFormField(form, "secretValue")
-    );
-
-    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
-      flash: result.nextAction === "redeploy_to_apply_secret" ? "warning" : "success",
-      message: result.warning ?? result.summary
-    }), 302);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
-      flash: "error",
-      message: httpError.message
-    }), 302);
-  }
+  return createProjectControlSecretSetResponse({
+    env: c.env,
+    request: c.req.raw,
+    projectName: c.req.param("projectName"),
+    requireCloudflareAccessIdentity,
+    resolveMcpOauthBaseUrl,
+    resolveMcpOauthSecret,
+    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
+      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
+    setProjectSecretValue: (env, authorization, secretName, value) =>
+      setProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName, value)
+  });
 });
 
 deployServiceApp.post("/projects/:projectName/control/secrets/:secretName/delete", async (c) => {
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-  let identity: CloudflareAccessRequestIdentity;
-
-  try {
-    identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
-  }
-
-  const projectName = c.req.param("projectName");
-
-  try {
-    const form = await c.req.formData();
-    await verifyProjectControlFormToken({
-      secret: resolveMcpOauthSecret(c.env),
-      issuer: oauthBaseUrl,
-      token: getRequiredProjectControlFormField(form, "formToken"),
-      subject: identity.subject,
-      projectName
-    });
-
-    const authorization = await authorizeProjectSecretsAccess(
-      c.env,
-      c.req.raw.url,
-      identity,
-      projectName,
-      PROJECT_ADMIN_AUTH_DEPENDENCIES
-    );
-    if (!authorization.ok) {
-      return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
-        flash: "error",
-        message: authorization.body.summary
-      }), 302);
-    }
-
-    const result = await removeProjectSecretValue(
-      c.env,
-      PROJECT_SECRETS_CONFIG,
-      authorization,
-      c.req.param("secretName")
-    );
-    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
-      flash: result.nextAction === "redeploy_to_apply_secret" ? "warning" : "success",
-      message: result.warning ?? result.summary
-    }), 302);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
-      flash: "error",
-      message: httpError.message
-    }), 302);
-  }
+  return createProjectControlSecretDeleteResponse({
+    env: c.env,
+    request: c.req.raw,
+    projectName: c.req.param("projectName"),
+    secretName: c.req.param("secretName"),
+    requireCloudflareAccessIdentity,
+    resolveMcpOauthBaseUrl,
+    resolveMcpOauthSecret,
+    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
+      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
+    removeProjectSecretValue: (env, authorization, secretName) =>
+      removeProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName)
+  });
 });
 
 deployServiceApp.get("/api/build-jobs/:jobId/status", async (c) => {
@@ -3360,51 +3139,6 @@ function getRequiredOauthFormField(form: FormData, field: string): string {
   const value = form.get(field);
   if (typeof value !== "string" || !value.trim()) {
     throw new HttpError(400, `OAuth request is missing the required '${field}' field.`);
-  }
-
-  return value.trim();
-}
-
-async function createProjectControlFormToken(input: {
-  secret: string;
-  issuer: string;
-  subject: string;
-  projectName: string;
-}): Promise<string> {
-  return new SignJWT({
-    project_name: input.projectName
-  })
-    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-    .setIssuer(input.issuer)
-    .setAudience("project-control-form")
-    .setSubject(input.subject)
-    .setIssuedAt()
-    .setExpirationTime("30m")
-    .sign(new TextEncoder().encode(input.secret));
-}
-
-async function verifyProjectControlFormToken(input: {
-  secret: string;
-  issuer: string;
-  token: string;
-  subject: string;
-  projectName: string;
-}): Promise<void> {
-  const { payload } = await jwtVerify(input.token, new TextEncoder().encode(input.secret), {
-    issuer: input.issuer,
-    audience: "project-control-form",
-    subject: input.subject
-  });
-
-  if (payload.project_name !== input.projectName) {
-    throw new HttpError(403, "This form token does not belong to the current Kale project.");
-  }
-}
-
-function getRequiredProjectControlFormField(form: FormData, field: string): string {
-  const value = form.get(field);
-  if (typeof value !== "string" || !value.trim()) {
-    throw new HttpError(400, `Missing required form field '${field}'.`);
   }
 
   return value.trim();
