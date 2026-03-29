@@ -4029,6 +4029,9 @@ function renderGitHubUserAuthSuccessPage(input: {
     ? `${input.serviceBaseUrl}/github/setup?repositoryFullName=${encodeURIComponent(repositoryContext.repositoryFullName)}&projectName=${encodeURIComponent(repositoryContext.projectName)}`
     : `${input.serviceBaseUrl}/github/setup`;
   const continueUrl = input.state.returnTo ?? setupUrl;
+  const continueLabel =
+    repositoryContext || continueUrl !== input.serviceBaseUrl ? "Back to this project's setup" : "Continue in Kale Deploy";
+  const showHomeButton = continueUrl !== input.serviceBaseUrl;
 
   return `<!doctype html>
 <html lang="en">
@@ -4047,8 +4050,8 @@ function renderGitHubUserAuthSuccessPage(input: {
         <p><strong>${escapeHtml(input.githubUser.login)}</strong> is now linked for GitHub-backed project administration in Kale Deploy.</p>
         ${repositoryContext ? `<div class="notice"><p>This authorization is ready for <code>${escapeHtml(repositoryContext.repositoryFullName)}</code>.</p></div>` : ""}
         <div class="actions">
-          <a class="button" href="${escapeHtml(continueUrl)}">Continue in Kale Deploy</a>
-          <a class="button secondary" href="${escapeHtml(input.serviceBaseUrl)}">Return to Kale Deploy</a>
+          <a class="button" href="${escapeHtml(continueUrl)}">${escapeHtml(continueLabel)}</a>
+          ${showHomeButton ? `<a class="button secondary" href="${escapeHtml(input.serviceBaseUrl)}">Go to the Kale homepage</a>` : ""}
         </div>
         <p>Return to your agent and continue. Kale can now use this GitHub account for sensitive project-admin actions such as secret management.</p>
       </section>
@@ -5973,11 +5976,11 @@ function renderRepositoryLiveRefreshScript(): string {
     "        };",
     "      case 'live':",
     "        return {",
-    "          headline: 'This project is live on Kale Deploy',",
-    "          userTitle: 'Open the project or keep iterating',",
-    "          userBody: 'You can open the live site now. Future pushes to the default branch will update it through the same managed flow.',",
-    "          agentTitle: 'Treat the live URL as the canonical result',",
-    "          agentBody: 'Your agent can keep iterating in Git and confirm that each new deployment reaches the live URL.'",
+    "          headline: 'Your project is live',",
+    "          userTitle: 'Visit your site or keep building',",
+    "          userBody: 'Your site is live now. Push to main to deploy updates.',",
+    "          agentTitle: 'Auto-deploys are on',",
+    "          agentBody: 'Pushes to main will update the live URL. Your agent can verify each deploy by checking the live site.'",
     "        };",
     "      case 'name_conflict':",
     "        return {",
@@ -6309,11 +6312,11 @@ function describeRepositorySetupStage(
       };
     case "live":
       return {
-        headline: "This project is live on Kale Deploy",
-        userTitle: "Open the project or keep iterating",
-        userBody: "You can open the live site now. Future pushes to the default branch will update it through the same managed flow.",
-        agentTitle: "Treat the live URL as the canonical result",
-        agentBody: "Your agent can keep iterating in Git and confirm that each new deployment reaches the live URL."
+        headline: "Your project is live",
+        userTitle: "Visit your site or keep building",
+        userBody: "Your site is live now. Push to main to deploy updates.",
+        agentTitle: "Auto-deploys are on",
+        agentBody: "Pushes to main will update the live URL. Your agent can verify each deploy by checking the live site."
       };
     case "name_conflict":
       return {
@@ -6425,7 +6428,7 @@ function resolveRepositoryWorkflowState(input: {
     return {
       nextAction: "view_live_project",
       stage: "live",
-      summary: "This repository has a live deployment on Kale Deploy."
+      summary: "Your site is deployed and live."
     };
   }
 

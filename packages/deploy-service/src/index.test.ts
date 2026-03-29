@@ -734,7 +734,10 @@ test("github user auth callback stores the linked GitHub account for later proje
     env
   );
   assert.equal(callbackResponse.status, 200);
-  assert.match(await callbackResponse.text(), /GitHub is connected to Kale Deploy/);
+  const callbackHtml = await callbackResponse.text();
+  assert.match(callbackHtml, /GitHub is connected to Kale Deploy/);
+  assert.match(callbackHtml, /Back to this project&#39;s setup/);
+  assert.match(callbackHtml, /Go to the Kale homepage/);
   const stored = db.selectGitHubUserAuth("user:person@cuny.edu");
   assert.ok(stored);
   assert.equal(stored?.github_login, "szweibel");
@@ -1034,7 +1037,7 @@ test("repository status returns a repo-first lifecycle summary", async () => {
   assert.equal(body.repositoryStatusUrl, "https://deploy.example/api/repositories/szweibel/cail-deploy-smoke-test/status");
   assert.equal(body.workflowStage, "live");
   assert.equal(body.nextAction, "view_live_project");
-  assert.match(body.summary, /live deployment/i);
+  assert.match(body.summary, /deployed and live/i);
   assert.equal(body.deploymentUrl, "https://cail-deploy-smoke-test.cuny.qzz.io");
 });
 
