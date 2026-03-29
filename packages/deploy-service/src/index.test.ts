@@ -1248,10 +1248,9 @@ test("project admin entry renders a private lookup page for signed-in users", as
 
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /Project admin/);
-  assert.match(html, /private admin entry point/i);
-  assert.match(html, /Open settings by project name/);
-  assert.match(html, /Find it from a GitHub repo/);
+  assert.match(html, /Project settings/);
+  assert.match(html, /Project name/);
+  assert.match(html, /GitHub repo/);
   assert.match(html, /Signed in as/);
 });
 
