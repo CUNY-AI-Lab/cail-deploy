@@ -15,7 +15,7 @@ Codex will open a browser sign-in flow for Kale Deploy. Finish that sign-in, the
 
 ## 2. Confirm the connection
 
-Ask Codex to call Kale Deploy's `test_connection` tool.
+Ask Codex to confirm that Kale is connected and ready.
 
 You want Codex to be able to say something definite like:
 
@@ -28,8 +28,7 @@ If Codex cannot say that yet, the connection is not really ready.
 Ask Codex to:
 
 - create or connect the GitHub repository
-- call `register_project`
-- tell you if Kale returns a `guidedInstallUrl`
+- check whether Kale needs a GitHub approval step
 
 ## 4. Approve GitHub once
 
@@ -41,7 +40,7 @@ If Codex gives you a GitHub link or setup page:
 
 ## 5. Validate before going live
 
-Ask Codex to call `validate_project`.
+Ask Codex to do a test run before going live.
 
 That checks the build without making the site live yet.
 
@@ -50,7 +49,7 @@ That checks the build without making the site live yet.
 When the repo is ready:
 
 1. push to the default branch, usually `main`
-2. ask Codex to watch `get_project_status`
+2. ask Codex to watch until the site is live
 
 Kale Deploy is GitHub-triggered. It does not upload a local folder directly from Codex.
 
@@ -58,9 +57,9 @@ Kale Deploy is GitHub-triggered. It does not upload a local folder directly from
 
 There are four different states that matter:
 
-- configured: Codex knows about the Kale MCP server
-- authenticated: the browser OAuth step is complete
-- deployable: the repo is registered and GitHub approval is done
-- live: a push has built successfully and the project URL is serving
+- connected: Codex can use Kale
+- approved: GitHub is connected for this repo
+- tested: Kale can do a build check
+- live: a push has published the site successfully
 
-Do not treat “configured” as enough by itself.
+Do not treat “connected” as enough by itself.

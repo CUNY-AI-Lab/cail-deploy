@@ -48,14 +48,7 @@ Use the build prompt from the homepage, or say something like:
 - “Make a simple guestbook site with Kale Deploy.”
 - “Create an exhibit site and publish it with Kale Deploy.”
 
-If the agent starts from a blank project, it will usually create a CAIL-compatible repo structure for you.
-
-That normally includes files like:
-
-- `src/index.ts`
-- `package.json`
-- `wrangler.jsonc`
-- `AGENTS.md`
+If the agent starts from a blank project, it will usually create the project structure Kale needs for you.
 
 ### 3. Push to GitHub
 
@@ -110,8 +103,8 @@ Kale Deploy works best for:
 - course or project sites
 - simple APIs
 - forms and guestbooks
-- D1-backed projects
-- Worker-compatible Hono apps
+- directories, catalogs, and searchable collections
+- small interactive apps
 
 Some advanced features may require approval and usage caps:
 
@@ -120,7 +113,7 @@ Some advanced features may require approval and usage caps:
 - realtime rooms
 - very large media collections
 
-It is not a general-purpose Linux server host.
+It is not a general-purpose server host.
 
 ## If you already have a repo
 
@@ -133,20 +126,20 @@ The simplest path is:
 3. Enter `owner/repo`
 4. Follow the GitHub approval step if Kale Deploy is not connected yet
 
-Your repo still needs to fit the Kale Deploy runtime.
+Your repo still needs to fit the kind of web app Kale can publish.
 
 Good signs:
 
 - it uses TypeScript or JavaScript
-- it has a Worker-style entrypoint
-- it already uses Hono or a Worker-compatible framework
+- it is already a website or small web app
+- it does not depend on a long-running backend server
 
 Warning signs:
 
 - Python backend
 - Express or another traditional Node server
 - native modules
-- local SQLite files
+- local database files
 - long-running background jobs
 
 If you are unsure, push the repo and read the GitHub check result. It should tell you whether the project is ready, needs adaptation, or is unsupported.

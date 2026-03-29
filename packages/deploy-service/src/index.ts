@@ -4047,13 +4047,13 @@ function renderGitHubUserAuthSuccessPage(input: {
       <section class="card">
         <div class="logo">${logoHtml("44px")}</div>
         <h1>GitHub is connected to Kale Deploy</h1>
-        <p><strong>${escapeHtml(input.githubUser.login)}</strong> is now linked for GitHub-backed project administration in Kale Deploy.</p>
+        <p><strong>${escapeHtml(input.githubUser.login)}</strong> is now linked to Kale Deploy.</p>
         ${repositoryContext ? `<div class="notice"><p>This authorization is ready for <code>${escapeHtml(repositoryContext.repositoryFullName)}</code>.</p></div>` : ""}
         <div class="actions">
           <a class="button" href="${escapeHtml(continueUrl)}">${escapeHtml(continueLabel)}</a>
           ${showHomeButton ? `<a class="button secondary" href="${escapeHtml(input.serviceBaseUrl)}">Go to the Kale homepage</a>` : ""}
         </div>
-        <p>Return to your agent and continue. Kale can now use this GitHub account for sensitive project-admin actions such as secret management.</p>
+        <p>Return to your agent and continue. Kale can now use this GitHub account for project settings like secrets and API keys.</p>
       </section>
     </main>
   </body>

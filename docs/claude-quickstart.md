@@ -23,7 +23,7 @@ Claude will open a browser login flow for Kale Deploy.
 
 ## 3. Confirm that Kale is really usable
 
-Ask Claude to call Kale Deploy's `test_connection` tool.
+Ask Claude to confirm that Kale is connected and ready.
 
 You want Claude to be able to say something definite like:
 
@@ -36,8 +36,7 @@ If Claude cannot do that yet, the connection is not really ready.
 Ask Claude to:
 
 - create or connect the GitHub repository
-- call `register_project`
-- tell you if Kale returns a `guidedInstallUrl`
+- check whether Kale needs a GitHub approval step
 
 ## 5. Approve GitHub once
 
@@ -49,7 +48,7 @@ If Claude gives you a GitHub link or setup page:
 
 ## 6. Validate before going live
 
-Ask Claude to call `validate_project`.
+Ask Claude to do a test run before going live.
 
 That checks the build without making the site live yet.
 
@@ -58,13 +57,13 @@ That checks the build without making the site live yet.
 When the repo is ready:
 
 1. push to the default branch, usually `main`
-2. ask Claude to watch `get_project_status`
+2. ask Claude to watch until the site is live
 
 Kale Deploy is GitHub-triggered. It does not upload a local folder directly from Claude.
 
 ## 8. Secrets use the Kale project slug
 
-Secret tools use the Kale `projectName` slug, not `owner/repo`.
+Secret tools use the Kale project name, not `owner/repo`.
 
 Good example:
 
@@ -75,16 +74,10 @@ Wrong example:
 - `projectName: szweibel/kale-cache-smoke-test`
 - `projectName: szweibel-kale-cache-smoke-test`
 
-If you only know the repo name, ask Claude to call `get_repository_status` first and use the returned `projectName`.
+If you only know the repo name, ask Claude to look up the project first and use the returned project name.
 
 ## 9. Secret management adds one more GitHub step
 
 Ordinary deploys do not need a second GitHub authorization.
 
-Only these tools do:
-
-- `list_project_secrets`
-- `set_project_secret`
-- `delete_project_secret`
-
-When Claude reaches that path, Kale may ask you to confirm your GitHub user account in the browser so it can verify write/admin access on the repo.
+When Claude reaches that path, Kale may ask you to confirm your GitHub account in the browser so it can verify that you can manage settings for the repo.
