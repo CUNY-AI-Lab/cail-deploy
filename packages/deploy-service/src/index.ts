@@ -1,11 +1,9 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
-import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import * as z from "zod/v4";
 import { SignJWT, jwtVerify } from "jose";
 
+import { createDeployServiceMcpServer as createDeployServiceMcpSurface } from "./deploy-service-mcp";
 import { HttpError, asHttpError } from "./http-error";
 import {
   authorizeProjectSecretsAccess,
@@ -4389,201 +4387,22 @@ function createDeployServiceMcpServer(
   env: Env,
   requestUrl: string,
   identity: AgentRequestIdentity
-): McpServer {
+) {
   const serviceBaseUrl = resolveServiceBaseUrl(env, requestUrl);
-  const server = new McpServer(
-    {
-      name: "cail-deploy",
-      version: "0.1.0"
-    },
-    {
-      instructions: [
-        "Use register_project to determine the canonical slug and guided GitHub install URL.",
-        "Use validate_project for a build-only check before asking the user to go live.",
-        "If guidedInstallUrl is present, the next step still requires a human browser handoff to GitHub.",
-        "CAIL Deploy uses standard MCP OAuth on /mcp; let your harness open the browser login flow automatically.",
-        "Only use the GitHub user-authorization step when managing sensitive project-admin features such as secrets."
-      ].join(" "),
-      jsonSchemaValidator: new CfWorkerJsonSchemaValidator()
-    }
-  );
-
-  server.registerTool(
-    "get_runtime_manifest",
-    {
-      title: "Get runtime manifest",
-      description: "Return the current CAIL Deploy runtime manifest, including the agent API and MCP endpoint.",
-      inputSchema: {}
-    },
-    async () =>
-      createMcpToolResult(
-        "Returned the current CAIL Deploy runtime manifest.",
-        buildRuntimeManifest(env, serviceBaseUrl)
-      )
-  );
-
-  server.registerTool(
-    "test_connection",
-    {
-      title: "Test connection",
-      description: "Confirm that Kale Deploy is authenticated and return the next step, optionally for a specific repository.",
-      inputSchema: {
-        repository: z.string().optional().describe("Optional GitHub repository as owner/repo or a full GitHub URL."),
-        projectName: z.string().optional().describe("Optional requested project slug override.")
-      }
-    },
-    async ({ repository, projectName }) => {
-      if (repository) {
-        const repositoryRef = parseRepositoryInput(repository);
-        const lifecycle = await buildRepositoryLifecycleState(env, requestUrl, repositoryRef, projectName);
-        return createMcpToolResult(
-          `Kale Deploy is connected and authenticated. ${lifecycle.payload.summary}`,
-          {
-            ...buildConnectionHealthPayload(env, serviceBaseUrl, identity),
-            nextAction: lifecycle.payload.nextAction,
-            summary: `Kale Deploy is connected and authenticated. ${lifecycle.payload.summary}`,
-            repositoryStatus: lifecycle.payload
-          }
-        );
-      }
-
-      return createMcpToolResult(
-        "Kale Deploy is connected and authenticated.",
-        {
-          ...buildConnectionHealthPayload(env, serviceBaseUrl, identity),
-          nextAction: "register_project",
-          summary: "Kale Deploy is connected and authenticated. Call register_project for the repository you want to deploy next."
-        }
-      );
-    }
-  );
-
-  server.registerTool(
-    "get_repository_status",
-    {
-      title: "Get repository status",
-      description: "Return the repo-first lifecycle state for a GitHub repository, including slug, install coverage, and next action.",
-      inputSchema: {
-        repository: z.string().describe("GitHub repository as owner/repo or a full GitHub URL."),
-        projectName: z.string().optional().describe("Optional requested project slug override.")
-      }
-    },
-    async ({ repository, projectName }) => {
-      const repositoryRef = parseRepositoryInput(repository);
-      const lifecycle = await buildRepositoryLifecycleState(env, requestUrl, repositoryRef, projectName);
-      return createMcpToolResult(lifecycle.payload.summary, lifecycle.payload);
-    }
-  );
-
-  server.registerTool(
-    "register_project",
-    {
-      title: "Register project",
-      description: "Determine the canonical project slug and install state for a repository before the first push.",
-      inputSchema: {
-        repository: z.string().describe("GitHub repository as owner/repo or a full GitHub URL."),
-        projectName: z.string().optional().describe("Optional requested project slug override.")
-      }
-    },
-    async ({ repository, projectName }) => {
-      const repositoryRef = parseRepositoryInput(repository);
-      const lifecycle = await buildRepositoryLifecycleState(env, requestUrl, repositoryRef, projectName);
-      return createMcpToolResult(lifecycle.payload.summary, lifecycle.payload);
-    }
-  );
-
-  server.registerTool(
-    "validate_project",
-    {
-      title: "Validate project",
-      description: "Queue a build-only validation job for a GitHub branch or commit without deploying it.",
-      inputSchema: {
-        repository: z.string().describe("GitHub repository as owner/repo or a full GitHub URL."),
-        ref: z.string().optional().describe("Branch, tag, or commit to validate. Defaults to the repo default branch."),
-        projectName: z.string().optional().describe("Optional requested project slug override.")
-      }
-    },
-    async ({ repository, ref, projectName }) => {
-      const validation = await queueValidationJob(env, requestUrl, {
-        ...parseRepositoryBody(repository),
-        ref,
-        projectName
-      });
-
-      if (validation.status >= 400) {
-        return createMcpToolErrorResult(
-          extractMcpErrorMessage(validation.body),
-          validation.body as Record<string, unknown>
-        );
-      }
-
-      return createMcpToolResult(
-        `Validation queued for ${repository}${ref ? ` at ${ref}` : ""}.`,
-        validation.body
-      );
-    }
-  );
-
-  server.registerTool(
-    "get_project_status",
-    {
-      title: "Get project status",
-      description: "Return the current deployment lifecycle state for a project slug.",
-      inputSchema: {
-        projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${MAX_PROJECT_NAME_LENGTH} characters.`)
-      }
-    },
-    async ({ projectName }) => {
-      const status = await buildProjectStatusResponse(env, projectName);
-      if (status.status >= 400) {
-        return createMcpToolErrorResult(
-          extractMcpErrorMessage(status.body),
-          status.body as Record<string, unknown>
-        );
-      }
-
-      return createMcpToolResult(
-        summarizeProjectStatusPayload(status.body as Record<string, unknown>),
-        status.body
-      );
-    }
-  );
-
-  server.registerTool(
-    "get_build_job_status",
-    {
-      title: "Get build job status",
-      description: "Return the current lifecycle state for a queued, running, passed, or failed build job.",
-      inputSchema: {
-        jobId: z.string().describe("Build job ID returned by validate_project or deployment status.")
-      }
-    },
-    async ({ jobId }) => {
-      const status = await buildBuildJobStatusResponse(env, jobId);
-      if (status.status >= 400) {
-        return createMcpToolErrorResult(
-          extractMcpErrorMessage(status.body),
-          status.body as Record<string, unknown>
-        );
-      }
-
-      return createMcpToolResult(
-        summarizeBuildJobStatusPayload(status.body as Record<string, unknown>),
-        status.body
-      );
-    }
-  );
-
-  server.registerTool(
-    "list_project_secrets",
-    {
-      title: "List project secrets",
-      description: "List stored secret names for a Kale project. Secret values are never returned.",
-      inputSchema: {
-        projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${MAX_PROJECT_NAME_LENGTH} characters.`)
-      }
-    },
-    async ({ projectName }) => {
+  return createDeployServiceMcpSurface({
+    serviceBaseUrl,
+    identityType: identity.type,
+    maxProjectNameLength: MAX_PROJECT_NAME_LENGTH,
+    getRuntimeManifest: () => buildRuntimeManifest(env, serviceBaseUrl),
+    getConnectionHealth: () => buildConnectionHealthPayload(env, serviceBaseUrl, identity),
+    getRepositoryLifecycle: async (repository, projectName) =>
+      (await buildRepositoryLifecycleState(env, requestUrl, repository, projectName)).payload,
+    queueValidation: async (input) => queueValidationJob(env, requestUrl, input),
+    getProjectStatus: async (projectName) => buildProjectStatusResponse(env, projectName),
+    summarizeProjectStatus: summarizeProjectStatusPayload,
+    getBuildJobStatus: async (jobId) => buildBuildJobStatusResponse(env, jobId),
+    summarizeBuildJobStatus: summarizeBuildJobStatusPayload,
+    listProjectSecrets: async (projectName) => {
       const authorization = await authorizeProjectSecretsAccess(
         env,
         requestUrl,
@@ -4592,26 +4411,21 @@ function createDeployServiceMcpServer(
         PROJECT_ADMIN_AUTH_DEPENDENCIES
       );
       if (!authorization.ok) {
-        return createMcpToolErrorResult(authorization.body.summary, authorization.body);
+        return {
+          status: authorization.status,
+          body: authorization.body,
+          summary: authorization.body.summary
+        };
       }
 
       const payload = await buildProjectSecretsListPayload(env, authorization.project, authorization.githubLogin);
-      return createMcpToolResult(payload.summary, payload);
-    }
-  );
-
-  server.registerTool(
-    "set_project_secret",
-    {
-      title: "Set project secret",
-      description: "Create or update a project secret. Secret values are write-only and never returned.",
-      inputSchema: {
-        projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${MAX_PROJECT_NAME_LENGTH} characters.`),
-        secretName: z.string().describe("Secret name, usually uppercase like OPENAI_API_KEY."),
-        value: z.string().describe("Secret value to store for this project.")
-      }
+      return {
+        status: 200,
+        body: payload,
+        summary: payload.summary
+      };
     },
-    async ({ projectName, secretName, value }) => {
+    setProjectSecret: async (projectName, secretName, value) => {
       const authorization = await authorizeProjectSecretsAccess(
         env,
         requestUrl,
@@ -4620,25 +4434,21 @@ function createDeployServiceMcpServer(
         PROJECT_ADMIN_AUTH_DEPENDENCIES
       );
       if (!authorization.ok) {
-        return createMcpToolErrorResult(authorization.body.summary, authorization.body);
+        return {
+          status: authorization.status,
+          body: authorization.body,
+          summary: authorization.body.summary
+        };
       }
 
       const payload = await setProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName, value);
-      return createMcpToolResult(payload.summary, payload);
-    }
-  );
-
-  server.registerTool(
-    "delete_project_secret",
-    {
-      title: "Delete project secret",
-      description: "Remove a stored project secret by name.",
-      inputSchema: {
-        projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${MAX_PROJECT_NAME_LENGTH} characters.`),
-        secretName: z.string().describe("Secret name to remove.")
-      }
+      return {
+        status: 200,
+        body: payload,
+        summary: payload.summary
+      };
     },
-    async ({ projectName, secretName }) => {
+    deleteProjectSecret: async (projectName, secretName) => {
       const authorization = await authorizeProjectSecretsAccess(
         env,
         requestUrl,
@@ -4647,98 +4457,21 @@ function createDeployServiceMcpServer(
         PROJECT_ADMIN_AUTH_DEPENDENCIES
       );
       if (!authorization.ok) {
-        return createMcpToolErrorResult(authorization.body.summary, authorization.body);
+        return {
+          status: authorization.status,
+          body: authorization.body,
+          summary: authorization.body.summary
+        };
       }
 
       const payload = await removeProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName);
-      return createMcpToolResult(payload.summary, payload);
+      return {
+        status: 200,
+        body: payload,
+        summary: payload.summary
+      };
     }
-  );
-
-  server.registerResource(
-    "runtime-manifest",
-    "cail://runtime/manifest",
-    {
-      mimeType: "application/json",
-      description: "CAIL Deploy runtime manifest"
-    },
-    async () => ({
-      contents: [
-        {
-          uri: "cail://runtime/manifest",
-          mimeType: "application/json",
-          text: JSON.stringify(buildRuntimeManifest(env, serviceBaseUrl), null, 2)
-        }
-      ]
-    })
-  );
-
-  server.registerResource(
-    "mcp-auth-model",
-    "cail://runtime/auth",
-    {
-      mimeType: "application/json",
-      description: "Authentication requirements for the CAIL Deploy MCP server"
-    },
-    async () => ({
-      contents: [
-        {
-          uri: "cail://runtime/auth",
-          mimeType: "application/json",
-          text: JSON.stringify(
-            {
-              identityType: identity.type,
-              notes: [
-                "CAIL Deploy uses standard MCP OAuth on /mcp.",
-                "Your harness should discover /.well-known/oauth-protected-resource/mcp, open the browser login flow, and store the returned token automatically."
-              ]
-            },
-            null,
-            2
-          )
-        }
-      ]
-    })
-  );
-
-  return server;
-}
-
-function createMcpToolResult<TPayload extends Record<string, unknown>>(text: string, payload: TPayload) {
-  return {
-    content: [{ type: "text" as const, text }],
-    structuredContent: payload
-  };
-}
-
-function createMcpToolErrorResult<TPayload extends Record<string, unknown>>(text: string, payload: TPayload) {
-  return {
-    content: [{ type: "text" as const, text }],
-    structuredContent: payload,
-    isError: true
-  };
-}
-
-function parseRepositoryInput(repository: string): { owner: string; repo: string } {
-  return parseRepositoryReference(parseRepositoryBody(repository));
-}
-
-function parseRepositoryBody(repository: string): {
-  repositoryFullName?: string;
-  repositoryUrl?: string;
-} {
-  const trimmed = repository.trim();
-  return /^https?:\/\//i.test(trimmed)
-    ? { repositoryUrl: trimmed }
-    : { repositoryFullName: trimmed };
-}
-
-function extractMcpErrorMessage(body: unknown): string {
-  if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
-    return body.error;
-  }
-
-  return "Request failed.";
+  });
 }
 
 function summarizeProjectStatusPayload(payload: Record<string, unknown>): string {
