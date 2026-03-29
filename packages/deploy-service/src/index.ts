@@ -6,6 +6,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import * as z from "zod/v4";
 import { SignJWT, jwtVerify } from "jose";
 
+import { HttpError, asHttpError } from "./http-error";
 import { baseStyles, escapeHtml, faviconLink, logoHtml, serializeJsonForHtml } from "./ui";
 import {
   describeRepositoryCoverage,
@@ -29,6 +30,13 @@ import {
   renderProjectControlPanelGatePage,
   renderProjectControlPanelPage
 } from "./project-control-ui";
+import {
+  buildProjectSecretBindings,
+  buildProjectSecretsListPayload,
+  removeProjectSecretValue,
+  setProjectSecretValue,
+  type ProjectSecretsAccessContext
+} from "./project-secrets";
 import { prepareStaticAssetsUpload } from "./lib/assets";
 import {
   readBearerToken,
@@ -44,7 +52,6 @@ import {
   countActiveBuildJobsForRepository,
   countBuildJobsForRepositoryOnDate,
   consumeOauthGrant,
-  deleteProjectSecretForRepository,
   deleteGitHubUserAuthByGitHubUserId,
   ensureProjectPolicy,
   getBuildJob,
@@ -54,14 +61,11 @@ import {
   getLatestProjectForRepository,
   getPreferredProjectNameForRepository,
   getProject,
-  listProjectSecretMetadataForRepository,
-  listProjectSecretsForRepository,
   listExpiredRetainedFailedDeployments,
   listProjects,
   listRetainedSuccessfulDeployments,
   putGitHubUserAuth,
   putBuildJob,
-  putProjectSecret,
   putProject,
   releaseWebhookDelivery,
   insertDeployment,
@@ -245,36 +249,6 @@ type GitHubUserAuthStatePayload = {
   returnTo?: string;
 };
 
-type ProjectSecretMetadataPayload = {
-  secretName: string;
-  githubLogin: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type ProjectSecretsListPayload = {
-  ok: true;
-  projectName: string;
-  repositoryFullName: string;
-  connectedGitHubLogin: string;
-  secrets: ProjectSecretMetadataPayload[];
-  count: number;
-  summary: string;
-};
-
-type ProjectSecretMutationPayload = {
-  ok: true;
-  projectName: string;
-  repositoryFullName: string;
-  connectedGitHubLogin: string;
-  secretName: string;
-  liveDeploymentDetected: boolean;
-  liveUpdateApplied: boolean;
-  nextAction: "none" | "redeploy_to_apply_secret";
-  summary: string;
-  warning?: string;
-};
-
 type ProjectSecretsAuthErrorPayload = {
   error: string;
   summary: string;
@@ -290,14 +264,7 @@ type ProjectSecretsAuthErrorPayload = {
 };
 
 type ProjectSecretsAuthorization =
-  | {
-      ok: true;
-      project: ProjectRecord;
-      repositoryFullName: string;
-      githubLogin: string;
-      githubUserId: number;
-      serviceBaseUrl: string;
-    }
+  | ({ ok: true } & ProjectSecretsAccessContext)
   | {
       ok: false;
       status: 401 | 403 | 503;
@@ -310,14 +277,16 @@ export const deployServiceApp = new Hono<{ Bindings: Env }>();
 const DEFAULT_SUCCESSFUL_ARTIFACT_RETENTION = 2;
 const DEFAULT_FAILED_ARTIFACT_RETENTION_DAYS = 7;
 const MAX_PROJECT_NAME_LENGTH = 63;
-const MAX_PROJECT_SECRET_VALUE_BYTES = 5 * 1024;
-const RESERVED_WORKER_TEXT_BINDINGS = 8;
-const MAX_PROJECT_SECRETS_PER_PROJECT = 128 - RESERVED_WORKER_TEXT_BINDINGS;
 const GITHUB_MANIFEST_STATE_COOKIE = "cail_github_manifest_state";
 const GITHUB_MANIFEST_STATE_MAX_AGE_SECONDS = 60 * 60;
 const GITHUB_INSTALL_CONTEXT_COOKIE = "cail_github_install_context";
 const GITHUB_INSTALL_CONTEXT_MAX_AGE_SECONDS = 10 * 60;
 const MCP_REQUIRED_SCOPE = "cail:deploy";
+const PROJECT_SECRETS_CONFIG = {
+  resolveControlPlaneEncryptionKey,
+  resolveRequiredCloudflareApiToken,
+  formatBytes
+};
 
 deployServiceApp.use("/mcp", cors({
   origin: "*",
@@ -1942,7 +1911,13 @@ deployServiceApp.put("/api/projects/:projectName/secrets/:secretName", async (c)
     }
 
     const body = await c.req.json<{ value?: string }>();
-    const payload = await setProjectSecretValue(c.env, authorization, c.req.param("secretName"), body.value);
+    const payload = await setProjectSecretValue(
+      c.env,
+      PROJECT_SECRETS_CONFIG,
+      authorization,
+      c.req.param("secretName"),
+      body.value
+    );
     return c.json(payload);
   } catch (error) {
     const httpError = asHttpError(error);
@@ -1971,7 +1946,12 @@ deployServiceApp.delete("/api/projects/:projectName/secrets/:secretName", async 
       return c.json(authorization.body, { status: authorization.status });
     }
 
-    const payload = await removeProjectSecretValue(c.env, authorization, c.req.param("secretName"));
+    const payload = await removeProjectSecretValue(
+      c.env,
+      PROJECT_SECRETS_CONFIG,
+      authorization,
+      c.req.param("secretName")
+    );
     return c.json(payload);
   } catch (error) {
     const httpError = asHttpError(error);
@@ -2173,6 +2153,7 @@ deployServiceApp.post("/projects/:projectName/control/secrets", async (c) => {
 
     const result = await setProjectSecretValue(
       c.env,
+      PROJECT_SECRETS_CONFIG,
       authorization,
       getRequiredProjectControlFormField(form, "secretName"),
       getRequiredProjectControlFormField(form, "secretValue")
@@ -2222,7 +2203,12 @@ deployServiceApp.post("/projects/:projectName/control/secrets/:secretName/delete
       }), 302);
     }
 
-    const result = await removeProjectSecretValue(c.env, authorization, c.req.param("secretName"));
+    const result = await removeProjectSecretValue(
+      c.env,
+      PROJECT_SECRETS_CONFIG,
+      authorization,
+      c.req.param("secretName")
+    );
     return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
       flash: result.nextAction === "redeploy_to_apply_secret" ? "warning" : "success",
       message: result.warning ?? result.summary
@@ -2944,8 +2930,7 @@ async function authorizeProjectSecretsAccess(
     project,
     repositoryFullName: project.githubRepo,
     githubLogin: githubUserSession.githubLogin,
-    githubUserId: githubUserSession.githubUserId,
-    serviceBaseUrl
+    githubUserId: githubUserSession.githubUserId
   };
 }
 
@@ -3057,229 +3042,6 @@ async function fetchGitHubUserRepositoryAccess(
     }
     throw error;
   }
-}
-
-async function buildProjectSecretsListPayload(
-  env: Env,
-  project: ProjectRecord,
-  githubLogin: string
-): Promise<ProjectSecretsListPayload> {
-  const secrets = await listProjectSecretMetadataForRepository(env.CONTROL_PLANE_DB, project.githubRepo);
-
-  return {
-    ok: true,
-    projectName: project.projectName,
-    repositoryFullName: project.githubRepo,
-    connectedGitHubLogin: githubLogin,
-    secrets: secrets.map((secret) => ({
-      secretName: secret.secretName,
-      githubLogin: secret.githubLogin,
-      createdAt: secret.createdAt,
-      updatedAt: secret.updatedAt
-    })),
-    count: secrets.length,
-    summary: secrets.length === 0
-      ? `No project secrets are stored for ${project.projectName} yet.`
-      : `${secrets.length} project secret${secrets.length === 1 ? "" : "s"} configured for ${project.projectName}.`
-  };
-}
-
-async function setProjectSecretValue(
-  env: Env,
-  authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
-  secretNameInput: string,
-  secretValue: string | undefined
-): Promise<ProjectSecretMutationPayload> {
-  const secretName = assertValidProjectSecretName(secretNameInput);
-  const secretText = assertValidProjectSecretValue(secretValue);
-  const encryptionKey = resolveControlPlaneEncryptionKey(env);
-  const sealed = await encryptStoredText(encryptionKey, secretText);
-  const now = new Date().toISOString();
-  const existing = await listProjectSecretMetadataForRepository(env.CONTROL_PLANE_DB, authorization.project.githubRepo);
-  const existingSecret = existing.find((secret) => secret.secretName === secretName);
-  assertProjectSecretCapacity(existing.length, Boolean(existingSecret));
-
-  await putProjectSecret(env.CONTROL_PLANE_DB, {
-    githubRepo: authorization.project.githubRepo,
-    projectName: authorization.project.projectName,
-    secretName,
-    ciphertext: sealed.ciphertext,
-    iv: sealed.iv,
-    githubUserId: authorization.githubUserId,
-    githubLogin: authorization.githubLogin,
-    createdAt: existingSecret?.createdAt ?? now,
-    updatedAt: now
-  });
-
-  return await syncProjectSecretToLiveWorker(env, authorization, secretName, secretText, "set");
-}
-
-async function removeProjectSecretValue(
-  env: Env,
-  authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
-  secretNameInput: string
-): Promise<ProjectSecretMutationPayload> {
-  const secretName = assertValidProjectSecretName(secretNameInput);
-  await deleteProjectSecretForRepository(env.CONTROL_PLANE_DB, authorization.project.githubRepo, secretName);
-  return await syncProjectSecretToLiveWorker(env, authorization, secretName, undefined, "delete");
-}
-
-async function syncProjectSecretToLiveWorker(
-  env: Env,
-  authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
-  secretName: string,
-  secretValue: string | undefined,
-  operation: "set" | "delete"
-): Promise<ProjectSecretMutationPayload> {
-  const liveDeploymentDetected = Boolean(authorization.project.latestDeploymentId);
-  if (!liveDeploymentDetected) {
-    return {
-      ok: true,
-      projectName: authorization.project.projectName,
-      repositoryFullName: authorization.repositoryFullName,
-      connectedGitHubLogin: authorization.githubLogin,
-      secretName,
-      liveDeploymentDetected: false,
-      liveUpdateApplied: false,
-      nextAction: "none",
-      summary: operation === "set"
-        ? `Saved ${secretName} for ${authorization.project.projectName}. It will be injected automatically on the first deployment.`
-        : `Removed ${secretName} from ${authorization.project.projectName}.`
-    };
-  }
-
-  try {
-    const client = new CloudflareApiClient({
-      accountId: env.CLOUDFLARE_ACCOUNT_ID,
-      apiToken: resolveRequiredCloudflareApiToken(env)
-    });
-
-    if (operation === "set") {
-      await client.setUserWorkerSecret(env.WFP_NAMESPACE, authorization.project.projectName, secretName, secretValue ?? "");
-    } else {
-      await client.deleteUserWorkerSecret(env.WFP_NAMESPACE, authorization.project.projectName, secretName);
-    }
-
-    return {
-      ok: true,
-      projectName: authorization.project.projectName,
-      repositoryFullName: authorization.repositoryFullName,
-      connectedGitHubLogin: authorization.githubLogin,
-      secretName,
-      liveDeploymentDetected: true,
-      liveUpdateApplied: true,
-      nextAction: "none",
-      summary: operation === "set"
-        ? `Saved ${secretName} and updated the live Worker for ${authorization.project.projectName}.`
-        : `Removed ${secretName} from both Kale storage and the live Worker for ${authorization.project.projectName}.`
-    };
-  } catch (error) {
-    console.error("Applying project secret to the live Worker failed.", error);
-    return {
-      ok: true,
-      projectName: authorization.project.projectName,
-      repositoryFullName: authorization.repositoryFullName,
-      connectedGitHubLogin: authorization.githubLogin,
-      secretName,
-      liveDeploymentDetected: true,
-      liveUpdateApplied: false,
-      nextAction: "redeploy_to_apply_secret",
-      summary: operation === "set"
-        ? `Saved ${secretName}, but the live Worker was not updated immediately.`
-        : `Removed ${secretName} from Kale storage, but the live Worker still needs a redeploy to pick up the change.`,
-      warning: "The desired secret state is stored safely in Kale Deploy. Push a new commit to the default branch to apply this change to the live Worker."
-    };
-  }
-}
-
-async function buildProjectSecretBindings(
-  env: Env,
-  metadata: DeploymentMetadata
-): Promise<WorkerBinding[]> {
-  const secrets = await listProjectSecretsForRepository(env.CONTROL_PLANE_DB, metadata.githubRepo);
-  if (secrets.length === 0) {
-    return [];
-  }
-
-  if (secrets.length > MAX_PROJECT_SECRETS_PER_PROJECT) {
-    throw new HttpError(
-      400,
-      `This project has ${secrets.length} stored secrets, which exceeds Kale Deploy's current limit of ${MAX_PROJECT_SECRETS_PER_PROJECT}. Remove some secrets before deploying again.`
-    );
-  }
-
-  const existingBindingNames = new Set((metadata.workerUpload.bindings ?? []).map((binding) => binding.name));
-  const conflicts = secrets.filter((secret) => existingBindingNames.has(secret.secretName)).map((secret) => secret.secretName);
-  if (conflicts.length > 0) {
-    throw new HttpError(
-      400,
-      `This deployment already defines bindings that are reserved by stored Kale project secrets: ${conflicts.join(", ")}. Rename the binding in the repo or remove the stored project secret first.`
-    );
-  }
-
-  const encryptionKey = resolveControlPlaneEncryptionKey(env);
-  return await Promise.all(
-    secrets.map(async (secret) => {
-      const text = await decryptStoredText(encryptionKey, {
-        ciphertext: secret.ciphertext,
-        iv: secret.iv
-      });
-      assertValidProjectSecretValue(text);
-      return {
-        type: "secret_text" as const,
-        name: secret.secretName,
-        text
-      };
-    })
-  );
-}
-
-function assertValidProjectSecretName(value: string): string {
-  const normalized = value.trim().toUpperCase();
-  if (!/^[A-Z][A-Z0-9_]{0,127}$/u.test(normalized)) {
-    throw new HttpError(
-      400,
-      "Project secret names must start with a letter and contain only uppercase letters, numbers, and underscores."
-    );
-  }
-
-  if (isReservedProjectSecretName(normalized)) {
-    throw new HttpError(
-      400,
-      `${normalized} is reserved by Kale Deploy. Choose another project secret name.`
-    );
-  }
-
-  return normalized;
-}
-
-function assertValidProjectSecretValue(value: string | undefined): string {
-  if (typeof value !== "string" || !value.length) {
-    throw new HttpError(400, "Project secret values must be a non-empty string.");
-  }
-
-  const byteLength = new TextEncoder().encode(value).byteLength;
-  if (byteLength > MAX_PROJECT_SECRET_VALUE_BYTES) {
-    throw new HttpError(
-      400,
-      `Project secret values must stay under ${formatBytes(MAX_PROJECT_SECRET_VALUE_BYTES)}.`
-    );
-  }
-
-  return value;
-}
-
-function assertProjectSecretCapacity(existingSecretCount: number, updatingExistingSecret: boolean): void {
-  if (!updatingExistingSecret && existingSecretCount >= MAX_PROJECT_SECRETS_PER_PROJECT) {
-    throw new HttpError(
-      400,
-      `Projects can store at most ${MAX_PROJECT_SECRETS_PER_PROJECT} secrets.`
-    );
-  }
-}
-
-function isReservedProjectSecretName(name: string): boolean {
-  return new Set(["DB", "FILES", "CACHE", "AI", "VECTORIZE", "ROOMS"]).has(name);
 }
 
 function hasGitHubRepositoryWriteAccess(repository: GitHubUserRepository): boolean {
@@ -3395,7 +3157,7 @@ async function deployArtifact(
   });
   const staticAssetsResult = await prepareStaticAssetsUpload(client, env.WFP_NAMESPACE, metadata.projectName, staticAssets, files);
   const nextHasAssets = Boolean(staticAssets?.files.length || existingRecord?.hasAssets);
-  const secretBindings = await buildProjectSecretBindings(env, metadata);
+  const secretBindings = await buildProjectSecretBindings(env, PROJECT_SECRETS_CONFIG, metadata);
   const workerUpload = withProjectBindings(metadata, databaseId, {
     filesBucketName,
     cacheNamespaceId,
@@ -4849,27 +4611,6 @@ function serializeCookie(
   return parts.join("; ");
 }
 
-function asHttpError(error: unknown): HttpError {
-  if (error instanceof HttpError) {
-    return error;
-  }
-
-  if (error instanceof Error) {
-    return new HttpError(500, error.message);
-  }
-
-  return new HttpError(500, "Unexpected error.");
-}
-
-type HttpStatus = 400 | 401 | 403 | 404 | 409 | 413 | 415 | 429 | 500 | 503;
-
-class HttpError extends Error {
-  constructor(readonly status: HttpStatus, message: string) {
-    super(message);
-    this.name = "HttpError";
-  }
-}
-
 export default {
   fetch(request: Request, env: Env, executionCtx: ExecutionContext) {
     return deployServiceApp.fetch(normalizeWorkerRequest(request, resolveBasePath(env.DEPLOY_SERVICE_BASE_URL)), env, executionCtx);
@@ -5302,7 +5043,7 @@ function createDeployServiceMcpServer(
         return createMcpToolErrorResult(authorization.body.summary, authorization.body);
       }
 
-      const payload = await setProjectSecretValue(env, authorization, secretName, value);
+      const payload = await setProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName, value);
       return createMcpToolResult(payload.summary, payload);
     }
   );
@@ -5323,7 +5064,7 @@ function createDeployServiceMcpServer(
         return createMcpToolErrorResult(authorization.body.summary, authorization.body);
       }
 
-      const payload = await removeProjectSecretValue(env, authorization, secretName);
+      const payload = await removeProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName);
       return createMcpToolResult(payload.summary, payload);
     }
   );
