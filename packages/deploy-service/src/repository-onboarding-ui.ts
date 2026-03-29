@@ -11,7 +11,7 @@ import {
 } from "./repository-lifecycle-presentation";
 import { baseStyles, escapeHtml, faviconLink, logoHtml, serializeJsonForHtml } from "./ui";
 
-type RepositoryLifecycleViewModel = {
+export type RepositoryLifecycleViewModel = {
   repository: {
     fullName: string;
     htmlUrl: string;

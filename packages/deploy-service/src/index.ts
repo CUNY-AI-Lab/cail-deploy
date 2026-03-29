@@ -25,13 +25,15 @@ import {
 } from "./repository-lifecycle-presentation";
 import {
   buildGuidedSetupUrl,
-  renderGitHubInstallPage,
   renderGitHubRegisterPage,
-  renderGitHubSetupPage,
   renderManifestErrorPage,
   renderManifestSuccessPage,
   renderOauthAuthorizationErrorPage
 } from "./repository-onboarding-ui";
+import {
+  createGitHubInstallResponse,
+  createGitHubSetupResponse
+} from "./repository-onboarding-controller";
 import {
   buildProjectControlPanelUrl,
   describeGitHubUserAuthContinueLabel,
@@ -1052,115 +1054,55 @@ deployServiceApp.get("/github/manifest/callback", async (c) => {
 });
 
 deployServiceApp.get("/github/install", async (c) => {
-  const appSlug = resolveGitHubAppSlug(c.env);
-  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  const appName = resolveGitHubAppName(c.env);
-  const marketingName = "Kale Deploy";
-  const installContext = readGitHubInstallContext(c.req.raw.headers.get("cookie") ?? undefined, c.env, serviceBaseUrl);
-  const repositoryQuery = c.req.query("repositoryFullName");
-  const repositoryUrlQuery = c.req.query("repositoryUrl");
-  const projectNameQuery = c.req.query("projectName");
-  const requestedContext = parseOptionalRepositoryContext({
-    repositoryFullName: repositoryQuery ?? undefined,
-    repositoryUrl: repositoryUrlQuery ?? undefined,
-    projectName: projectNameQuery ?? undefined
-  }, c.env, serviceBaseUrl);
-  const nextContext = requestedContext ?? installContext;
-  let repositoryLifecycle:
-    | RepositoryLifecyclePayload
-    | undefined;
-
-  if (nextContext) {
-    const repository = parseRepositoryReference({
-      repositoryFullName: nextContext.repositoryFullName
-    });
-    const lifecycle = await buildRepositoryLifecycleState(c.env, c.req.raw.url, repository, nextContext.projectName);
-    repositoryLifecycle = lifecycle.payload;
-  }
-
-  const continueUrl = appSlug ? githubAppInstallUrl(appSlug) : undefined;
-  const response = c.html(renderGitHubInstallPage({
-    appName,
-    marketingName,
-    serviceBaseUrl,
-    oauthBaseUrl: resolveMcpOauthBaseUrl(c.env, c.req.raw.url),
-    continueUrl,
-    lifecycle: repositoryLifecycle
-  }));
-
-  if (nextContext) {
-    response.headers.set("Set-Cookie", serializeCookie(
-      GITHUB_INSTALL_CONTEXT_COOKIE,
-      JSON.stringify(nextContext),
-      {
-        httpOnly: true,
-        maxAge: GITHUB_INSTALL_CONTEXT_MAX_AGE_SECONDS,
-        path: resolveCookiePath(serviceBaseUrl),
-        sameSite: "Lax",
-        secure: serviceBaseUrl.startsWith("https://")
-      }
-    ));
-  }
-
-  response.headers.set("Cache-Control", "no-store");
-  return response;
+  return createGitHubInstallResponse({
+    env: c.env,
+    requestUrl: c.req.raw.url,
+    cookieHeader: c.req.raw.headers.get("cookie") ?? undefined,
+    repositoryFullName: c.req.query("repositoryFullName") ?? undefined,
+    repositoryUrl: c.req.query("repositoryUrl") ?? undefined,
+    projectName: c.req.query("projectName") ?? undefined,
+    appName: resolveGitHubAppName(c.env),
+    marketingName: "Kale Deploy",
+    appSlug: resolveGitHubAppSlug(c.env),
+    readGitHubInstallContext,
+    parseOptionalRepositoryContext,
+    parseRepositoryReference,
+    buildRepositoryLifecycleState,
+    resolveServiceBaseUrl,
+    resolveMcpOauthBaseUrl,
+    githubAppInstallUrl,
+    serializeCookie,
+    resolveCookiePath,
+    installContextCookieName: GITHUB_INSTALL_CONTEXT_COOKIE,
+    installContextMaxAgeSeconds: GITHUB_INSTALL_CONTEXT_MAX_AGE_SECONDS
+  });
 });
 
 deployServiceApp.get("/github/setup", async (c) => {
-  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  const installationId = c.req.query("installation_id");
-  const setupAction = c.req.query("setup_action");
-  const appName = resolveGitHubAppName(c.env);
-  const marketingName = "Kale Deploy";
-  const appSlug = resolveGitHubAppSlug(c.env);
-  const installUrl = appSlug ? githubAppInstallUrl(appSlug) : undefined;
-  const cookieHeader = c.req.raw.headers.get("cookie");
-  const cookieContext = readGitHubInstallContext(cookieHeader ?? undefined, c.env, serviceBaseUrl);
-  const queryContext = parseOptionalRepositoryContext({
+  return createGitHubSetupResponse({
+    env: c.env,
+    requestUrl: c.req.raw.url,
+    cookieHeader: c.req.raw.headers.get("cookie") ?? undefined,
     repositoryFullName: c.req.query("repositoryFullName") ?? undefined,
     repositoryUrl: c.req.query("repositoryUrl") ?? undefined,
-    projectName: c.req.query("projectName") ?? undefined
-  }, c.env, serviceBaseUrl);
-  const installContext = queryContext ?? cookieContext;
-  let repositoryLifecycle:
-    | RepositoryLifecyclePayload
-    | undefined;
-
-  if (installContext) {
-    const repository = parseRepositoryReference({
-      repositoryFullName: installContext.repositoryFullName
-    });
-    const lifecycle = await buildRepositoryLifecycleState(c.env, c.req.raw.url, repository, installContext.projectName);
-    repositoryLifecycle = lifecycle.payload;
-  }
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-  const response = c.html(renderGitHubSetupPage({
-    appName,
-    marketingName,
-    serviceBaseUrl,
-    oauthBaseUrl,
-    installUrl,
-    installationId: installationId ?? undefined,
-    setupAction: setupAction ?? undefined,
-    lifecycle: repositoryLifecycle
-  }));
-
-  response.headers.set("Cache-Control", "no-store");
-  if (installContext) {
-    response.headers.set("Set-Cookie", serializeCookie(
-      GITHUB_INSTALL_CONTEXT_COOKIE,
-      JSON.stringify(installContext),
-      {
-        httpOnly: true,
-        maxAge: GITHUB_INSTALL_CONTEXT_MAX_AGE_SECONDS,
-        path: resolveCookiePath(serviceBaseUrl),
-        sameSite: "Lax",
-        secure: serviceBaseUrl.startsWith("https://")
-      }
-    ));
-  }
-
-  return response;
+    projectName: c.req.query("projectName") ?? undefined,
+    installationId: c.req.query("installation_id") ?? undefined,
+    setupAction: c.req.query("setup_action") ?? undefined,
+    appName: resolveGitHubAppName(c.env),
+    marketingName: "Kale Deploy",
+    appSlug: resolveGitHubAppSlug(c.env),
+    readGitHubInstallContext,
+    parseOptionalRepositoryContext,
+    parseRepositoryReference,
+    buildRepositoryLifecycleState,
+    resolveServiceBaseUrl,
+    resolveMcpOauthBaseUrl,
+    githubAppInstallUrl,
+    serializeCookie,
+    resolveCookiePath,
+    installContextCookieName: GITHUB_INSTALL_CONTEXT_COOKIE,
+    installContextMaxAgeSeconds: GITHUB_INSTALL_CONTEXT_MAX_AGE_SECONDS
+  });
 });
 
 deployServiceApp.post("/github/webhook", async (c) => {
