@@ -51,7 +51,7 @@ npm run ops:healthcheck
 
 - deploy-service runs on Cloudflare Workers behind `https://cuny.qzz.io/kale`
 - project traffic runs on Cloudflare Workers behind `https://<project>.cuny.qzz.io`
-- the build runner runs on AWS EC2
+- the build runner runs on AWS EC2 as one dispatcher container that launches disposable per-build containers
 - GitHub is the source of truth for repository changes
 
 ## First Checks
@@ -85,6 +85,7 @@ curl -fsS http://127.0.0.1:8080/readyz
 curl -fsS http://127.0.0.1:8080/healthz
 docker logs --tail 200 cail-build-runner
 docker restart cail-build-runner
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 ```
 
 If the runner is down:
@@ -138,12 +139,14 @@ Build queued forever:
 - runner is down
 - queue polling is broken
 - runner token or queue token is invalid
+- disposable worker containers cannot be launched from the dispatcher
 
 Build fails immediately:
 
 - repo is outside the supported Worker shape
 - install or build step is broken
 - bindings requested by the repo are not allowed
+- disposable worker image tag is missing or stale
 
 App deployed but project host fails:
 

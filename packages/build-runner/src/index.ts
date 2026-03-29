@@ -33,6 +33,8 @@ const DEFAULT_VISIBILITY_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_RETRY_DELAY_SECONDS = 60;
 const DEFAULT_LOG_TAIL_CHARS = 12_000;
 const DEFAULT_COMPATIBILITY_DATE = new Date().toISOString().slice(0, 10);
+const DEFAULT_BUILD_WORKER_IMAGE = "kale-build-runner:local";
+const DEFAULT_BUILD_WORKER_CACHE_VOLUME = "cail-build-runner-cache";
 const FALLBACK_ENTRYPOINTS = ["src/index.ts", "src/index.js", "index.ts", "index.js"];
 const IGNORE_FILES = new Set(["README.md"]);
 const PYTHON_MARKER_FILES = [
@@ -58,7 +60,14 @@ const TRADITIONAL_NODE_SERVER_PACKAGES = new Set([
 ]);
 const require = createRequire(import.meta.url);
 const WRANGLER_CLI_PATH = require.resolve("wrangler/wrangler-dist/cli.js");
+const DISPOSABLE_WORKER_MODE = "single-job";
+const DISPOSABLE_WORKER_JOB_ENV = "BUILD_RUNNER_JOB_B64";
+const DISPOSABLE_WORKER_CACHE_ROOT = "/home/node/.cache/kale-build-runner";
+const DISPOSABLE_WORKER_WORK_ROOT = "/tmp/cail-build-runner";
+const DISPOSABLE_WORKER_REPORTED_FAILURE_EXIT_CODE = 10;
+const DISPOSABLE_WORKER_RETRY_EXIT_CODE = 75;
 const SANDBOXED_CHILD_ENV_KEYS = [
+  "COREPACK_HOME",
   "HOME",
   "LOGNAME",
   "PATH",
@@ -70,28 +79,36 @@ const SANDBOXED_CHILD_ENV_KEYS = [
   "TERM",
   "TMP",
   "TMPDIR",
+  "NPM_CONFIG_CACHE",
+  "PNPM_HOME",
   "USER",
   "XDG_CACHE_HOME",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
+  "YARN_CACHE_FOLDER",
   "LANG",
   "LC_ALL",
   "LC_CTYPE",
   "TZ"
 ] as const;
 
-type RunnerConfig = {
+type JobRunnerConfig = {
   runnerId: string;
+  buildRunnerToken: string;
+  workRoot: string;
+  keepWorkdirs: boolean;
+};
+
+type RunnerConfig = JobRunnerConfig & {
   cloudflareAccountId: string;
   buildQueueId: string;
   queuesApiToken: string;
-  buildRunnerToken: string;
-  workRoot: string;
   batchSize: number;
   idlePollDelayMs: number;
   visibilityTimeoutMs: number;
   retryDelaySeconds: number;
-  keepWorkdirs: boolean;
+  buildWorkerImage: string;
+  buildWorkerCacheVolume: string;
   healthPort?: number;
 };
 
@@ -231,23 +248,45 @@ type LoggedCommandResult = {
   output: string;
 };
 
+type CommandExecutionResult = LoggedCommandResult & {
+  exitCode: number;
+};
+
 type JobWorkspace = {
   root: string;
   sourceRoot: string;
   bundleRoot: string;
 };
 
+type JobExecutionResult = {
+  outcome: "ack" | "retry";
+  buildStatus: "success" | "failure";
+};
+
+type DisposableWorkerResult = JobExecutionResult & {
+  output: string;
+};
+
 void main();
 
 async function main(): Promise<void> {
-  const config = loadConfig(process.env);
+  if (process.env.BUILD_RUNNER_MODE === DISPOSABLE_WORKER_MODE) {
+    const config = loadJobRunnerConfig(process.env);
+    await mkdir(config.workRoot, { recursive: true });
+    await verifyBuildWorkerHost();
+    const request = parseJobRequestFromEnvironment(process.env);
+    const result = await runBuildJob(config, request);
+    process.exitCode = mapDisposableWorkerExitCode(result);
+    return;
+  }
+
+  const config = loadDispatcherConfig(process.env);
   const state = createRunnerState(config);
   const shutdown = registerShutdownHandlers(state);
   const healthServer = await startHealthServer(config, state);
-  await mkdir(config.workRoot, { recursive: true });
 
   try {
-    await verifyRunnerHost();
+    await verifyDispatcherHost();
     state.startupChecksPassed = true;
     state.status = "idle";
     console.log(`[build-runner] runner=${config.runnerId} queue=${config.buildQueueId} polling`);
@@ -305,73 +344,39 @@ async function handleQueueMessage(
   message: PulledQueueMessage
 ): Promise<"ack" | "retry"> {
   let request: BuildRunnerJobRequest | undefined;
-  let workspace: JobWorkspace | undefined;
-  const logs: string[] = [];
-
   try {
     request = parseJobRequest(message.body);
     state.status = "building";
     state.inFlightJobs.push(request.jobId);
-    workspace = await createWorkspace(config);
+    const result = await runDisposableWorkerContainer(config, request);
 
-    const startResponse = await postBuildStart(config, request);
-    if (startResponse.alreadyCompleted) {
-      console.log(`[build-runner] job=${request.jobId} already completed, acknowledging duplicate delivery`);
-      return "ack";
-    }
-
-    const sourceLease = await fetchSourceLease(config, request);
-    await checkoutRepositoryArchive(sourceLease, workspace);
-
-    const packageJson = await readProjectPackageJson(workspace.sourceRoot);
-    const packageManager = detectPackageManager(workspace.sourceRoot, packageJson);
-    await assertProjectCompatibility(workspace.sourceRoot, packageJson);
-
-    if (packageJson) {
-      await installDependencies(packageManager, workspace.sourceRoot, logs);
-      if (hasBuildScript(packageJson)) {
-        await runBuildScript(packageManager, workspace.sourceRoot, logs);
-      }
-    }
-
-    const buildPlan = await createBuildPlan(workspace.sourceRoot, request.deployment.suggestedProjectName);
-    await runWranglerBundle(buildPlan, workspace.sourceRoot, workspace.bundleRoot, logs);
-
-    const artifact = await prepareArtifact(
-      workspace.sourceRoot,
-      workspace.bundleRoot,
-      buildPlan,
-      packageJson
-    );
-    await postBuildSuccess(config, request, artifact);
-
-    state.lastError = undefined;
-    console.log(`[build-runner] job=${request.jobId} built successfully`);
-    return "ack";
-  } catch (error) {
-    if (error instanceof RetryableRunnerError) {
-      console.error(
-        `[build-runner] retrying job=${request?.jobId ?? "unknown"} because of retryable error`,
-        error.message
+    if (result.outcome === "retry") {
+      state.lastError = truncateLogTail(
+        result.output.trim() || `Disposable build worker requested a retry for job ${request.jobId}.`,
+        DEFAULT_LOG_TAIL_CHARS
       );
+      console.error(`[build-runner] retrying job=${request.jobId} after disposable worker requested retry`);
       return "retry";
     }
 
+    if (result.buildStatus === "failure") {
+      state.lastError = `Build failed for job ${request.jobId}.`;
+      console.warn(`[build-runner] job=${request.jobId} reported a build failure`);
+      return "ack";
+    }
+
+    state.lastError = undefined;
+    console.log(`[build-runner] job=${request.jobId} built successfully in an isolated worker container`);
+    return "ack";
+  } catch (error) {
+    state.lastError = errorMessage(error);
     if (!request) {
       console.error("[build-runner] dropping malformed queue message", error);
       return "ack";
     }
 
-    try {
-      state.lastError = errorMessage(error);
-      await postBuildFailure(config, request, error, logs);
-      console.error(`[build-runner] job=${request.jobId} failed`, error);
-      return "ack";
-    } catch (callbackError) {
-      state.lastError = errorMessage(callbackError);
-      console.error(`[build-runner] failed to report failure for job=${request.jobId}`, callbackError);
-      return "retry";
-    }
+    console.error(`[build-runner] failed to launch isolated build for job=${request.jobId}`, error);
+    return "retry";
   } finally {
     if (request) {
       const completedJobId = request.jobId;
@@ -381,25 +386,30 @@ async function handleQueueMessage(
         state.status = state.shutdownRequested ? "stopping" : "idle";
       }
     }
-    if (workspace && !config.keepWorkdirs) {
-      await rm(workspace.root, { recursive: true, force: true });
-    }
   }
 }
 
-function loadConfig(env: NodeJS.ProcessEnv): RunnerConfig {
+function loadJobRunnerConfig(env: NodeJS.ProcessEnv): JobRunnerConfig {
   return {
     runnerId: required(env.RUNNER_ID ?? env.HOSTNAME ?? "build-runner", "RUNNER_ID"),
+    buildRunnerToken: required(env.BUILD_RUNNER_TOKEN, "BUILD_RUNNER_TOKEN"),
+    workRoot: env.RUNNER_WORKDIR_ROOT ?? path.join(tmpdir(), "cail-build-runner"),
+    keepWorkdirs: env.RUNNER_KEEP_WORKDIRS === "1" || env.RUNNER_KEEP_WORKDIRS === "true"
+  };
+}
+
+function loadDispatcherConfig(env: NodeJS.ProcessEnv): RunnerConfig {
+  return {
+    ...loadJobRunnerConfig(env),
     cloudflareAccountId: required(env.CLOUDFLARE_ACCOUNT_ID, "CLOUDFLARE_ACCOUNT_ID"),
     buildQueueId: required(env.BUILD_QUEUE_ID, "BUILD_QUEUE_ID"),
     queuesApiToken: required(env.QUEUES_API_TOKEN, "QUEUES_API_TOKEN"),
-    buildRunnerToken: required(env.BUILD_RUNNER_TOKEN, "BUILD_RUNNER_TOKEN"),
-    workRoot: env.RUNNER_WORKDIR_ROOT ?? path.join(tmpdir(), "cail-build-runner"),
     batchSize: parsePositiveInteger(env.BUILD_BATCH_SIZE, DEFAULT_BATCH_SIZE),
     idlePollDelayMs: parsePositiveInteger(env.BUILD_IDLE_POLL_DELAY_MS, DEFAULT_IDLE_POLL_DELAY_MS),
     visibilityTimeoutMs: parsePositiveInteger(env.BUILD_VISIBILITY_TIMEOUT_MS, DEFAULT_VISIBILITY_TIMEOUT_MS),
     retryDelaySeconds: parsePositiveInteger(env.BUILD_RETRY_DELAY_SECONDS, DEFAULT_RETRY_DELAY_SECONDS),
-    keepWorkdirs: env.RUNNER_KEEP_WORKDIRS === "1" || env.RUNNER_KEEP_WORKDIRS === "true",
+    buildWorkerImage: env.BUILD_WORKER_IMAGE ?? DEFAULT_BUILD_WORKER_IMAGE,
+    buildWorkerCacheVolume: env.BUILD_WORKER_CACHE_VOLUME ?? DEFAULT_BUILD_WORKER_CACHE_VOLUME,
     healthPort: parseOptionalPositiveInteger(env.RUNNER_HEALTH_PORT)
   };
 }
@@ -524,7 +534,30 @@ function respondJson(response: ServerResponse, status: number, body: Record<stri
   response.end(JSON.stringify(body));
 }
 
-async function verifyRunnerHost(): Promise<void> {
+function parseJobRequestFromEnvironment(env: NodeJS.ProcessEnv): BuildRunnerJobRequest {
+  const encoded = required(env[DISPOSABLE_WORKER_JOB_ENV], DISPOSABLE_WORKER_JOB_ENV);
+  try {
+    return parseJobRequest(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch (error) {
+    throw new Error(`Disposable build worker could not parse ${DISPOSABLE_WORKER_JOB_ENV}: ${errorMessage(error)}`);
+  }
+}
+
+function mapDisposableWorkerExitCode(result: JobExecutionResult): number {
+  if (result.outcome === "retry") {
+    return DISPOSABLE_WORKER_RETRY_EXIT_CODE;
+  }
+
+  return result.buildStatus === "failure"
+    ? DISPOSABLE_WORKER_REPORTED_FAILURE_EXIT_CODE
+    : 0;
+}
+
+async function verifyDispatcherHost(): Promise<void> {
+  await verifyCommandAvailable("docker", ["version"]);
+}
+
+async function verifyBuildWorkerHost(): Promise<void> {
   await verifyCommandAvailable("tar", ["--version"]);
   await verifyCommandAvailable("npm", ["--version"]);
   await verifyCommandAvailable("corepack", ["--version"]);
@@ -623,7 +656,7 @@ function parseJobRequest(body: unknown): BuildRunnerJobRequest {
   return request as BuildRunnerJobRequest;
 }
 
-async function createWorkspace(config: RunnerConfig): Promise<JobWorkspace> {
+async function createWorkspace(config: Pick<JobRunnerConfig, "workRoot">): Promise<JobWorkspace> {
   const root = await mkdtemp(path.join(config.workRoot, "job-"));
   const sourceRoot = path.join(root, "source");
   const bundleRoot = path.join(root, "bundle");
@@ -634,7 +667,170 @@ async function createWorkspace(config: RunnerConfig): Promise<JobWorkspace> {
   return { root, sourceRoot, bundleRoot };
 }
 
-async function postBuildStart(config: RunnerConfig, request: BuildRunnerJobRequest): Promise<StartCallbackResponse> {
+async function runBuildJob(
+  config: JobRunnerConfig,
+  request: BuildRunnerJobRequest
+): Promise<JobExecutionResult> {
+  let workspace: JobWorkspace | undefined;
+  const logs: string[] = [];
+
+  try {
+    workspace = await createWorkspace(config);
+
+    const startResponse = await postBuildStart(config, request);
+    if (startResponse.alreadyCompleted) {
+      console.log(`[build-runner] job=${request.jobId} already completed, acknowledging duplicate delivery`);
+      return {
+        outcome: "ack",
+        buildStatus: "success"
+      };
+    }
+
+    const sourceLease = await fetchSourceLease(config, request);
+    await checkoutRepositoryArchive(sourceLease, workspace);
+
+    const packageJson = await readProjectPackageJson(workspace.sourceRoot);
+    const packageManager = detectPackageManager(workspace.sourceRoot, packageJson);
+    await assertProjectCompatibility(workspace.sourceRoot, packageJson);
+
+    if (packageJson) {
+      await installDependencies(packageManager, workspace.sourceRoot, logs);
+      if (hasBuildScript(packageJson)) {
+        await runBuildScript(packageManager, workspace.sourceRoot, logs);
+      }
+    }
+
+    const buildPlan = await createBuildPlan(workspace.sourceRoot, request.deployment.suggestedProjectName);
+    await runWranglerBundle(buildPlan, workspace.sourceRoot, workspace.bundleRoot, logs);
+
+    const artifact = await prepareArtifact(
+      workspace.sourceRoot,
+      workspace.bundleRoot,
+      buildPlan,
+      packageJson
+    );
+    await postBuildSuccess(config, request, artifact);
+    console.log(`[build-runner] job=${request.jobId} built successfully`);
+    return {
+      outcome: "ack",
+      buildStatus: "success"
+    };
+  } catch (error) {
+    if (error instanceof RetryableRunnerError) {
+      console.error(
+        `[build-runner] retrying job=${request.jobId} because of retryable error`,
+        error.message
+      );
+      return {
+        outcome: "retry",
+        buildStatus: "failure"
+      };
+    }
+
+    try {
+      await postBuildFailure(config, request, error, logs);
+      console.error(`[build-runner] job=${request.jobId} failed`, error);
+      return {
+        outcome: "ack",
+        buildStatus: "failure"
+      };
+    } catch (callbackError) {
+      console.error(`[build-runner] failed to report failure for job=${request.jobId}`, callbackError);
+      return {
+        outcome: "retry",
+        buildStatus: "failure"
+      };
+    }
+  } finally {
+    if (workspace && !config.keepWorkdirs) {
+      await rm(workspace.root, { recursive: true, force: true });
+    }
+  }
+}
+
+async function runDisposableWorkerContainer(
+  config: RunnerConfig,
+  request: BuildRunnerJobRequest
+): Promise<DisposableWorkerResult> {
+  const env = buildDisposableWorkerEnv(config, request);
+  const args = buildDisposableWorkerArgs(config, env);
+  const result = await runCommandCapture("docker", args, process.cwd(), {
+    logLabel: `docker run isolated worker for ${request.jobId}`,
+    logTailChars: DEFAULT_LOG_TAIL_CHARS
+  });
+
+  switch (result.exitCode) {
+    case 0:
+      return {
+        outcome: "ack",
+        buildStatus: "success",
+        output: result.output
+      };
+    case DISPOSABLE_WORKER_REPORTED_FAILURE_EXIT_CODE:
+      return {
+        outcome: "ack",
+        buildStatus: "failure",
+        output: result.output
+      };
+    case DISPOSABLE_WORKER_RETRY_EXIT_CODE:
+      return {
+        outcome: "retry",
+        buildStatus: "failure",
+        output: result.output
+      };
+    default:
+      throw new RetryableRunnerError(
+        `Disposable build worker exited with unexpected status ${result.exitCode}. ${truncateLogTail(result.output, DEFAULT_LOG_TAIL_CHARS)}`
+      );
+  }
+}
+
+function buildDisposableWorkerArgs(
+  config: RunnerConfig,
+  env: Record<string, string>
+): string[] {
+  const args = [
+    "run",
+    "--rm",
+    "--user",
+    "node",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges:true",
+    "--volume",
+    `${config.buildWorkerCacheVolume}:${DISPOSABLE_WORKER_CACHE_ROOT}`
+  ];
+
+  for (const [key, value] of Object.entries(env)) {
+    args.push("--env", `${key}=${value}`);
+  }
+
+  args.push(config.buildWorkerImage);
+  return args;
+}
+
+function buildDisposableWorkerEnv(
+  config: RunnerConfig,
+  request: BuildRunnerJobRequest
+): Record<string, string> {
+  return {
+    RUNNER_ID: config.runnerId,
+    BUILD_RUNNER_TOKEN: config.buildRunnerToken,
+    BUILD_RUNNER_MODE: DISPOSABLE_WORKER_MODE,
+    [DISPOSABLE_WORKER_JOB_ENV]: Buffer.from(JSON.stringify(request)).toString("base64url"),
+    RUNNER_WORKDIR_ROOT: DISPOSABLE_WORKER_WORK_ROOT,
+    ...(config.keepWorkdirs ? { RUNNER_KEEP_WORKDIRS: "1" } : {}),
+    HOME: "/home/node",
+    NPM_CONFIG_CACHE: `${DISPOSABLE_WORKER_CACHE_ROOT}/npm`,
+    COREPACK_HOME: `${DISPOSABLE_WORKER_CACHE_ROOT}/corepack`,
+    PNPM_HOME: `${DISPOSABLE_WORKER_CACHE_ROOT}/pnpm`,
+    YARN_CACHE_FOLDER: `${DISPOSABLE_WORKER_CACHE_ROOT}/yarn`,
+    XDG_CACHE_HOME: `${DISPOSABLE_WORKER_CACHE_ROOT}/xdg`
+  };
+}
+
+async function postBuildStart(config: JobRunnerConfig, request: BuildRunnerJobRequest): Promise<StartCallbackResponse> {
   const payload: BuildRunnerStartPayload = {
     runnerId: config.runnerId,
     startedAt: new Date().toISOString(),
@@ -654,7 +850,7 @@ async function postBuildStart(config: RunnerConfig, request: BuildRunnerJobReque
   return await response.json() as StartCallbackResponse;
 }
 
-async function fetchSourceLease(config: RunnerConfig, request: BuildRunnerJobRequest): Promise<BuildRunnerSourceLease> {
+async function fetchSourceLease(config: JobRunnerConfig, request: BuildRunnerJobRequest): Promise<BuildRunnerSourceLease> {
   const response = await fetch(request.source.tokenUrl, {
     method: "GET",
     headers: authHeaders(config)
@@ -1236,7 +1432,7 @@ function mimeTypeForFile(filePath: string): string | undefined {
 }
 
 async function postBuildSuccess(
-  config: RunnerConfig,
+  config: JobRunnerConfig,
   request: BuildRunnerJobRequest,
   artifact: PreparedArtifact
 ): Promise<void> {
@@ -1306,7 +1502,7 @@ async function postBuildSuccess(
 }
 
 async function postBuildFailure(
-  config: RunnerConfig,
+  config: JobRunnerConfig,
   request: BuildRunnerJobRequest,
   error: unknown,
   logs: string[]
@@ -1345,13 +1541,13 @@ async function postBuildFailure(
   await response.json() as CompleteCallbackResponse;
 }
 
-function authHeaders(config: RunnerConfig): Record<string, string> {
+function authHeaders(config: Pick<JobRunnerConfig, "buildRunnerToken">): Record<string, string> {
   return {
     authorization: `Bearer ${config.buildRunnerToken}`
   };
 }
 
-function jsonHeaders(config: RunnerConfig): Record<string, string> {
+function jsonHeaders(config: Pick<JobRunnerConfig, "buildRunnerToken">): Record<string, string> {
   return {
     ...authHeaders(config),
     "content-type": "application/json"
@@ -1369,6 +1565,29 @@ async function runCommand(
     logTailChars: number;
   }
 ): Promise<LoggedCommandResult> {
+  const result = await runCommandCapture(command, args, cwd, options);
+
+  if (result.exitCode !== 0) {
+    throw new PermanentRunnerError(
+      `${options.logLabel} exited with status ${result.exitCode}.`,
+      formatCommandLog(options.logLabel, result.output)
+    );
+  }
+
+  return { output: result.output };
+}
+
+async function runCommandCapture(
+  command: string,
+  args: string[],
+  cwd: string,
+  options: {
+    env?: Record<string, string>;
+    inheritProcessEnv?: boolean;
+    logLabel: string;
+    logTailChars: number;
+  }
+): Promise<CommandExecutionResult> {
   const child = spawn(command, args, {
     cwd,
     env: options.inheritProcessEnv === false
@@ -1399,14 +1618,7 @@ async function runCommand(
     });
   });
 
-  if (exitCode !== 0) {
-    throw new PermanentRunnerError(
-      `${options.logLabel} exited with status ${exitCode}.`,
-      formatCommandLog(options.logLabel, output)
-    );
-  }
-
-  return { output };
+  return { output, exitCode };
 }
 
 function buildSandboxedChildEnv(extra: Record<string, string> = {}): Record<string, string> {

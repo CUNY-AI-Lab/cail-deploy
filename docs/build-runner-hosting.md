@@ -1,6 +1,6 @@
 # Build Runner Hosting
 
-The runner no longer needs to live on a laptop. The recommended path is a small CAIL-owned Linux VM running Docker Compose.
+The runner no longer needs to live on a laptop. The recommended path is a small CAIL-owned Linux VM running one long-lived dispatcher container that starts a fresh disposable build container for each job.
 
 ## Recommended host
 
@@ -9,7 +9,7 @@ The runner no longer needs to live on a laptop. The recommended path is a small 
 - 20+ GB persistent disk
 - outbound HTTPS access to GitHub and Cloudflare
 
-This is enough for a single runner process handling the current `BUILD_BATCH_SIZE=1` default.
+This is enough for one dispatcher handling the current `BUILD_BATCH_SIZE=1` default and spinning up one isolated build container at a time.
 
 ## Files
 
@@ -37,6 +37,7 @@ cp .env.runner.example .env.runner
 - `CLOUDFLARE_ACCOUNT_ID`
 - `BUILD_QUEUE_ID`
 - `RUNNER_ID`
+- optionally `BUILD_WORKER_IMAGE` if you do not want the default `kale-build-runner:local`
 
 5. Start the service:
 
@@ -76,11 +77,14 @@ docker compose down
 - The runner now exposes:
   - `GET /healthz`
   - `GET /readyz`
+- The long-lived container is only the dispatcher. Each build job runs in a fresh disposable container on the same host.
+- Disposable build containers run without the host Docker socket, with a separate ephemeral workspace, and with only package-cache volumes shared across jobs.
 - `SIGTERM` and `SIGINT` trigger a graceful shutdown. The runner stops polling, finishes the current job, and exits cleanly.
-- Startup performs a host preflight for `tar`, `npm`, and `corepack` so misconfigured hosts fail fast.
+- Startup performs a host preflight for the Docker CLI, and each disposable build container performs its own preflight for `tar`, `npm`, and `corepack`.
 
 ## Notes
 
 - The runner is independent of the public project domain. It can stay on a VM while the deploy-service sits behind a public front door like `https://cuny.qzz.io/kale`.
 - The Compose file binds the health port only to `127.0.0.1`, not the public internet.
-- `RUNNER_WORKDIR_ROOT` is stored on a persistent Docker volume so temporary build files do not fill the root filesystem unexpectedly.
+- The dispatcher needs access to `/var/run/docker.sock` so it can launch disposable build containers on the host daemon.
+- The shared cache volume is for package downloads only. Project workspaces are not reused across builds.

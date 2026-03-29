@@ -1,5 +1,6 @@
 services:
   build-runner:
+    image: ${BUILD_WORKER_IMAGE:-kale-build-runner:local}
     build:
       context: ../..
       dockerfile: packages/build-runner/Dockerfile
@@ -11,8 +12,10 @@ services:
     environment:
       RUNNER_WORKDIR_ROOT: /var/lib/cail-build-runner/work
       RUNNER_HEALTH_PORT: 8080
+      BUILD_WORKER_IMAGE: ${BUILD_WORKER_IMAGE:-kale-build-runner:local}
+      BUILD_WORKER_CACHE_VOLUME: ${BUILD_WORKER_CACHE_VOLUME:-cail-build-runner-cache}
     volumes:
-      - runner-work:/var/lib/cail-build-runner
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck:
@@ -25,6 +28,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-
-volumes:
-  runner-work:
