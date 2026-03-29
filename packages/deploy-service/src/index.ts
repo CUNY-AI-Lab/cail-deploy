@@ -1962,22 +1962,16 @@ deployServiceApp.get("/projects/:projectName/control", async (c) => {
   const projectName = c.req.param("projectName");
 
   try {
-    const project = await getProject(c.env.CONTROL_PLANE_DB, projectName);
-    if (!project) {
-      throw new HttpError(404, `Project '${projectName}' does not exist yet.`);
-    }
-
     const authorization = await authorizeProjectSecretsAccess(c.env, c.req.raw.url, identity, projectName);
     const flash = readProjectControlFlash(c.req.raw.url);
 
     if (!authorization.ok) {
       return c.html(renderProjectControlPanelGatePage({
         oauthBaseUrl,
-        serviceBaseUrl: resolveServiceBaseUrl(c.env, c.req.raw.url),
-        project,
+        projectName,
         authorization,
         flash
-      }), authorization.status);
+      }), 403);
     }
 
     const [statusResult, secretsPayload, formToken] = await Promise.all([
@@ -2003,6 +1997,25 @@ deployServiceApp.get("/projects/:projectName/control", async (c) => {
     }));
   } catch (error) {
     const httpError = asHttpError(error);
+    if (httpError.status === 404) {
+      return c.html(renderProjectControlPanelGatePage({
+        oauthBaseUrl,
+        projectName,
+        authorization: {
+          ok: false,
+          status: 403,
+          body: {
+            error: "Project settings are only visible to approved project administrators.",
+            summary: "Project settings are only visible to people who can manage this Kale project.",
+            nextAction: "connect_github_user",
+            projectName,
+            repositoryFullName: "unknown",
+            connectionHealthUrl: `${resolveServiceBaseUrl(c.env, c.req.raw.url)}/.well-known/kale-connection.json`
+          }
+        }
+      }), 403);
+    }
+
     return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
   }
 });
@@ -4228,7 +4241,7 @@ function renderGitHubUserAuthSuccessPage(input: {
         <div class="logo">${logoHtml("44px")}</div>
         <h1>GitHub is connected to Kale Deploy</h1>
         <p><strong>${escapeHtml(input.githubUser.login)}</strong> is now linked to Kale Deploy.</p>
-        ${repositoryContext ? `<div class="notice"><p>This authorization is ready for <code>${escapeHtml(repositoryContext.repositoryFullName)}</code>.</p></div>` : ""}
+        ${repositoryContext ? `<div class="notice"><p>Return to Kale Deploy to finish checking whether this GitHub account can manage <code>${escapeHtml(repositoryContext.repositoryFullName)}</code>.</p></div>` : ""}
         <div class="actions">
           <a class="button" href="${escapeHtml(continueUrl)}">${escapeHtml(continueLabel)}</a>
           ${showHomeButton ? `<a class="button secondary" href="${escapeHtml(input.serviceBaseUrl)}">Go to the Kale homepage</a>` : ""}
@@ -4365,21 +4378,20 @@ function renderProjectControlPanelAuthErrorPage(message: string, oauthBaseUrl: s
 
 function renderProjectControlPanelGatePage(input: {
   oauthBaseUrl: string;
-  serviceBaseUrl: string;
-  project: ProjectRecord;
+  projectName: string;
   authorization: Extract<ProjectSecretsAuthorization, { ok: false }>;
   flash?: { tone: "success" | "warning" | "error"; message: string };
 }): string {
-  const { oauthBaseUrl, serviceBaseUrl, project, authorization, flash } = input;
+  const { oauthBaseUrl, projectName, authorization, flash } = input;
   const connectUrl = authorization.body.nextAction === "connect_github_user"
-    ? buildGitHubUserSecretsConnectUrl(
-        oauthBaseUrl,
-        project.githubRepo,
-        project.projectName,
-        buildProjectControlPanelUrl(oauthBaseUrl, project.projectName)
-      )
-    : undefined;
-  const setupUrl = buildGuidedSetupUrl(serviceBaseUrl, project.githubRepo, project.projectName);
+    && authorization.body.repositoryFullName !== "unknown"
+      ? buildGitHubUserSecretsConnectUrl(
+          oauthBaseUrl,
+          authorization.body.repositoryFullName,
+          projectName,
+          buildProjectControlPanelUrl(oauthBaseUrl, projectName)
+        )
+      : authorization.body.connectGitHubUserUrl;
   const toneClass = flash ? `notice notice-${flash.tone}` : "";
 
   return `<!doctype html>
@@ -4387,7 +4399,7 @@ function renderProjectControlPanelGatePage(input: {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(project.projectName)} Settings</title>
+    <title>Project Settings</title>
     ${faviconLink()}
     ${baseStyles(`
       .panel-meta {
@@ -4417,19 +4429,15 @@ function renderProjectControlPanelGatePage(input: {
     <main>
       <section class="card">
         <div class="logo">${logoHtml("44px")}</div>
-        <h1>${escapeHtml(project.projectName)} settings</h1>
+        <h1>Project settings</h1>
         ${flash ? `<div class="${toneClass}"><p>${escapeHtml(flash.message)}</p></div>` : ""}
         <p>This page is only for people who can manage this project.</p>
-        <div class="panel-meta">
-          <p><strong>GitHub repo:</strong> <code>${escapeHtml(project.githubRepo)}</code></p>
-          ${project.deploymentUrl ? `<p><strong>Live site:</strong> <a href="${escapeHtml(project.deploymentUrl)}">${escapeHtml(project.deploymentUrl)}</a></p>` : ""}
-        </div>
         <div class="notice">
           <p>${escapeHtml(authorization.body.summary)}</p>
         </div>
         <div class="actions">
           ${connectUrl ? `<a class="button" href="${escapeHtml(connectUrl)}">Connect your GitHub account</a>` : ""}
-          <a class="button secondary" href="${escapeHtml(setupUrl)}">Back to project setup</a>
+          <a class="button secondary" href="${escapeHtml(oauthBaseUrl)}">Return to Kale Deploy</a>
         </div>
       </section>
     </main>
@@ -4457,6 +4465,11 @@ function renderProjectControlPanelPage(input: {
   const setupUrl = buildGuidedSetupUrl(serviceBaseUrl, project.githubRepo, project.projectName);
   const toneClass = flash ? `notice notice-${flash.tone}` : "";
 
+  const statusSlug = typeof status.status === "string" ? status.status : "unknown";
+  const isLive = statusSlug === "live";
+  const isFailed = statusSlug === "failed";
+  const isBuilding = statusSlug === "running" || statusSlug === "queued";
+
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -4464,32 +4477,107 @@ function renderProjectControlPanelPage(input: {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(project.projectName)} Settings</title>
     ${faviconLink()}
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
     ${baseStyles(`
-      .panel-grid {
-        display: grid;
-        gap: 20px;
+      :root {
+        --font-display: "DM Sans", system-ui, -apple-system, sans-serif;
+        --font-technical: "DM Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        --status-hue: ${isLive ? "142" : isFailed ? "4" : isBuilding ? "38" : "220"};
+        --status-color: hsl(var(--status-hue), ${isLive ? "58%, 36%" : isFailed ? "68%, 46%" : isBuilding ? "78%, 44%" : "14%, 52%"});
+        --status-bg: hsl(var(--status-hue), ${isLive ? "52%, 95%" : isFailed ? "60%, 96%" : isBuilding ? "80%, 95%" : "14%, 95%"});
+        --status-border: hsl(var(--status-hue), ${isLive ? "42%, 82%" : isFailed ? "50%, 85%" : isBuilding ? "60%, 82%" : "14%, 84%"});
       }
-      .overview-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+
+      body { font-family: var(--font-display); }
+
+      @keyframes fadeUp {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes statusPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+
+      .project-header {
+        animation: fadeUp 0.4s ease both;
+      }
+      .secrets-panel {
+        margin-top: 20px;
+        animation: fadeUp 0.4s ease both;
+        animation-delay: 0.08s;
+      }
+
+      /* ── Header ── */
+      .header-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .project-title {
+        display: flex;
+        align-items: center;
         gap: 12px;
-        margin-top: 18px;
+        flex-wrap: wrap;
       }
-      .overview-card {
-        border: 1px solid var(--border);
-        background: #fafbfd;
-        border-radius: 14px;
-        padding: 14px 16px;
-      }
-      .overview-card p {
+      .project-title h1 {
+        font-family: var(--font-technical);
+        font-size: 1.5rem;
+        font-weight: 500;
+        letter-spacing: -0.01em;
         margin: 0;
       }
-      .overview-label {
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 12px 4px 8px;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        text-transform: capitalize;
+        color: var(--status-color);
+        background: var(--status-bg);
+        border: 1px solid var(--status-border);
+        white-space: nowrap;
+      }
+      .status-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--status-color);
+        flex-shrink: 0;
+      }
+      .status-dot.pulse {
+        animation: statusPulse 1.8s ease-in-out infinite;
+      }
+      .header-meta {
+        margin: 8px 0 0;
+        font-size: 0.88rem;
         color: var(--muted);
-        margin-bottom: 8px;
+      }
+      .header-meta code {
+        font-family: var(--font-technical);
+        font-size: 0.84rem;
+      }
+      .header-links {
+        display: flex;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .header-links .button {
+        font-size: 0.88rem;
+        padding: 8px 16px;
+      }
+
+      /* ── Flash / Error ── */
+      .flash-msg {
+        margin-top: 16px;
       }
       .notice-error {
         background: #fff3f1;
@@ -4503,78 +4591,220 @@ function renderProjectControlPanelPage(input: {
         background: #fff9ea;
         border-color: #ead28a;
       }
+
+      /* ── Deployment Panel ── */
+      .deploy-panel {
+        margin-top: 20px;
+        padding: 18px 20px;
+        border-radius: 14px;
+        background: ${isLive ? "linear-gradient(135deg, hsl(142, 52%, 97%) 0%, hsl(180, 40%, 96%) 100%)" : "#fafbfd"};
+        border: 1px solid ${isLive ? "hsl(152, 36%, 86%)" : "var(--border)"};
+      }
+      .deploy-url {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .deploy-url-label {
+        font-size: 0.76rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      .deploy-url a {
+        font-family: var(--font-technical);
+        font-size: 1.05rem;
+        font-weight: 500;
+        color: var(--accent);
+        text-decoration: none;
+        word-break: break-all;
+      }
+      .deploy-url a:hover {
+        text-decoration: underline;
+      }
+      .deploy-url-none {
+        font-family: var(--font-technical);
+        font-size: 1.05rem;
+        font-weight: 500;
+        color: var(--muted);
+      }
+      .deploy-meta {
+        display: flex;
+        gap: 16px;
+        margin-top: 12px;
+        font-size: 0.82rem;
+        color: var(--muted);
+        flex-wrap: wrap;
+      }
+      .deploy-meta-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .deploy-meta-dot {
+        width: 3px;
+        height: 3px;
+        border-radius: 50%;
+        background: var(--border);
+        flex-shrink: 0;
+      }
+
+      /* ── Secrets ── */
+      .section-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .section-header h2 {
+        margin: 0;
+        font-family: var(--font-display);
+        font-size: 1.15rem;
+        font-weight: 700;
+      }
+      .count-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 22px;
+        height: 22px;
+        padding: 0 7px;
+        border-radius: 999px;
+        background: var(--code-bg);
+        color: var(--muted);
+        font-family: var(--font-technical);
+        font-size: 0.76rem;
+        font-weight: 500;
+      }
+      .section-desc {
+        margin: 6px 0 0;
+        font-size: 0.88rem;
+        color: var(--muted);
+      }
       .secret-list {
         list-style: none;
-        margin: 18px 0 0;
+        margin: 16px 0 0;
         padding: 0;
-        display: grid;
-        gap: 10px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
       }
       .secret-item {
         display: flex;
         justify-content: space-between;
         gap: 12px;
         align-items: center;
-        padding: 12px 14px;
-        border: 1px solid var(--border);
-        border-radius: 12px;
+        padding: 12px 16px;
+        background: white;
+        transition: background 0.15s ease;
+      }
+      .secret-item:hover {
         background: #fafbfd;
+      }
+      .secret-item + .secret-item {
+        border-top: 1px solid var(--border);
       }
       .secret-item p {
         margin: 0;
       }
-      .secret-item code {
-        font-size: 0.95rem;
+      .secret-name {
+        font-family: var(--font-technical);
+        font-size: 0.9rem;
+        font-weight: 500;
+        color: var(--ink);
+        background: none;
+        padding: 0;
       }
       .secret-meta {
         color: var(--muted);
-        font-size: 0.88rem;
+        font-size: 0.8rem;
+        margin-top: 2px;
+      }
+      .btn-delete {
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
+        padding: 6px 10px;
+        font: inherit;
+        font-size: 0.82rem;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        flex-shrink: 0;
+      }
+      .btn-delete:hover {
+        background: #fff3f1;
+        border-color: #f3b8ad;
+        color: var(--error);
       }
       .inline-form {
         margin: 0;
       }
-      .inline-form button {
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        background: white;
-        color: var(--ink);
-        padding: 8px 12px;
-        font: inherit;
-        font-size: 0.88rem;
-        cursor: pointer;
-      }
+
+      /* ── Add Secret Form ── */
       .secret-form {
-        display: grid;
-        gap: 12px;
-        margin-top: 18px;
-      }
-      .secret-form label {
-        font-size: 0.92rem;
-        font-weight: 600;
-        color: var(--muted);
-      }
-      .secret-form input {
-        width: 100%;
-        padding: 11px 12px;
+        margin-top: 20px;
+        padding: 18px 20px;
+        border-radius: 14px;
+        background: #fafbfd;
         border: 1px solid var(--border);
-        border-radius: 12px;
-        font: inherit;
+        display: grid;
+        gap: 14px;
       }
-      .secret-form input:focus {
-        outline: none;
-        border-color: var(--accent);
-        box-shadow: 0 0 0 3px rgba(59, 107, 204, 0.1);
+      .secret-form-title {
+        font-size: 0.88rem;
+        font-weight: 600;
+        color: var(--ink);
+        margin: 0;
       }
       .field-grid {
         display: grid;
-        gap: 12px;
+        gap: 14px;
+      }
+      .field-group label {
+        display: block;
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--muted);
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .field-group input {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        font: inherit;
+        font-family: var(--font-technical);
+        font-size: 0.9rem;
+        background: white;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .field-group input:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(59, 107, 204, 0.08);
+      }
+      .field-group input::placeholder {
+        color: var(--border);
       }
       .field-help {
-        margin: 2px 0 0;
-        font-size: 0.82rem;
+        margin: 4px 0 0;
+        font-size: 0.78rem;
         color: var(--muted);
       }
-      @media (min-width: 720px) {
+      .form-actions {
+        display: flex;
+        justify-content: flex-end;
+      }
+      .form-actions .button {
+        font-size: 0.88rem;
+        padding: 9px 20px;
+      }
+
+      @media (min-width: 640px) {
         .field-grid {
           grid-template-columns: 1fr 1fr;
         }
@@ -4583,73 +4813,75 @@ function renderProjectControlPanelPage(input: {
   </head>
   <body>
     <main>
-      <section class="card panel-grid">
-        <div class="logo">${logoHtml("44px")}</div>
-        <div>
-          <h1>${escapeHtml(project.projectName)} settings</h1>
-          <p>You are signed in as <strong>${escapeHtml(identity.email)}</strong>. These settings apply to the Kale project backed by <code>${escapeHtml(project.githubRepo)}</code>.</p>
+      <section class="card project-header">
+        <div class="header-row">
+          <div>
+            <div class="logo" style="margin-bottom: 14px;">${logoHtml("36px")}</div>
+            <div class="project-title">
+              <h1>${escapeHtml(project.projectName)}</h1>
+              <span class="status-badge"><span class="status-dot${isBuilding ? " pulse" : ""}"></span>${escapeHtml(statusLabel)}</span>
+            </div>
+            <p class="header-meta">Signed in as <strong>${escapeHtml(identity.email)}</strong> &middot; <code>${escapeHtml(project.githubRepo)}</code></p>
+          </div>
+          <div class="header-links">
+            <a class="button secondary" href="${escapeHtml(repoUrl)}">GitHub</a>
+            <a class="button secondary" href="${escapeHtml(setupUrl)}">Setup</a>
+          </div>
         </div>
-        ${flash ? `<div class="${toneClass}"><p>${escapeHtml(flash.message)}</p></div>` : ""}
-        ${errorMessage ? `<div class="notice notice-warning"><p><strong>Latest issue:</strong> ${escapeHtml(errorMessage)}</p></div>` : ""}
-        <div class="actions">
-          ${deploymentUrl ? `<a class="button" href="${escapeHtml(deploymentUrl)}">Open live site</a>` : ""}
-          <a class="button secondary" href="${escapeHtml(repoUrl)}">Open GitHub repo</a>
-          <a class="button secondary" href="${escapeHtml(setupUrl)}">View setup page</a>
-        </div>
-        <div class="overview-grid">
-          <section class="overview-card">
-            <p class="overview-label">Status</p>
-            <p><strong>${escapeHtml(statusLabel)}</strong></p>
-          </section>
-          <section class="overview-card">
-            <p class="overview-label">Live URL</p>
-            <p>${deploymentUrl ? `<a href="${escapeHtml(deploymentUrl)}">${escapeHtml(deploymentUrl)}</a>` : "Not live yet"}</p>
-          </section>
-          <section class="overview-card">
-            <p class="overview-label">Last updated</p>
-            <p>${escapeHtml(updatedAt)}</p>
-          </section>
-          <section class="overview-card">
-            <p class="overview-label">Build details</p>
-            <p>${buildLogUrl ? `<a href="${escapeHtml(buildLogUrl)}">Open build log</a>` : "No build log for the latest state"}</p>
-          </section>
+        ${flash ? `<div class="flash-msg ${toneClass}"><p>${escapeHtml(flash.message)}</p></div>` : ""}
+        ${errorMessage ? `<div class="flash-msg notice notice-warning"><p><strong>Latest issue:</strong> ${escapeHtml(errorMessage)}</p></div>` : ""}
+        <div class="deploy-panel">
+          <div class="deploy-url">
+            <span class="deploy-url-label">Live at</span>
+            ${deploymentUrl
+              ? `<a href="${escapeHtml(deploymentUrl)}">${escapeHtml(deploymentUrl)}</a>`
+              : `<span class="deploy-url-none">Not deployed yet</span>`}
+          </div>
+          <div class="deploy-meta">
+            <span class="deploy-meta-item">Updated ${escapeHtml(updatedAt)}</span>
+            ${buildLogUrl ? `<span class="deploy-meta-dot"></span><span class="deploy-meta-item"><a href="${escapeHtml(buildLogUrl)}">Build log</a></span>` : ""}
+          </div>
         </div>
       </section>
 
-      <section class="card" style="margin-top: 24px;">
-        <h2>Secrets and API keys</h2>
-        <p>Secret values are never shown again after you save them.</p>
-        ${secrets.count === 0
-          ? `<div class="notice"><p>No secrets are stored for this project yet.</p></div>`
-          : `<ul class="secret-list">
+      <section class="card secrets-panel">
+        <div class="section-header">
+          <h2>Secrets</h2>
+          <span class="count-badge">${secrets.count}</span>
+        </div>
+        <p class="section-desc">Environment variables injected at build time. Values are write-only.</p>
+        ${secrets.count > 0
+          ? `<ul class="secret-list">
               ${secrets.secrets.map((secret) => `
                 <li class="secret-item">
                   <div>
-                    <p><code>${escapeHtml(secret.secretName)}</code></p>
-                    <p class="secret-meta">Last changed by ${escapeHtml(secret.githubLogin)} on ${escapeHtml(secret.updatedAt)}</p>
+                    <p><code class="secret-name">${escapeHtml(secret.secretName)}</code></p>
+                    <p class="secret-meta">Set by ${escapeHtml(secret.githubLogin)} &middot; ${escapeHtml(secret.updatedAt)}</p>
                   </div>
                   <form class="inline-form" method="post" action="${escapeHtml(`${oauthBaseUrl}/projects/${encodeURIComponent(project.projectName)}/control/secrets/${encodeURIComponent(secret.secretName)}/delete`)}">
                     <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
-                    <button type="submit">Delete</button>
+                    <button class="btn-delete" type="submit">Delete</button>
                   </form>
                 </li>
               `).join("")}
-            </ul>`}
+            </ul>`
+          : `<div class="notice" style="margin-top: 16px;"><p>No secrets stored yet.</p></div>`}
         <form class="secret-form" method="post" action="${escapeHtml(`${oauthBaseUrl}/projects/${encodeURIComponent(project.projectName)}/control/secrets`)}">
           <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
+          <p class="secret-form-title">Add or update a secret</p>
           <div class="field-grid">
-            <div>
-              <label for="secret-name">Secret name</label>
-              <input id="secret-name" name="secretName" placeholder="OPENAI_API_KEY" required />
-              <p class="field-help">Use uppercase letters, numbers, and underscores.</p>
+            <div class="field-group">
+              <label for="secret-name">Name</label>
+              <input id="secret-name" name="secretName" placeholder="OPENAI_API_KEY" required autocomplete="off" spellcheck="false" />
+              <p class="field-help">Uppercase, numbers, underscores.</p>
             </div>
-            <div>
-              <label for="secret-value">Secret value</label>
-              <input id="secret-value" type="password" name="secretValue" required />
-              <p class="field-help">Kale saves the value securely and does not show it back.</p>
+            <div class="field-group">
+              <label for="secret-value">Value</label>
+              <input id="secret-value" type="password" name="secretValue" required autocomplete="off" />
+              <p class="field-help">Stored securely. Never shown again.</p>
             </div>
           </div>
-          <div class="actions">
+          <div class="form-actions">
             <button class="button" type="submit">Save secret</button>
           </div>
         </form>

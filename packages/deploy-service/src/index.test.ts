@@ -728,6 +728,7 @@ test("github user auth callback stores the linked GitHub account for later proje
   assert.equal(callbackResponse.status, 200);
   const callbackHtml = await callbackResponse.text();
   assert.match(callbackHtml, /GitHub is connected to Kale Deploy/);
+  assert.match(callbackHtml, /finish checking whether this GitHub account can manage/i);
   assert.match(callbackHtml, /Back to this project&#39;s setup/);
   assert.match(callbackHtml, /Go to the Kale homepage/);
   const stored = db.selectGitHubUserAuth("user:person@cuny.edu");
@@ -1016,8 +1017,34 @@ test("project control panel asks the user to connect GitHub before showing setti
   const html = await response.text();
   assert.match(html, /Connect your GitHub account/);
   assert.match(html, /This signed-in CUNY identity has not yet confirmed a GitHub account/i);
-  assert.match(html, /Back to project setup/);
+  assert.doesNotMatch(html, /szweibel\/kale-cache-smoke-test/);
+  assert.doesNotMatch(html, /kale-cache-smoke-test\.cuny\.qzz\.io/);
+  assert.match(html, /Return to Kale Deploy/);
   assert.match(html, /returnTo=https%3A%2F%2Fauth\.example%2Fprojects%2Fkale-cache-smoke-test%2Fcontrol/);
+});
+
+test("project control panel does not reveal whether an unknown slug exists", async (t) => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+
+  const response = await fetchRaw(new Request("https://auth.example/projects/does-not-exist/control", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+
+  assert.equal(response.status, 403);
+  const html = await response.text();
+  assert.match(html, /Project settings/);
+  assert.match(html, /only visible to people who can manage this Kale project/i);
+  assert.doesNotMatch(html, /does-not-exist/);
+  assert.doesNotMatch(html, /Connect your GitHub account/);
 });
 
 test("project control panel shows secrets and accepts a browser form submission for repo admins", async (t) => {
@@ -1112,7 +1139,7 @@ test("project control panel shows secrets and accepts a browser form submission 
   }), env);
   assert.equal(pageResponse.status, 200);
   const html = await pageResponse.text();
-  assert.match(html, /Secrets and API keys/);
+  assert.match(html, /Secrets/);
   assert.match(html, /OPENAI_API_KEY/);
 
   const formTokenMatch = html.match(/name="formToken" value="([^"]+)"/);
