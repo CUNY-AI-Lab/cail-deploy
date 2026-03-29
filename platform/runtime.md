@@ -31,6 +31,7 @@ The repo-local contract is `AGENTS.md`, but the platform also exposes a machine-
 Agents should prefer the structured control-plane endpoints over scraping GitHub check-run prose:
 
 - `POST /mcp`: remote MCP server for agents that support Streamable HTTP plus MCP OAuth
+- `GET /.well-known/kale-connection.json`: public machine-readable connection-health document for Kale itself
 - `GET /.well-known/oauth-protected-resource/mcp`: OAuth protected-resource metadata for `/mcp`
 - `GET /.well-known/oauth-authorization-server`: OAuth authorization-server metadata
 - `POST /oauth/register`: dynamic client registration for public MCP clients
@@ -57,6 +58,7 @@ If a repository still needs GitHub approval, the agent should stop and hand the 
 The MCP tool surface is intentionally thin. It wraps the same control-plane behavior the JSON API already exposes:
 
 - `get_runtime_manifest`
+- `test_connection`
 - `get_repository_status`
 - `register_project`
 - `validate_project`

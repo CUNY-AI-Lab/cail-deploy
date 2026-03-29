@@ -98,6 +98,7 @@
   "agent_api": {
     "runtime_manifest": "https://runtime.cuny.qzz.io/.well-known/cail-runtime.json",
     "mcp_endpoint": "https://cuny.qzz.io/kale/mcp",
+    "connection_health": "https://cuny.qzz.io/kale/.well-known/kale-connection.json",
     "oauth_authorization_metadata": "https://cuny.qzz.io/kale/.well-known/oauth-authorization-server",
     "oauth_protected_resource_metadata": "https://cuny.qzz.io/kale/.well-known/oauth-protected-resource/mcp",
     "repository_status_template": "https://cuny.qzz.io/kale/api/repositories/{owner}/{repo}/status",
@@ -137,6 +138,7 @@
     },
     "tools": [
       "get_runtime_manifest",
+      "test_connection",
       "get_repository_status",
       "register_project",
       "validate_project",

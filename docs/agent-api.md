@@ -61,11 +61,23 @@ Auth:
 Current MCP tools:
 
 - `get_runtime_manifest`
+- `test_connection`
 - `get_repository_status`
 - `register_project`
 - `validate_project`
 - `get_project_status`
 - `get_build_job_status`
+
+Public connection-health document:
+
+- `GET https://cuny.qzz.io/kale/.well-known/kale-connection.json`
+
+Use this when you want one machine-readable answer to:
+
+- is Kale reachable?
+- does it expect MCP OAuth?
+- is deployment GitHub-triggered rather than local-folder upload?
+- what is the next connection step?
 
 Notes:
 
@@ -334,10 +346,11 @@ Today, the strongest loop is:
 2. create the GitHub repo with `gh repo create` or another GitHub client
 3. connect the harness to `POST /mcp`
 4. let the harness complete MCP OAuth through the browser
-5. call `register_project`
-6. if `installStatus` is `not_installed`, send the user to `guidedInstallUrl`
-7. call `validate_project` for a non-production branch, or push to the default branch for a real deployment
-8. poll `get_build_job_status` or `get_project_status` until the state is terminal
+5. call `test_connection`
+6. call `register_project`
+7. if `installStatus` is `not_installed`, send the user to `guidedInstallUrl`
+8. call `validate_project` for a non-production branch, or push to the default branch for a real deployment
+9. poll `get_build_job_status` or `get_project_status` until the state is terminal
 
 If the GitHub App is already installed for all repositories in the owner account, the agent can usually do the whole loop without pausing after repo creation.
 

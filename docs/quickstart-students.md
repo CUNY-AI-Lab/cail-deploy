@@ -157,3 +157,4 @@ Start here:
 
 - [troubleshooting.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/troubleshooting.md)
 - [support-matrix.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/support-matrix.md)
+- [codex-quickstart.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/codex-quickstart.md)

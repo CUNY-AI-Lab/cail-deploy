@@ -124,6 +124,7 @@ Still not finished:
 ## Guides
 
 - Student quickstart: [docs/quickstart-students.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/quickstart-students.md)
+- Codex quickstart: [docs/codex-quickstart.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/codex-quickstart.md)
 - Support matrix: [docs/support-matrix.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/support-matrix.md)
 - Troubleshooting: [docs/troubleshooting.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/troubleshooting.md)
 - Operator runbook: [docs/runbook.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/runbook.md)

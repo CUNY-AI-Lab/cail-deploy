@@ -151,6 +151,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.equal(body.mcp.auth.dynamic_client_registration_endpoint, "https://deploy.example/oauth/register");
   assert.deepEqual(body.mcp.tools, [
     "get_runtime_manifest",
+    "test_connection",
     "get_repository_status",
     "register_project",
     "validate_project",
@@ -181,6 +182,31 @@ test("friendly base-path hosting works under /kale", async () => {
   assert.equal(metadata.issuer, "https://ailab.gc.cuny.edu/kale");
   assert.equal(metadata.authorization_endpoint, "https://ailab.gc.cuny.edu/kale/api/oauth/authorize");
   assert.equal(metadata.token_endpoint, "https://ailab.gc.cuny.edu/kale/oauth/token");
+});
+
+test("public connection health explains the MCP auth handoff", async () => {
+  const { env } = createTestContext();
+
+  const response = await fetchApp("GET", "/.well-known/kale-connection.json", env);
+  assert.equal(response.status, 200);
+
+  const body = await response.json() as {
+    serviceName: string;
+    authenticated: boolean;
+    nextAction: string;
+    mcpEndpoint: string;
+    connectionHealthUrl: string;
+    deploymentTrigger: string;
+    localFolderUploadSupported: boolean;
+  };
+
+  assert.equal(body.serviceName, "Kale Deploy");
+  assert.equal(body.authenticated, false);
+  assert.equal(body.nextAction, "connect_mcp_or_complete_browser_login");
+  assert.equal(body.mcpEndpoint, "https://deploy.example/mcp");
+  assert.equal(body.connectionHealthUrl, "https://deploy.example/.well-known/kale-connection.json");
+  assert.equal(body.deploymentTrigger, "github_push_to_default_branch");
+  assert.equal(body.localFolderUploadSupported, false);
 });
 
 test("landing page presents the agent-first flow and live project social proof", async () => {
@@ -214,6 +240,7 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /codex mcp add cail --url https:\/\/[^\s"]+\/mcp/);
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Use Kale Deploy from the CUNY AI Lab to build me a small web app\./);
+  assert.match(html, /Kale Deploy goes live from GitHub pushes, not a local-folder upload\./);
   assert.match(html, /register this repo, hand me any guided GitHub install link if approval is needed, validate the project, and deploy it through Kale\./);
   assert.match(html, /smoke-test/);
 });
@@ -326,6 +353,40 @@ test("mcp handles preflight and returns tools when authorized with OAuth", async
   assert.match(toolResult.result.content[0]?.text ?? "", /runtime manifest/i);
   assert.equal(toolResult.result.structuredContent.agent_api.mcp_endpoint, "https://deploy.example/mcp");
   assert.equal(toolResult.result.structuredContent.mcp.endpoint, "https://deploy.example/mcp");
+
+  const testConnectionResponse = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "test_connection",
+        arguments: {}
+      }
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(testConnectionResponse.status, 200);
+
+  const testConnectionResult = await testConnectionResponse.json() as {
+    result: {
+      structuredContent: {
+        authenticated: boolean;
+        nextAction: string;
+        summary: string;
+      };
+    };
+  };
+  assert.equal(testConnectionResult.result.structuredContent.authenticated, true);
+  assert.equal(testConnectionResult.result.structuredContent.nextAction, "register_project");
+  assert.match(testConnectionResult.result.structuredContent.summary, /connected and authenticated/i);
 });
 
 test("oauth metadata, registration, authorization, and token exchange work for remote MCP", async (t) => {
@@ -1057,6 +1118,14 @@ test("validate requires auth when Cloudflare Access is configured", async () => 
   });
 
   assert.equal(response.status, 401);
+  const body = await response.json() as {
+    nextAction: string;
+    connectionHealthUrl: string;
+    oauthProtectedResourceMetadata: string;
+  };
+  assert.equal(body.nextAction, "complete_browser_login");
+  assert.equal(body.connectionHealthUrl, "https://deploy.example/.well-known/kale-connection.json");
+  assert.equal(body.oauthProtectedResourceMetadata, "https://deploy.example/.well-known/oauth-protected-resource/mcp");
 });
 
 test("project registration requires auth when Cloudflare Access is configured", async () => {

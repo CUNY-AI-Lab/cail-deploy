@@ -248,6 +248,13 @@ deployServiceApp.get("/.well-known/cail-runtime.json", (c) => {
   });
 });
 
+deployServiceApp.get("/.well-known/kale-connection.json", (c) => {
+  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+  return c.json(buildConnectionHealthPayload(c.env, serviceBaseUrl), 200, {
+    "cache-control": "public, max-age=300"
+  });
+});
+
 deployServiceApp.get("/.well-known/oauth-protected-resource/mcp", (c) => {
   const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
   return c.json(buildOauthProtectedResourceMetadata(serviceBaseUrl), 200, {
@@ -784,7 +791,7 @@ deployServiceApp.get("/", async (c) => {
           <p class="section-label">Then, tell your agent what to build</p>
           <div class="build-block">
             <div class="build-header">Start with something like this</div>
-            <p class="build-hint">Or describe your own project &mdash; anything works once connected.</p>
+            <p class="build-hint">Or describe your own project. Kale Deploy goes live from GitHub pushes, not a local-folder upload.</p>
             <div class="prompt-block" data-prompt="${escapeHtml(buildPrompt)}" id="build-prompt">
               ${escapeHtml(buildPrompt)}
               <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>
@@ -1576,7 +1583,7 @@ deployServiceApp.post("/api/projects/register", async (c) => {
     await requireAgentRequestIdentity(c.req.raw, c.env);
   } catch (error) {
     const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
+    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
   }
 
   try {
@@ -1599,7 +1606,7 @@ deployServiceApp.get("/api/repositories/:owner/:repo/status", async (c) => {
     await requireAgentRequestIdentity(c.req.raw, c.env);
   } catch (error) {
     const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
+    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
   }
 
   try {
@@ -1625,7 +1632,7 @@ deployServiceApp.post("/api/validate", async (c) => {
     await requireAgentRequestIdentity(c.req.raw, c.env);
   } catch (error) {
     const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
+    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
   }
 
   try {
@@ -1648,7 +1655,7 @@ deployServiceApp.get("/api/projects/:projectName/status", async (c) => {
     await requireAgentRequestIdentity(c.req.raw, c.env);
   } catch (error) {
     const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
+    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
   }
 
   const result = await buildProjectStatusResponse(c.env, c.req.param("projectName"));
@@ -1660,7 +1667,7 @@ deployServiceApp.get("/api/build-jobs/:jobId/status", async (c) => {
     await requireAgentRequestIdentity(c.req.raw, c.env);
   } catch (error) {
     const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
+    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
   }
 
   const result = await buildBuildJobStatusResponse(c.env, c.req.param("jobId"));
@@ -3179,6 +3186,64 @@ function oauthUnauthorizedResponse(c: Context<{ Bindings: Env }>, env: Env): Res
   );
 }
 
+function protectedAgentApiAuthErrorResponse(
+  c: Context<{ Bindings: Env }>,
+  env: Env,
+  error: HttpError
+): Response {
+  if (error.status !== 401 && error.status !== 403) {
+    return c.json({ error: error.message }, { status: error.status });
+  }
+
+  const serviceBaseUrl = resolveServiceBaseUrl(env, c.req.raw.url);
+  return c.json(buildProtectedAgentApiAuthErrorPayload(env, serviceBaseUrl, error), { status: error.status });
+}
+
+function buildProtectedAgentApiAuthErrorPayload(env: Env, serviceBaseUrl: string, error: HttpError) {
+  const connection = buildConnectionHealthPayload(env, serviceBaseUrl);
+  const notAllowed = error.status === 403;
+
+  return {
+    error: error.message,
+    summary: notAllowed
+      ? "Kale Deploy reached the institutional login layer, but this identity is not allowed to use the protected agent API."
+      : "Kale Deploy is reachable, but this request is not authenticated yet.",
+    nextAction: notAllowed ? "sign_in_with_allowed_cuny_email" : "complete_browser_login",
+    mcpEndpoint: connection.mcpEndpoint,
+    connectionHealthUrl: connection.connectionHealthUrl,
+    oauthProtectedResourceMetadata: connection.oauthProtectedResourceMetadata,
+    oauthAuthorizationMetadata: connection.oauthAuthorizationMetadata,
+    authorizationUrl: connection.authorizationUrl
+  };
+}
+
+function buildConnectionHealthPayload(env: Env, serviceBaseUrl: string, identity?: AgentRequestIdentity) {
+  const appSlug = resolveGitHubAppSlug(env);
+  const appName = resolveGitHubAppName(env);
+  const authenticated = Boolean(identity && identity.type !== "anonymous");
+
+  return {
+    ok: true,
+    serviceName: "Kale Deploy",
+    connectionHealthUrl: `${serviceBaseUrl}/.well-known/kale-connection.json`,
+    mcpEndpoint: `${serviceBaseUrl}/mcp`,
+    oauthProtectedResourceMetadata: `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`,
+    oauthAuthorizationMetadata: `${serviceBaseUrl}/.well-known/oauth-authorization-server`,
+    authorizationUrl: `${serviceBaseUrl}/api/oauth/authorize`,
+    githubAppName: appName,
+    githubAppInstallUrl: appSlug ? githubAppInstallUrl(appSlug) : undefined,
+    authenticated,
+    identityType: identity?.type,
+    email: identity && "email" in identity ? identity.email : undefined,
+    nextAction: authenticated ? "register_project" : "connect_mcp_or_complete_browser_login",
+    deploymentTrigger: "github_push_to_default_branch",
+    localFolderUploadSupported: false,
+    summary: authenticated
+      ? "Kale Deploy is connected and authenticated. Register a repository or test a specific repo next."
+      : "Kale Deploy is reachable. Connect the MCP endpoint, complete the browser login flow, and then verify the connection before deploying."
+  };
+}
+
 function getRequiredOauthFormField(form: FormData, field: string): string {
   const value = form.get(field);
   if (typeof value !== "string" || !value.trim()) {
@@ -3636,6 +3701,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     agent_api: {
       runtime_manifest: publicRuntimeUrl,
       mcp_endpoint: `${serviceBaseUrl}/mcp`,
+      connection_health: `${serviceBaseUrl}/.well-known/kale-connection.json`,
       oauth_authorization_metadata: oauthAuthorizationMetadataUrl,
       oauth_protected_resource_metadata: oauthProtectedResourceMetadataUrl,
       repository_status_template: `${serviceBaseUrl}/api/repositories/{owner}/{repo}/status`,
@@ -3675,6 +3741,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
       },
       tools: [
         "get_runtime_manifest",
+        "test_connection",
         "get_repository_status",
         "register_project",
         "validate_project",
@@ -3734,6 +3801,42 @@ function createDeployServiceMcpServer(
         "Returned the current CAIL Deploy runtime manifest.",
         buildRuntimeManifest(env, serviceBaseUrl)
       )
+  );
+
+  server.registerTool(
+    "test_connection",
+    {
+      title: "Test connection",
+      description: "Confirm that Kale Deploy is authenticated and return the next step, optionally for a specific repository.",
+      inputSchema: {
+        repository: z.string().optional().describe("Optional GitHub repository as owner/repo or a full GitHub URL."),
+        projectName: z.string().optional().describe("Optional requested project slug override.")
+      }
+    },
+    async ({ repository, projectName }) => {
+      if (repository) {
+        const repositoryRef = parseRepositoryInput(repository);
+        const lifecycle = await buildRepositoryLifecycleState(env, requestUrl, repositoryRef, projectName);
+        return createMcpToolResult(
+          `Kale Deploy is connected and authenticated. ${lifecycle.payload.summary}`,
+          {
+            ...buildConnectionHealthPayload(env, serviceBaseUrl, identity),
+            nextAction: lifecycle.payload.nextAction,
+            summary: `Kale Deploy is connected and authenticated. ${lifecycle.payload.summary}`,
+            repositoryStatus: lifecycle.payload
+          }
+        );
+      }
+
+      return createMcpToolResult(
+        "Kale Deploy is connected and authenticated.",
+        {
+          ...buildConnectionHealthPayload(env, serviceBaseUrl, identity),
+          nextAction: "register_project",
+          summary: "Kale Deploy is connected and authenticated. Call register_project for the repository you want to deploy next."
+        }
+      );
+    }
   );
 
   server.registerTool(
