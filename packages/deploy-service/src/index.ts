@@ -542,7 +542,7 @@ deployServiceApp.get("/", async (c) => {
   const claudeSetupPrompt = `Connect ${marketingName} in this Claude Code environment. If you can run terminal commands yourself, run:\nclaude mcp add --transport http cail ${mcpEndpoint}\nThen, inside Claude Code, open /mcp, select cail, choose Authenticate, and complete the browser sign-in. After that, verify that you can really use Kale Deploy tools like test_connection, get_repository_status, and register_project before you say ${marketingName} is connected.`;
   const codexSetupPrompt = `Connect ${marketingName} in this Codex environment. If you can run terminal commands yourself, run:\ncodex mcp add cail --url ${mcpEndpoint}\ncodex mcp login cail\nComplete the browser sign-in flow, and then verify that you can really use Kale Deploy tools like test_connection, get_repository_status, and register_project before you say ${marketingName} is connected.`;
   const geminiSetupPrompt = `Connect ${marketingName} in this Gemini CLI environment. If you can run terminal commands yourself, run:\ngemini mcp add --transport http cail ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. Then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
-  const buildPrompt = `Use ${marketingName} from the CUNY AI Lab to build me a small web app. If ${marketingName} is not connected yet, connect it first and verify that its tools are available. Then use Kale Deploy to register this repo, hand me any guided GitHub install link if approval is needed, validate the project, and deploy it through Kale.`;
+  const buildPrompt = `Build me a small web app and deploy it with ${marketingName}. If ${marketingName} is not connected yet, connect it first. Then register the project, handle any GitHub setup steps, and deploy it so I can see it live.`;
 
   const agents = [
     { name: "Claude Code", prompt: claudeSetupPrompt, letter: "C" },
@@ -854,20 +854,20 @@ deployServiceApp.get("/", async (c) => {
         <div class="logo">${logoHtml("44px")}</div>
         <span class="source">${escapeHtml(marketingSource)}</span>
         <h1>${escapeHtml(marketingName)}</h1>
-        <p class="lead">Build a website or web app with your AI agent and put it online.</p>
+        <p class="lead">Build a website with an AI coding agent. Deploy it in one step.</p>
       </section>
 
       <section class="get-started">
         <div class="agent-blocks">
-          <p class="section-label">Get started &mdash; Pick your agent</p>
-          <p class="build-hint">The first connection may open a browser so your agent can sign you in. After that, it should be able to see Kale Deploy&apos;s tools.</p>
+          <p class="section-label">1. Connect your agent</p>
+          <p class="build-hint">Pick the agent you use. Copy the prompt below and paste it in. Your browser may open once to sign you in.</p>
           ${agents.map((agent) => `
           <div class="agent-block">
             <div class="agent-header">
               <span class="agent-ico">${escapeHtml(agent.letter)}</span>
               <span class="agent-name">${escapeHtml(agent.name)}</span>
             </div>
-            <p class="agent-hint">Copy this and paste it into ${escapeHtml(agent.name)}:</p>
+            <p class="agent-hint">Paste into ${escapeHtml(agent.name)}:</p>
             <div class="prompt-block" data-prompt="${escapeHtml(agent.prompt)}">
               ${escapeHtml(agent.prompt)}
               <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>
@@ -877,10 +877,10 @@ deployServiceApp.get("/", async (c) => {
         </div>
 
         <div class="build-section">
-          <p class="section-label">Then, tell your agent what to build</p>
+          <p class="section-label">2. Tell it what to build</p>
           <div class="build-block">
-            <div class="build-header">Start with something like this</div>
-            <p class="build-hint">Or describe your own project. Kale Deploy goes live from GitHub pushes, not a local-folder upload.</p>
+            <div class="build-header">Try this, or describe your own idea</div>
+            <p class="build-hint">Your agent will write the code, set up the repo, and put it online for you.</p>
             <div class="prompt-block" data-prompt="${escapeHtml(buildPrompt)}" id="build-prompt">
               ${escapeHtml(buildPrompt)}
               <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>
@@ -915,8 +915,7 @@ deployServiceApp.get("/", async (c) => {
 
       <footer class="page-footer">
         ${installUrl ? `<a href="${escapeHtml(installUrl)}">GitHub App</a>` : ""}
-        <a href="${escapeHtml(repositoryUrl)}">Source</a>
-        <a href="${escapeHtml(runtimeManifestUrl)}">API</a>
+        <a href="${escapeHtml(repositoryUrl)}">GitHub</a>
       </footer>
     </main>
 
@@ -1372,56 +1371,48 @@ deployServiceApp.get("/github/setup", async (c) => {
     ? `<div id="setup-status-banner" class="status-banner ${bannerByStage.className}"><span id="setup-status-banner-icon" class="status-icon">${bannerByStage.icon}</span> <span id="setup-status-banner-label">${escapeHtml(bannerByStage.label)}</span></div>`
     : "";
 
-  const statusMessage = repositoryLifecycle
-    ? renderRepositoryLifecycleOverview({
-        lifecycle: repositoryLifecycle,
-        appName,
-        serviceBaseUrl,
-        installationId,
-        setupAction
-      })
-    : "";
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
 
-  const primaryAction = repositoryLifecycle
-    ? renderRepositoryLifecycleActions({
+  const setupContent = repositoryLifecycle
+    ? renderSetupPageContent({
         lifecycle: repositoryLifecycle,
-        installUrl,
         appName,
         serviceBaseUrl,
-        oauthBaseUrl: resolveMcpOauthBaseUrl(c.env, c.req.raw.url)
+        oauthBaseUrl,
+        installUrl,
+        installReturnObserved: Boolean(installationId || setupAction)
       })
     : `<div class="actions">
           ${installUrl
             ? `<a class="button" href="${escapeHtml(installUrl)}">Connect GitHub</a>`
             : `<a class="button" href="${escapeHtml(`${serviceBaseUrl}/github/register`)}">Set up GitHub for Kale Deploy</a>`}
-          <a class="button secondary" href="${escapeHtml(`${serviceBaseUrl}/github/app`)}">Learn about the GitHub app</a>
         </div>
         <form class="lookup-form" method="get" action="${escapeHtml(`${serviceBaseUrl}/github/setup`)}">
           <label for="repositoryFullName">Check an existing repo</label>
           <input id="repositoryFullName" type="text" name="repositoryFullName" placeholder="owner/repo" />
           <button class="button" type="submit">Check repository</button>
-        </form>
-        <div class="notice"><p>Kale Deploy uses the GitHub app named <strong>${escapeHtml(appName)}</strong>.</p></div>`;
+        </form>`;
 
   const projectDetails = repositoryLifecycle
     ? renderRepositoryDeveloperDetails({
         lifecycle: repositoryLifecycle,
         serviceBaseUrl,
-        oauthBaseUrl: resolveMcpOauthBaseUrl(c.env, c.req.raw.url)
+        oauthBaseUrl
       })
     : "";
 
-  const lifecycleSteps = repositoryLifecycle
-    ? renderLifecycleSteps(repositoryLifecycle.workflowStage)
+  const showProgress = repositoryLifecycle
+    && repositoryLifecycle.workflowStage !== "live"
+    && repositoryLifecycle.workflowStage !== "name_conflict";
+
+  const lifecycleSteps = showProgress
+    ? renderLifecycleSteps(repositoryLifecycle!.workflowStage)
     : "";
 
-  const failureNotice = repositoryLifecycle?.errorMessage
-    ? `<div class="notice"><p><strong>The latest build needs attention:</strong> ${escapeHtml(repositoryLifecycle.errorMessage)}${repositoryLifecycle.errorDetail ? `<br /><code>${escapeHtml(repositoryLifecycle.errorDetail)}</code>` : ""}</p></div>`
-    : "";
-
-  const setupLiveRefresh = repositoryLifecycle
+  const setupLiveRefresh = showProgress
+    && repositoryLifecycle!.workflowStage !== "app_setup"
     ? renderRepositoryLiveRefreshPanel({
-        lifecycle: repositoryLifecycle,
+        lifecycle: repositoryLifecycle!,
         phase: "setup",
         appName,
         installReturnObserved: Boolean(installationId || setupAction)
@@ -1451,6 +1442,21 @@ deployServiceApp.get("/github/setup", async (c) => {
       .status-pending { background: var(--notice-bg); color: var(--accent); border: 1px solid var(--border); }
       .status-config { background: #f3f4f6; color: var(--muted); border: 1px solid var(--border); }
       .status-danger { background: #fff0ed; color: var(--error); border: 1px solid #efc6be; }
+      .setup-primary {
+        margin: 12px 0 16px;
+      }
+      .setup-primary h2 {
+        margin: 0 0 6px;
+        font-size: 1.2rem;
+      }
+      .setup-primary p {
+        margin: 0;
+        color: var(--muted);
+      }
+      .notice-error {
+        background: #fff3f1;
+        border-color: #f3b8ad;
+      }
       .state-grid {
         display: grid;
         gap: 16px;
@@ -1585,27 +1591,11 @@ deployServiceApp.get("/github/setup", async (c) => {
     <main>
       <section class="card">
         <div class="logo">${logoHtml("44px")}</div>
-        <p class="section-muted">${escapeHtml(marketingName)} uses the GitHub app named <strong>${escapeHtml(appName)}</strong>.</p>
         ${statusBanner}
-        ${statusMessage}
-        ${primaryAction}
-        ${failureNotice}
+        ${setupContent}
         ${projectDetails}
         ${setupLiveRefresh}
         ${lifecycleSteps}
-        ${installationId ? `<div class="notice"><p><strong>Installation submitted:</strong> GitHub redirected here with <code>installation_id=${escapeHtml(installationId)}</code>${setupAction ? ` and <code>setup_action=${escapeHtml(setupAction)}</code>` : ""}.</p></div>` : ""}
-      </section>
-      <section class="card section-muted" style="margin-top: 24px;">
-        <h2>Recommended GitHub App settings</h2>
-        <ul>
-          <li><strong>Webhook URL:</strong> <code>${escapeHtml(`${serviceBaseUrl}/github/webhook`)}</code></li>
-          <li><strong>Setup URL:</strong> <code>${escapeHtml(`${serviceBaseUrl}/github/setup`)}</code></li>
-          <li><strong>Permissions:</strong> <code>Checks: Read &amp; write</code>, <code>Contents: Read</code>, <code>Metadata: Read</code></li>
-          <li><strong>Webhook events:</strong> <code>Push</code></li>
-          <li><strong>Installability:</strong> usually <code>Any account</code> if students may use personal repositories</li>
-        </ul>
-        <h2>New repositories</h2>
-        <p>Scaffold with <code>cail-init</code> to get <code>AGENTS.md</code>, <code>wrangler.jsonc</code>, and a Worker entrypoint the managed runner can build.</p>
       </section>
     </main>
   </body>
@@ -6584,6 +6574,153 @@ function renderRepositoryInstallActions(input: {
   }
 }
 
+function renderSetupPageContent(input: {
+  lifecycle: RepositoryLifecyclePayload;
+  appName: string;
+  serviceBaseUrl: string;
+  oauthBaseUrl: string;
+  installUrl?: string;
+  installReturnObserved?: boolean;
+}): string {
+  const { lifecycle, appName, serviceBaseUrl, oauthBaseUrl, installUrl, installReturnObserved } = input;
+  const settingsUrl = buildProjectControlPanelUrl(oauthBaseUrl, lifecycle.projectName);
+  const stage = lifecycle.workflowStage;
+
+  // ── Headline ──
+  let headline: string;
+  switch (stage) {
+    case "app_setup":
+      headline = "GitHub setup is not done yet";
+      break;
+    case "github_install":
+      headline = installReturnObserved
+        ? "GitHub did not grant access to this repo"
+        : "This repo needs GitHub approval";
+      break;
+    case "awaiting_push":
+      headline = installReturnObserved ? "GitHub is connected" : "Connected and ready";
+      break;
+    case "build_queued":
+      headline = "Build is queued";
+      break;
+    case "build_running":
+      headline = "Building now";
+      break;
+    case "build_failed":
+      headline = "Build failed";
+      break;
+    case "live":
+      headline = "Your project is live";
+      break;
+    case "name_conflict":
+      headline = "That project name is taken";
+      break;
+    default:
+      headline = "Checking status...";
+  }
+
+  // ── Summary (consolidated — replaces 4 separate cards) ──
+  let summary: string;
+  switch (stage) {
+    case "app_setup":
+      summary = `The ${appName} GitHub app needs to be created before any repo can deploy.`;
+      break;
+    case "github_install":
+      summary = installReturnObserved
+        ? "This repo was not included. Try the GitHub flow again."
+        : `Approve the ${appName} app for this repo, then come back here.`;
+      break;
+    case "awaiting_push":
+      summary = "Push to the default branch to start your first deploy.";
+      break;
+    case "build_queued":
+      summary = "Your build is in line. This page updates when it starts.";
+      break;
+    case "build_running":
+      summary = "This usually takes a minute or two.";
+      break;
+    case "build_failed":
+      summary = "Check the error below, fix the issue, and push again.";
+      break;
+    case "live":
+      summary = lifecycle.deploymentUrl
+        ? `Live at ${lifecycle.deploymentUrl}. Push to main to deploy updates.`
+        : "Push to main to deploy updates.";
+      break;
+    case "name_conflict":
+      summary = "Choose from the suggestions below.";
+      break;
+    default:
+      summary = "Something unexpected happened. Refresh or reopen the setup link.";
+  }
+
+  // ── Actions ──
+  let actions: string;
+  switch (stage) {
+    case "app_setup":
+      actions = `<div class="actions">
+          <a class="button" href="${escapeHtml(`${serviceBaseUrl}/github/register`)}">Set up GitHub for Kale Deploy</a>
+        </div>`;
+      break;
+    case "github_install":
+      actions = installUrl
+        ? `<div class="actions">
+            <a class="button" href="${escapeHtml(lifecycle.guidedInstallUrl ?? installUrl)}">Connect GitHub for this repo</a>
+          </div>`
+        : "";
+      break;
+    case "awaiting_push":
+      actions = `<div class="actions">
+          <a class="button secondary" href="${escapeHtml(settingsUrl)}">Project settings</a>
+        </div>`;
+      break;
+    case "build_queued":
+    case "build_running":
+      actions = `<div class="actions">
+          <a class="button secondary" href="${escapeHtml(settingsUrl)}">Project settings</a>
+          ${lifecycle.deploymentUrl ? `<a class="button secondary" href="${escapeHtml(lifecycle.deploymentUrl)}">Open live site</a>` : ""}
+        </div>`;
+      break;
+    case "build_failed":
+      actions = `<div class="actions">
+          <a class="button secondary" href="${escapeHtml(settingsUrl)}">Project settings</a>
+          ${lifecycle.buildJobStatusUrl ? `<a class="button secondary" href="${escapeHtml(lifecycle.buildJobStatusUrl)}">Build details</a>` : ""}
+        </div>`;
+      break;
+    case "live":
+      actions = `<div class="actions">
+          ${lifecycle.deploymentUrl ? `<a class="button" href="${escapeHtml(lifecycle.deploymentUrl)}">Open live site</a>` : ""}
+          <a class="button secondary" href="${escapeHtml(settingsUrl)}">Project settings</a>
+        </div>`;
+      break;
+    case "name_conflict":
+      actions = `<div class="notice">
+          <div class="actions">
+            ${(lifecycle.suggestedProjectNames ?? []).map((suggestion) => `
+              <a class="button secondary" href="${escapeHtml(buildGuidedGitHubInstallUrl(serviceBaseUrl, lifecycle.repository.fullName, suggestion.projectName))}">${escapeHtml(suggestion.projectName)}</a>
+            `).join("")}
+          </div>
+        </div>`;
+      break;
+    default:
+      actions = `<div class="actions">
+          <a class="button secondary" href="${escapeHtml(serviceBaseUrl)}">Return to Kale Deploy</a>
+        </div>`;
+  }
+
+  // ── Failure notice ──
+  const failureNotice = lifecycle.errorMessage
+    ? `<div class="notice notice-error"><p><strong>Build error:</strong> ${escapeHtml(lifecycle.errorMessage)}${lifecycle.errorDetail ? `<br /><code>${escapeHtml(lifecycle.errorDetail)}</code>` : ""}</p></div>`
+    : "";
+
+  return `<div class="setup-primary">
+      <h2 id="current-state-headline">${escapeHtml(headline)}</h2>
+      <p id="current-state-summary">${escapeHtml(summary)}</p>
+    </div>
+    ${failureNotice}
+    ${actions}`;
+}
+
 function renderRepositoryLifecycleOverview(input: {
   lifecycle: RepositoryLifecyclePayload;
   appName: string;
@@ -6645,11 +6782,9 @@ function renderRepositoryLiveRefreshPanel(input: {
     lifecycle: input.lifecycle
   });
 
-  return `<div class="notice" id="live-refresh-panel">
-      <p><strong>Live refresh</strong></p>
-      <p id="live-refresh-summary">Check for status updates without leaving this page.</p>
+  return `<div id="live-refresh-panel" style="margin-top: 16px;">
       <div class="actions">
-        <button class="button secondary" type="button" id="live-refresh-button">Check again without reloading</button>
+        <button class="button secondary" type="button" id="live-refresh-button">Check for updates</button>
       </div>
       <div id="live-refresh-result" class="live-refresh-result"></div>
     </div>
@@ -6963,7 +7098,7 @@ function renderRepositoryLiveRefreshScript(): string {
     "    } finally {",
     "      if (button) {",
     "        button.disabled = false;",
-    "        button.textContent = 'Check again without reloading';",
+    "        button.textContent = 'Check for updates';",
     "      }",
     "    }",
     "  }",

@@ -241,19 +241,15 @@ test("landing page presents the agent-first flow and live project social proof",
   const html = await response.text();
   assert.match(html, /Kale Deploy/);
   assert.match(html, /From the CUNY AI Lab/);
-  assert.match(html, /Build a website or web app with your AI agent and put it online\./);
+  assert.match(html, /Build a website with an AI coding agent/);
   assert.match(html, /Claude Code/);
   assert.match(html, /Codex/);
   assert.match(html, /Gemini CLI/);
-  assert.match(html, /Get started/);
-  assert.match(html, /Pick your agent/);
-  assert.match(html, /The first connection may open a browser so your agent can sign you in\./);
+  assert.match(html, /Connect your agent/);
   assert.match(html, /claude mcp add --transport http cail https:\/\/[^\s"]+\/mcp/);
   assert.match(html, /codex mcp add cail --url https:\/\/[^\s"]+\/mcp/);
   assert.match(html, /Already have a GitHub repo\?/);
-  assert.match(html, /Use Kale Deploy from the CUNY AI Lab to build me a small web app\./);
-  assert.match(html, /Kale Deploy goes live from GitHub pushes, not a local-folder upload\./);
-  assert.match(html, /register this repo, hand me any guided GitHub install link if approval is needed, validate the project, and deploy it through Kale\./);
+  assert.match(html, /Build me a small web app and deploy it with Kale Deploy/);
   assert.match(html, /smoke-test/);
 });
 
@@ -1464,7 +1460,7 @@ test("guided install stores repo context and renders a GitHub handoff page", asy
   assert.match(html, /Ready for GitHub approval/);
   assert.match(html, /Continue to GitHub/);
   assert.match(html, /View setup progress/);
-  assert.match(html, /Check again without reloading/);
+  assert.match(html, /Check for updates/);
   assert.match(html, /repository-live-refresh-bootstrap/);
 });
 
@@ -1488,7 +1484,7 @@ test("guided install explains when the repository is already covered", async (t)
   assert.match(html, /This repo already has GitHub access/);
   assert.match(html, /View setup progress/);
   assert.match(html, /Open GitHub again/);
-  assert.match(html, /Check again without reloading/);
+  assert.match(html, /Check for updates/);
 });
 
 test("setup page verifies repository coverage for the guided install context", async (t) => {
@@ -1509,13 +1505,9 @@ test("setup page verifies repository coverage for the guided install context", a
   const html = await response.text();
   assert.match(html, /Ready to deploy/);
   assert.match(html, /szweibel\/cail-deploy-smoke-test/);
-  assert.match(html, /GitHub/);
-  assert.match(html, /Connected/);
-  assert.match(html, /Behind the scenes/);
   assert.match(html, /GitHub is connected/);
-  assert.match(html, /You came back from GitHub:/);
-  assert.match(html, /Push or validate/);
-  assert.match(html, /Check again without reloading/);
+  assert.match(html, /Push to the default branch/);
+  assert.match(html, /Check for updates/);
   assert.match(html, /https:\/\/deploy\.example\/api\/projects\/cail-deploy-smoke-test\/status/);
   assert.match(html, /https:\/\/deploy\.example\/api\/repositories\/szweibel\/cail-deploy-smoke-test\/status/);
 });
@@ -1539,7 +1531,6 @@ test("setup page explains when GitHub returned but the repository is still not c
   assert.match(html, /GitHub did not grant access to this repo/);
   assert.match(html, /Try the GitHub flow again/);
   assert.match(html, /Connect GitHub for this repo/);
-  assert.match(html, /Nothing to do until the GitHub step is done/i);
 });
 
 test("validate queues a build-only job and returns a pollable status URL", async (t) => {
