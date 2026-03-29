@@ -184,9 +184,16 @@ Per-project secrets now use an extra GitHub-backed admin check:
 
 This second GitHub user-authorization step is intentionally limited to sensitive project-admin actions such as secrets.
 
+The browser settings surface is also intentionally narrow:
+
+- it is a private admin page, not a general project homepage
+- it should remain behind CUNY sign-in and repo-admin verification
+- agents should send users there only for project-admin work such as secrets and later domain/redirect controls
+- ordinary deploy, validate, and status loops should stay in the standard repo-first flow
+
 ## Naming conventions
 
-- Project names must be lowercase kebab-case.
+- Project names must be lowercase kebab-case and no longer than 63 characters.
 - Prefer names under 40 characters.
 - Public URL slug and deployed Worker name should match.
 - Some slugs are reserved for platform infrastructure, including `runtime`.

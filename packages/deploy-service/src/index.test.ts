@@ -251,6 +251,7 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app and deploy it with Kale Deploy/);
   assert.match(html, /smoke-test/);
+  assert.match(html, /href="https:\/\/auth\.example\/projects\/control"/);
 });
 
 test("mcp advertises OAuth metadata when unauthorized", async () => {
@@ -1012,12 +1013,277 @@ test("project secrets can be stored, listed, and synced to the live worker", asy
   assert.deepEqual(listBody.secrets.map((secret) => secret.secretName), ["OPENAI_API_KEY"]);
 });
 
+test("project secrets reject values above the live Worker secret limit", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: undefined,
+    createdAt: "2026-03-29T12:00:00.000Z",
+    updatedAt: "2026-03-29T12:05:00.000Z"
+  });
+  db.putGitHubUserAuth({
+    access_subject: "user:person@cuny.edu",
+    access_email: "person@cuny.edu",
+    github_user_id: 9001,
+    github_login: "szweibel",
+    access_token_encrypted: await sealStoredValueForTest(env, "github-user-token"),
+    access_token_expires_at: "2030-01-01T00:00:00.000Z",
+    refresh_token_encrypted: null,
+    refresh_token_expires_at: null,
+    created_at: "2026-03-29T12:00:00.000Z",
+    updated_at: "2026-03-29T12:00:00.000Z"
+  });
+  installAccessFetchMock(t);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.origin === "https://access.example" && url.pathname === "/cdn-cgi/access/certs") {
+      return jsonResponse({
+        keys: [
+          {
+            ...TEST_ACCESS_PRIVATE_KEY.publicKey,
+            use: "sig",
+            alg: "RS256",
+            kid: "test-access-key"
+          }
+        ]
+      });
+    }
+
+    if (url.origin === "https://api.github.com" && url.pathname === "/repos/szweibel/cail-assets-build-test") {
+      return jsonResponse({
+        id: 7,
+        name: "cail-assets-build-test",
+        full_name: "szweibel/cail-assets-build-test",
+        default_branch: "main",
+        html_url: "https://github.com/szweibel/cail-assets-build-test",
+        clone_url: "https://github.com/szweibel/cail-assets-build-test.git",
+        private: false,
+        owner: { login: "szweibel" },
+        permissions: {
+          admin: true,
+          maintain: true,
+          push: true,
+          pull: true
+        }
+      });
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const response = await fetchApp(
+    "PUT",
+    "/api/projects/cail-assets-build-test/secrets/OPENAI_API_KEY",
+    env,
+    { value: "x".repeat(5 * 1024 + 1) },
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+
+  assert.equal(response.status, 400);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /5\.0 KB/i);
+});
+
+test("project secrets reject new secrets after the Worker secret cap is reached", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: undefined,
+    createdAt: "2026-03-29T12:00:00.000Z",
+    updatedAt: "2026-03-29T12:05:00.000Z"
+  });
+  db.putGitHubUserAuth({
+    access_subject: "user:person@cuny.edu",
+    access_email: "person@cuny.edu",
+    github_user_id: 9001,
+    github_login: "szweibel",
+    access_token_encrypted: await sealStoredValueForTest(env, "github-user-token"),
+    access_token_expires_at: "2030-01-01T00:00:00.000Z",
+    refresh_token_encrypted: null,
+    refresh_token_expires_at: null,
+    created_at: "2026-03-29T12:00:00.000Z",
+    updated_at: "2026-03-29T12:00:00.000Z"
+  });
+
+  for (let index = 0; index < 120; index += 1) {
+    const sealed = await encryptStoredText(
+      env.CONTROL_PLANE_ENCRYPTION_KEY ?? "test-control-plane-encryption-key",
+      `secret-${index}`
+    );
+    db.putProjectSecret({
+      github_repo: "szweibel/cail-assets-build-test",
+      project_name: "cail-assets-build-test",
+      secret_name: `SECRET_${index}`,
+      ciphertext: sealed.ciphertext,
+      iv: sealed.iv,
+      github_user_id: 9001,
+      github_login: "szweibel",
+      created_at: "2026-03-29T12:00:00.000Z",
+      updated_at: "2026-03-29T12:00:00.000Z"
+    });
+  }
+
+  installAccessFetchMock(t);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.origin === "https://access.example" && url.pathname === "/cdn-cgi/access/certs") {
+      return jsonResponse({
+        keys: [
+          {
+            ...TEST_ACCESS_PRIVATE_KEY.publicKey,
+            use: "sig",
+            alg: "RS256",
+            kid: "test-access-key"
+          }
+        ]
+      });
+    }
+
+    if (url.origin === "https://api.github.com" && url.pathname === "/repos/szweibel/cail-assets-build-test") {
+      return jsonResponse({
+        id: 7,
+        name: "cail-assets-build-test",
+        full_name: "szweibel/cail-assets-build-test",
+        default_branch: "main",
+        html_url: "https://github.com/szweibel/cail-assets-build-test",
+        clone_url: "https://github.com/szweibel/cail-assets-build-test.git",
+        private: false,
+        owner: { login: "szweibel" },
+        permissions: {
+          admin: true,
+          maintain: true,
+          push: true,
+          pull: true
+        }
+      });
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const response = await fetchApp(
+    "PUT",
+    "/api/projects/cail-assets-build-test/secrets/ONE_TOO_MANY",
+    env,
+    { value: "still-ok" },
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+
+  assert.equal(response.status, 400);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /at most 120 secrets/i);
+});
+
 test("project control panel redirects public requests to the Access-protected host", async () => {
   const { env } = createTestContext();
 
   const response = await fetchRaw(new Request("https://deploy.example/projects/kale-cache-smoke-test/control"), env);
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("location"), "https://auth.example/projects/kale-cache-smoke-test/control");
+});
+
+test("project admin entry redirects public requests to the Access-protected host", async () => {
+  const { env } = createTestContext();
+
+  const response = await fetchRaw(new Request("https://deploy.example/projects/control?repositoryFullName=szweibel%2Fkale-cache-smoke-test"), env);
+  assert.equal(response.status, 302);
+  assert.equal(
+    response.headers.get("location"),
+    "https://auth.example/projects/control?repositoryFullName=szweibel%2Fkale-cache-smoke-test"
+  );
+});
+
+test("project admin entry renders a private lookup page for signed-in users", async (t) => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+
+  const response = await fetchRaw(new Request("https://auth.example/projects/control", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Project admin/);
+  assert.match(html, /private admin entry point/i);
+  assert.match(html, /Open settings by project name/);
+  assert.match(html, /Find it from a GitHub repo/);
+  assert.match(html, /Signed in as/);
+});
+
+test("project admin entry can open settings by project name or repo lookup", async (t) => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+
+  const byProject = await fetchRaw(new Request("https://auth.example/projects/control?projectName=kale-cache-smoke-test", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+  assert.equal(byProject.status, 302);
+  assert.equal(byProject.headers.get("location"), "https://auth.example/projects/kale-cache-smoke-test/control");
+
+  const byRepo = await fetchRaw(new Request("https://auth.example/projects/control?repositoryFullName=szweibel%2Fkale-cache-smoke-test", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+  assert.equal(byRepo.status, 302);
+  assert.equal(
+    byRepo.headers.get("location"),
+    "https://deploy.example/github/setup?repositoryFullName=szweibel%2Fkale-cache-smoke-test&projectName=kale-cache-smoke-test"
+  );
 });
 
 test("project control panel asks the user to connect GitHub before showing settings", async (t) => {
@@ -1381,6 +1647,23 @@ test("project registration returns suggested alternative slugs on conflict", asy
   assert.ok(body.suggestedProjectNames.length > 0);
   assert.equal(body.suggestedProjectNames[0]?.projectName, "archive-szweibel");
   assert.equal(body.suggestedProjectNames[0]?.projectUrl, "https://archive-szweibel.cuny.qzz.io");
+});
+
+test("project registration rejects slugs longer than the public hostname limit", async () => {
+  const { env } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/archive",
+    projectName: "a".repeat(64)
+  });
+  assert.equal(response.status, 400);
+
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /no longer than 63 characters/i);
 });
 
 test("project registration treats same-owner different repositories as a conflict", async () => {
@@ -2156,6 +2439,60 @@ test("build-job status requires auth when Cloudflare Access is configured", asyn
 
   const response = await fetchApp("GET", "/api/build-jobs/job-protected-1/status", env);
   assert.equal(response.status, 401);
+});
+
+test("broad status APIs redact detailed build logs", async () => {
+  const { env, db } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: true,
+    latestDeploymentId: "dep-live",
+    createdAt: "2026-03-26T20:00:00.000Z",
+    updatedAt: "2026-03-26T20:10:00.000Z"
+  });
+  db.putBuildJob({
+    jobId: "job-failed-1",
+    eventName: "push",
+    installationId: 1,
+    repository: repositoryRecord("cail-assets-build-test"),
+    ref: "main",
+    headSha: "failed-sha",
+    checkRunId: 101,
+    status: "failure",
+    createdAt: "2026-03-26T21:00:00.000Z",
+    updatedAt: "2026-03-26T21:05:00.000Z",
+    completedAt: "2026-03-26T21:05:00.000Z",
+    projectName: "cail-assets-build-test",
+    errorKind: "build_failure",
+    errorMessage: "Build failed.",
+    errorDetail: "Sensitive build log line",
+    buildLogUrl: "https://logs.example/job-failed-1"
+  });
+
+  const repositoryStatusResponse = await fetchApp("GET", "/api/repositories/szweibel/cail-assets-build-test/status", env);
+  assert.equal(repositoryStatusResponse.status, 200);
+  const repositoryStatus = await repositoryStatusResponse.json() as Record<string, unknown>;
+  assert.equal("errorDetail" in repositoryStatus, false);
+  assert.equal("buildLogUrl" in repositoryStatus, false);
+
+  const projectStatusResponse = await fetchApp("GET", "/api/projects/cail-assets-build-test/status", env);
+  assert.equal(projectStatusResponse.status, 200);
+  const projectStatus = await projectStatusResponse.json() as Record<string, unknown>;
+  assert.equal("error_detail" in projectStatus, false);
+  assert.equal("build_log_url" in projectStatus, false);
+
+  const buildJobStatusResponse = await fetchApp("GET", "/api/build-jobs/job-failed-1/status", env);
+  assert.equal(buildJobStatusResponse.status, 200);
+  const buildJobStatus = await buildJobStatusResponse.json() as Record<string, unknown>;
+  assert.equal("error_detail" in buildJobStatus, false);
+  assert.equal("build_log_url" in buildJobStatus, false);
 });
 
 test("validate accepts Cloudflare Access auth", async (t) => {

@@ -288,6 +288,10 @@ type ApiResponseStatus = 200 | 202 | 400 | 401 | 403 | 404 | 409 | 413 | 429 | 5
 export const deployServiceApp = new Hono<{ Bindings: Env }>();
 const DEFAULT_SUCCESSFUL_ARTIFACT_RETENTION = 2;
 const DEFAULT_FAILED_ARTIFACT_RETENTION_DAYS = 7;
+const MAX_PROJECT_NAME_LENGTH = 63;
+const MAX_PROJECT_SECRET_VALUE_BYTES = 5 * 1024;
+const RESERVED_WORKER_TEXT_BINDINGS = 8;
+const MAX_PROJECT_SECRETS_PER_PROJECT = 128 - RESERVED_WORKER_TEXT_BINDINGS;
 const GITHUB_MANIFEST_STATE_COOKIE = "cail_github_manifest_state";
 const GITHUB_MANIFEST_STATE_MAX_AGE_SECONDS = 60 * 60;
 const GITHUB_INSTALL_CONTEXT_COOKIE = "cail_github_install_context";
@@ -529,6 +533,7 @@ deployServiceApp.post("/oauth/token", async (c) => {
 
 deployServiceApp.get("/", async (c) => {
   const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
   const appName = resolveGitHubAppName(c.env);
   const appSlug = resolveGitHubAppSlug(c.env);
   const installUrl = appSlug ? githubAppInstallUrl(appSlug) : undefined;
@@ -915,6 +920,7 @@ deployServiceApp.get("/", async (c) => {
 
       <footer class="page-footer">
         ${installUrl ? `<a href="${escapeHtml(installUrl)}">GitHub App</a>` : ""}
+        <a href="${escapeHtml(`${oauthBaseUrl}/projects/control`)}">Project admin</a>
         <a href="${escapeHtml(repositoryUrl)}">GitHub</a>
       </footer>
     </main>
@@ -1930,6 +1936,71 @@ deployServiceApp.delete("/api/projects/:projectName/secrets/:secretName", async 
   }
 });
 
+deployServiceApp.get("/projects/control", async (c) => {
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
+  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+  const requestUrl = new URL(c.req.raw.url);
+
+  if (requestUrl.origin !== new URL(oauthBaseUrl).origin) {
+    const redirectUrl = new URL(`${oauthBaseUrl}/projects/control`);
+    for (const [key, value] of requestUrl.searchParams.entries()) {
+      redirectUrl.searchParams.append(key, value);
+    }
+    return Response.redirect(redirectUrl.toString(), 302);
+  }
+
+  let identity: CloudflareAccessRequestIdentity;
+
+  try {
+    identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
+  }
+
+  try {
+    const projectNameInput = c.req.query("projectName") ?? undefined;
+    const repositoryFullName = c.req.query("repositoryFullName") ?? undefined;
+    const repositoryUrl = c.req.query("repositoryUrl") ?? undefined;
+
+    if (projectNameInput?.trim()) {
+      const projectName = normalizeRequestedProjectName(
+        projectNameInput,
+        resolveReservedProjectNames(c.env, serviceBaseUrl)
+      );
+      return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName), 302);
+    }
+
+    if (repositoryFullName?.trim() || repositoryUrl?.trim()) {
+      const repositoryContext = parseOptionalRepositoryContext({
+        repositoryFullName,
+        repositoryUrl
+      }, c.env, serviceBaseUrl);
+      if (!repositoryContext) {
+        throw new HttpError(400, "Enter a GitHub repository in owner/repo form.");
+      }
+      return Response.redirect(
+        buildGuidedSetupUrl(serviceBaseUrl, repositoryContext.repositoryFullName, repositoryContext.projectName),
+        302
+      );
+    }
+
+    return c.html(renderProjectAdminEntryPage({
+      oauthBaseUrl,
+      serviceBaseUrl,
+      identity
+    }));
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderProjectAdminEntryPage({
+      oauthBaseUrl,
+      serviceBaseUrl,
+      identity,
+      errorMessage: httpError.message
+    }), httpError.status === 400 || httpError.status === 409 ? 400 : httpError.status);
+  }
+});
+
 deployServiceApp.get("/projects/:projectName/control", async (c) => {
   const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
   const requestUrl = new URL(c.req.raw.url);
@@ -1971,7 +2042,7 @@ deployServiceApp.get("/projects/:projectName/control", async (c) => {
     }
 
     const [statusResult, secretsPayload, formToken] = await Promise.all([
-      buildProjectStatusResponse(c.env, projectName),
+      buildProjectStatusResponse(c.env, projectName, { includeSensitive: true }),
       buildProjectSecretsListPayload(c.env, authorization.project, authorization.githubLogin),
       createProjectControlFormToken({
         secret: resolveMcpOauthSecret(c.env),
@@ -2973,6 +3044,7 @@ async function setProjectSecretValue(
   const now = new Date().toISOString();
   const existing = await listProjectSecretMetadataForRepository(env.CONTROL_PLANE_DB, authorization.project.githubRepo);
   const existingSecret = existing.find((secret) => secret.secretName === secretName);
+  assertProjectSecretCapacity(existing.length, Boolean(existingSecret));
 
   await putProjectSecret(env.CONTROL_PLANE_DB, {
     githubRepo: authorization.project.githubRepo,
@@ -3076,6 +3148,13 @@ async function buildProjectSecretBindings(
     return [];
   }
 
+  if (secrets.length > MAX_PROJECT_SECRETS_PER_PROJECT) {
+    throw new HttpError(
+      400,
+      `This project has ${secrets.length} stored secrets, which exceeds Kale Deploy's current limit of ${MAX_PROJECT_SECRETS_PER_PROJECT}. Remove some secrets before deploying again.`
+    );
+  }
+
   const existingBindingNames = new Set((metadata.workerUpload.bindings ?? []).map((binding) => binding.name));
   const conflicts = secrets.filter((secret) => existingBindingNames.has(secret.secretName)).map((secret) => secret.secretName);
   if (conflicts.length > 0) {
@@ -3087,14 +3166,18 @@ async function buildProjectSecretBindings(
 
   const encryptionKey = resolveControlPlaneEncryptionKey(env);
   return await Promise.all(
-    secrets.map(async (secret) => ({
-      type: "secret_text" as const,
-      name: secret.secretName,
-      text: await decryptStoredText(encryptionKey, {
+    secrets.map(async (secret) => {
+      const text = await decryptStoredText(encryptionKey, {
         ciphertext: secret.ciphertext,
         iv: secret.iv
-      })
-    }))
+      });
+      assertValidProjectSecretValue(text);
+      return {
+        type: "secret_text" as const,
+        name: secret.secretName,
+        text
+      };
+    })
   );
 }
 
@@ -3122,11 +3205,24 @@ function assertValidProjectSecretValue(value: string | undefined): string {
     throw new HttpError(400, "Project secret values must be a non-empty string.");
   }
 
-  if (value.length > 32_768) {
-    throw new HttpError(400, "Project secret values must stay under 32 KB.");
+  const byteLength = new TextEncoder().encode(value).byteLength;
+  if (byteLength > MAX_PROJECT_SECRET_VALUE_BYTES) {
+    throw new HttpError(
+      400,
+      `Project secret values must stay under ${formatBytes(MAX_PROJECT_SECRET_VALUE_BYTES)}.`
+    );
   }
 
   return value;
+}
+
+function assertProjectSecretCapacity(existingSecretCount: number, updatingExistingSecret: boolean): void {
+  if (!updatingExistingSecret && existingSecretCount >= MAX_PROJECT_SECRETS_PER_PROJECT) {
+    throw new HttpError(
+      400,
+      `Projects can store at most ${MAX_PROJECT_SECRETS_PER_PROJECT} secrets.`
+    );
+  }
 }
 
 function isReservedProjectSecretName(name: string): boolean {
@@ -3637,7 +3733,10 @@ async function provisionProjectDatabase(
   projectName: string,
   locationHint?: string
 ): Promise<string> {
-  const database = await client.createD1Database(`cail-${projectName}`, locationHint);
+  const database = await client.createD1Database(
+    buildProjectScopedResourceName("cail", projectName, MAX_PROJECT_NAME_LENGTH),
+    locationHint
+  );
   return database.uuid;
 }
 
@@ -3686,7 +3785,7 @@ async function resolveProjectDatabaseId(
     return options.existingDatabaseId;
   }
 
-  const databaseName = `cail-${options.projectName}`;
+  const databaseName = buildProjectScopedResourceName("cail", options.projectName, MAX_PROJECT_NAME_LENGTH);
   const existingDatabase = await client.findD1DatabaseByName(databaseName);
   if (existingDatabase) {
     return existingDatabase.uuid;
@@ -4370,6 +4469,102 @@ function renderProjectControlPanelAuthErrorPage(message: string, oauthBaseUrl: s
         <p>${escapeHtml(message)}</p>
         <div class="actions">
           <a class="button" href="${escapeHtml(oauthBaseUrl)}">Return to Kale Deploy</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
+function renderProjectAdminEntryPage(input: {
+  oauthBaseUrl: string;
+  serviceBaseUrl: string;
+  identity: CloudflareAccessRequestIdentity;
+  errorMessage?: string;
+}): string {
+  const { oauthBaseUrl, serviceBaseUrl, identity, errorMessage } = input;
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Project Settings</title>
+    ${faviconLink()}
+    ${baseStyles(`
+      .lookup-grid {
+        display: grid;
+        gap: 18px;
+        margin-top: 4px;
+      }
+      .lookup-group label {
+        display: block;
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .lookup-row {
+        display: flex;
+        gap: 8px;
+      }
+      .lookup-row input {
+        flex: 1;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        font: inherit;
+      }
+      .lookup-row input:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(59, 107, 204, 0.1);
+      }
+      .page-meta {
+        margin: 4px 0 16px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+      .divider-or {
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .notice-error {
+        background: #fff3f1;
+        border-color: #f3b8ad;
+      }
+    `)}
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <div class="logo">${logoHtml("44px")}</div>
+        <h1>Project settings</h1>
+        <p class="page-meta">Signed in as <strong>${escapeHtml(identity.email)}</strong></p>
+        ${errorMessage ? `<div class="notice notice-error"><p>${escapeHtml(errorMessage)}</p></div>` : ""}
+        <div class="lookup-grid">
+          <form class="lookup-group" method="get" action="${escapeHtml(`${oauthBaseUrl}/projects/control`)}">
+            <label for="projectName">Project name</label>
+            <div class="lookup-row">
+              <input id="projectName" type="text" name="projectName" placeholder="my-project" />
+              <button class="button" type="submit">Go</button>
+            </div>
+          </form>
+          <p class="divider-or">or</p>
+          <form class="lookup-group" method="get" action="${escapeHtml(`${oauthBaseUrl}/projects/control`)}">
+            <label for="repositoryFullName">GitHub repo</label>
+            <div class="lookup-row">
+              <input id="repositoryFullName" type="text" name="repositoryFullName" placeholder="owner/repo" />
+              <button class="button" type="submit">Go</button>
+            </div>
+          </form>
+        </div>
+        <div class="actions" style="margin-top: 20px;">
+          <a class="button secondary" href="${escapeHtml(serviceBaseUrl)}">Back to Kale Deploy</a>
         </div>
       </section>
     </main>
@@ -5296,7 +5491,8 @@ function formatBytes(value: number): string {
 }
 
 function isValidProjectName(projectName: string): boolean {
-  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(projectName);
+  return projectName.length <= MAX_PROJECT_NAME_LENGTH
+    && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(projectName);
 }
 
 function assertAllowedProjectName(
@@ -5305,7 +5501,7 @@ function assertAllowedProjectName(
   serviceBaseUrl?: string
 ): void {
   if (!isValidProjectName(projectName)) {
-    throw new HttpError(400, "Project names must be lowercase kebab-case.");
+    throw new HttpError(400, `Project names must be lowercase kebab-case and no longer than ${MAX_PROJECT_NAME_LENGTH} characters.`);
   }
 
   if (resolveReservedProjectNames(env, serviceBaseUrl).has(projectName)) {
@@ -5455,7 +5651,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     install_base_url: serviceBaseUrl,
     well_known_runtime_url: publicRuntimeUrl,
     project_url_template: exampleProjectDeploymentUrl(env),
-    project_name_pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+    project_name_pattern: `^(?=.{1,${MAX_PROJECT_NAME_LENGTH}}$)[a-z0-9]+(?:-[a-z0-9]+)*$`,
     reserved_project_names: reservedProjectNames,
     recommended_framework: "hono",
     good_fit_project_types: [
@@ -5747,7 +5943,7 @@ function createDeployServiceMcpServer(
       title: "Get project status",
       description: "Return the current deployment lifecycle state for a project slug.",
       inputSchema: {
-        projectName: z.string().describe("CAIL project slug in lowercase kebab-case.")
+        projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${MAX_PROJECT_NAME_LENGTH} characters.`)
       }
     },
     async ({ projectName }) => {
@@ -5797,7 +5993,7 @@ function createDeployServiceMcpServer(
       title: "List project secrets",
       description: "List stored secret names for a Kale project. Secret values are never returned.",
       inputSchema: {
-        projectName: z.string().describe("CAIL project slug in lowercase kebab-case.")
+        projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${MAX_PROJECT_NAME_LENGTH} characters.`)
       }
     },
     async ({ projectName }) => {
@@ -5817,7 +6013,7 @@ function createDeployServiceMcpServer(
       title: "Set project secret",
       description: "Create or update a project secret. Secret values are write-only and never returned.",
       inputSchema: {
-        projectName: z.string().describe("CAIL project slug in lowercase kebab-case."),
+        projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${MAX_PROJECT_NAME_LENGTH} characters.`),
         secretName: z.string().describe("Secret name, usually uppercase like OPENAI_API_KEY."),
         value: z.string().describe("Secret value to store for this project.")
       }
@@ -5839,7 +6035,7 @@ function createDeployServiceMcpServer(
       title: "Delete project secret",
       description: "Remove a stored project secret by name.",
       inputSchema: {
-        projectName: z.string().describe("CAIL project slug in lowercase kebab-case."),
+        projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${MAX_PROJECT_NAME_LENGTH} characters.`),
         secretName: z.string().describe("Secret name to remove.")
       }
     },
@@ -6009,7 +6205,7 @@ function parseRepositoryReference(body: {
 function normalizeRequestedProjectName(projectName: string, reservedProjectNames?: Iterable<string>): string {
   const normalized = projectName.trim().toLowerCase();
   if (!isValidProjectName(normalized)) {
-    throw new HttpError(400, "Project names must be lowercase kebab-case.");
+    throw new HttpError(400, `Project names must be lowercase kebab-case and no longer than ${MAX_PROJECT_NAME_LENGTH} characters.`);
   }
 
   if (reservedProjectNames && new Set(reservedProjectNames).has(normalized)) {
@@ -6053,7 +6249,8 @@ async function buildRepositoryLifecycleState(
   env: Env,
   requestUrl: string,
   repository: { owner: string; repo: string },
-  requestedProjectName?: string
+  requestedProjectName?: string,
+  options?: { includeSensitive?: boolean }
 ): Promise<{
   httpStatus: 200 | 409;
   payload: RepositoryLifecyclePayload & { error?: string };
@@ -6129,7 +6326,7 @@ async function buildRepositoryLifecycleState(
     deploymentUrl: projectClaim.latestJob?.deploymentUrl ?? projectClaim.project?.deploymentUrl,
     errorKind: projectClaim.latestJob?.errorKind,
     errorMessage: projectClaim.latestJob?.errorMessage,
-    errorDetail: projectClaim.latestJob?.errorDetail,
+    ...(options?.includeSensitive ? { errorDetail: projectClaim.latestJob?.errorDetail } : {}),
     updatedAt: projectClaim.latestJob?.updatedAt ?? projectClaim.project?.updatedAt
   };
 
@@ -6386,12 +6583,15 @@ async function resolveRepositoryProjectName(
 
 async function buildProjectStatusResponse(
   env: Env,
-  projectName: string
+  projectName: string,
+  options?: { includeSensitive?: boolean }
 ): Promise<{ status: ApiResponseStatus; body: Record<string, unknown> }> {
   if (!isValidProjectName(projectName)) {
     return {
       status: 400,
-      body: { error: "Project names must be lowercase kebab-case." }
+      body: {
+        error: `Project names must be lowercase kebab-case and no longer than ${MAX_PROJECT_NAME_LENGTH} characters.`
+      }
     };
   }
 
@@ -6418,8 +6618,8 @@ async function buildProjectStatusResponse(
       deployment_id: latestJob?.deploymentId ?? project?.latestDeploymentId,
       error_kind: latestJob?.errorKind,
       error_message: latestJob?.errorMessage,
-      error_detail: latestJob?.errorDetail,
-      build_log_url: latestJob?.buildLogUrl,
+      ...(options?.includeSensitive ? { error_detail: latestJob?.errorDetail } : {}),
+      ...(options?.includeSensitive ? { build_log_url: latestJob?.buildLogUrl } : {}),
       job_id: latestJob?.jobId,
       check_run_id: latestJob?.checkRunId,
       created_at: latestJob?.createdAt ?? project?.createdAt,
@@ -6432,7 +6632,8 @@ async function buildProjectStatusResponse(
 
 async function buildBuildJobStatusResponse(
   env: Env,
-  jobId: string
+  jobId: string,
+  options?: { includeSensitive?: boolean }
 ): Promise<{ status: ApiResponseStatus; body: Record<string, unknown> }> {
   const job = await getBuildJob(env.CONTROL_PLANE_DB, jobId);
   if (!job) {
@@ -6463,8 +6664,8 @@ async function buildBuildJobStatusResponse(
       deployment_id: job.deploymentId,
       error_kind: job.errorKind,
       error_message: job.errorMessage,
-      error_detail: job.errorDetail,
-      build_log_url: job.buildLogUrl,
+      ...(options?.includeSensitive ? { error_detail: job.errorDetail } : {}),
+      ...(options?.includeSensitive ? { build_log_url: job.buildLogUrl } : {}),
       check_run_id: job.checkRunId,
       created_at: job.createdAt,
       updated_at: job.updatedAt,

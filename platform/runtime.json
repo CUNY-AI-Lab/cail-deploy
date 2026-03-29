@@ -12,7 +12,7 @@
   "install_base_url": "https://cuny.qzz.io/kale",
   "well_known_runtime_url": "https://runtime.cuny.qzz.io/.well-known/cail-runtime.json",
   "project_url_template": "https://<project-name>.cuny.qzz.io",
-  "project_name_pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+  "project_name_pattern": "^(?=.{1,63}$)[a-z0-9]+(?:-[a-z0-9]+)*$",
   "reserved_project_names": [
     "runtime"
   ],
@@ -109,19 +109,20 @@
     "project_secrets_template": "https://cuny.qzz.io/kale/api/projects/{projectName}/secrets",
     "github_install": "https://cuny.qzz.io/kale/github/install",
     "github_setup": "https://cuny.qzz.io/kale/github/setup",
-    "auth": {
-      "scheme": "oauth2.1",
-      "broker": "mcp_oauth_with_cloudflare_access_authorization",
-      "headless_bootstrap_supported": false,
-      "browser_session_required_for_authorization": true,
-      "human_handoff_rules": [
-        "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
-        "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
-        "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access."
-      ],
-      "required_for": [
-        "repository_status_template",
-        "register_project",
+      "auth": {
+        "scheme": "oauth2.1",
+        "broker": "mcp_oauth_with_cloudflare_access_authorization",
+        "headless_bootstrap_supported": false,
+        "browser_session_required_for_authorization": true,
+        "human_handoff_rules": [
+          "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
+          "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
+          "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access.",
+          "The browser settings page is a private admin surface. Use it only for project-admin tasks such as secrets, not for ordinary deploy or status work."
+        ],
+        "required_for": [
+          "repository_status_template",
+          "register_project",
         "validate_project",
         "project_status_template",
         "build_job_status_template",

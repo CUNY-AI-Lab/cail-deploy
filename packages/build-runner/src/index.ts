@@ -58,6 +58,27 @@ const TRADITIONAL_NODE_SERVER_PACKAGES = new Set([
 ]);
 const require = createRequire(import.meta.url);
 const WRANGLER_CLI_PATH = require.resolve("wrangler/wrangler-dist/cli.js");
+const SANDBOXED_CHILD_ENV_KEYS = [
+  "HOME",
+  "LOGNAME",
+  "PATH",
+  "PWD",
+  "SHELL",
+  "SSL_CERT_DIR",
+  "SSL_CERT_FILE",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "USER",
+  "XDG_CACHE_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ"
+] as const;
 
 type RunnerConfig = {
   runnerId: string;
@@ -716,6 +737,8 @@ async function installDependencies(packageManager: PackageManager, projectRoot: 
   };
 
   const result = await runCommand(...packageManagerInstallCommand(packageManager, lockfileExists[packageManager]), projectRoot, {
+    env: buildSandboxedChildEnv(),
+    inheritProcessEnv: false,
     logLabel: `${packageManager} install`,
     logTailChars: DEFAULT_LOG_TAIL_CHARS
   });
@@ -726,6 +749,8 @@ async function runBuildScript(packageManager: PackageManager, projectRoot: strin
   const command = packageManagerCommand(packageManager);
   const args = packageManager === "npm" ? ["run", "build"] : [packageManager, "run", "build"];
   const result = await runCommand(command, args, projectRoot, {
+    env: buildSandboxedChildEnv(),
+    inheritProcessEnv: false,
     logLabel: `${packageManager} run build`,
     logTailChars: DEFAULT_LOG_TAIL_CHARS
   });
@@ -936,9 +961,8 @@ async function runWranglerBundle(
   }
 
   const result = await runCommand(process.execPath, [WRANGLER_CLI_PATH, ...args], projectRoot, {
-    env: {
-      CI: "1"
-    },
+    env: buildSandboxedChildEnv({ CI: "1" }),
+    inheritProcessEnv: false,
     logLabel: "wrangler deploy --dry-run",
     logTailChars: DEFAULT_LOG_TAIL_CHARS
   });
@@ -1340,16 +1364,19 @@ async function runCommand(
   cwd: string,
   options: {
     env?: Record<string, string>;
+    inheritProcessEnv?: boolean;
     logLabel: string;
     logTailChars: number;
   }
 ): Promise<LoggedCommandResult> {
   const child = spawn(command, args, {
     cwd,
-    env: {
-      ...process.env,
-      ...options.env
-    },
+    env: options.inheritProcessEnv === false
+      ? options.env
+      : {
+          ...process.env,
+          ...options.env
+        },
     stdio: ["ignore", "pipe", "pipe"]
   });
 
@@ -1380,6 +1407,22 @@ async function runCommand(
   }
 
   return { output };
+}
+
+function buildSandboxedChildEnv(extra: Record<string, string> = {}): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  for (const key of SANDBOXED_CHILD_ENV_KEYS) {
+    const value = process.env[key];
+    if (value) {
+      env[key] = value;
+    }
+  }
+
+  return {
+    ...env,
+    ...extra
+  };
 }
 
 function formatCommandLog(label: string, output: string): string {

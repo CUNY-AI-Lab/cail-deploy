@@ -11,8 +11,8 @@ if (!rawName) {
   process.exit(1);
 }
 
-if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(rawName)) {
-  console.error("Project names must be lowercase kebab-case.");
+if (rawName.length > 63 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(rawName)) {
+  console.error("Project names must be lowercase kebab-case and no longer than 63 characters.");
   process.exit(1);
 }
 
