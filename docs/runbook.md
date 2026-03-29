@@ -88,6 +88,26 @@ docker restart cail-build-runner
 docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 ```
 
+Shared package cache maintenance:
+
+```bash
+export KALE_RUNNER_HOST=54.235.218.250
+export KALE_RUNNER_SSH_KEY=/Users/stephenzweibel/.ssh/kale-build-runner-us-east-1.pem
+npm run ops:runner-cache-prune
+```
+
+Use the cache-prune command when:
+
+- install failures start looking random or cache-corrupted
+- disk use on the runner host grows unexpectedly
+- you want to clear package-manager state after a supply-chain scare
+
+Notes:
+
+- the prune command refuses to run while disposable build containers are active
+- it only removes the shared package-download cache volume, not project data or deployed apps
+- the next build after a prune will usually be slower while the cache warms back up
+
 If the runner is down:
 
 1. Confirm the EC2 instance is still running.

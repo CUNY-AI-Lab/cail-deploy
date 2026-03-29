@@ -88,3 +88,4 @@ docker compose down
 - The Compose file binds the health port only to `127.0.0.1`, not the public internet.
 - The dispatcher needs access to `/var/run/docker.sock` so it can launch disposable build containers on the host daemon.
 - The shared cache volume is for package downloads only. Project workspaces are not reused across builds.
+- If the shared package cache ever looks corrupted or grows too large, prune it with `npm run ops:runner-cache-prune` after confirming no disposable build containers are active.

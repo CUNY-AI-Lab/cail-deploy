@@ -168,6 +168,8 @@ Behavior:
 - if a project is already live, Kale also tries to push the secret change directly to the live Worker without waiting for a redeploy
 - if that live update fails, the secret is still saved and will apply on the next deploy
 - humans can also manage secrets in the Access-protected project settings page on the Kale auth host
+- that settings page is a private admin surface, not a general project page
+- agents should only send users there for project-admin tasks such as secrets or future domain controls
 
 Agent pattern:
 
@@ -176,6 +178,12 @@ Agent pattern:
 3. If Kale returns `nextAction="connect_github_user"`, stop and hand the user `connectGitHubUserUrl`.
 4. After the user completes that browser step, retry the same secret tool.
 5. Never repeat the secret value back to the user after writing it.
+
+Settings URL shape:
+
+- `https://<kale-auth-host>/projects/<projectName>/control`
+
+Use that settings URL only when the user needs project administration. For ordinary deploy and status work, stay in the normal register/validate/status flow.
 
 Example:
 

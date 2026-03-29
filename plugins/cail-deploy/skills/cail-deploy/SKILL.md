@@ -224,6 +224,13 @@ Only ask for the extra GitHub user-auth step when you are managing project secre
 - `set_project_secret`
 - `delete_project_secret`
 
+Treat the browser settings page as a private admin console, not a general project page:
+
+- only send the user there for project-admin tasks such as secrets
+- do not use it as the default next step for ordinary deploy, validate, or status checks
+- only hand out the exact settings URL when the user needs project administration
+- assume it is behind CUNY sign-in and repo-admin verification
+
 If one of those tools returns `nextAction="connect_github_user"`, stop and hand the user the returned `connectGitHubUserUrl`.
 
 For those secret tools, pass the Kale `projectName` slug, not `owner/repo`.
