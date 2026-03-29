@@ -21,12 +21,6 @@ In Claude Code itself:
 
 Claude will open a browser login flow for Kale Deploy.
 
-Important:
-
-- use only the newest browser URL from the current login attempt
-- do not reuse an older localhost callback URL from a previous attempt
-- if the browser says `invalid login session`, start a fresh auth attempt and use that new URL only
-
 ## 3. Confirm that Kale is really usable
 
 Ask Claude to call Kale Deploy's `test_connection` tool.
