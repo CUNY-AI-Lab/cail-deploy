@@ -44,6 +44,20 @@ That plugin path is available, but the direct `claude mcp add --transport http`
 flow above is the recommended route when you want to confirm that OAuth and the
 remote Kale tools are working end to end.
 
+The tested Claude path is:
+
+```bash
+claude mcp add --transport http cail https://cuny.qzz.io/kale/mcp
+```
+
+Then, inside Claude Code, use the interactive `/mcp` screen to authenticate
+`cail`, finish the browser sign-in, and ask Claude to call `test_connection`
+before you rely on Kale for deployment.
+
+For secret management, use the Kale `projectName` slug rather than `owner/repo`.
+If you only know the repo, call `get_repository_status` first and use the
+returned `projectName`.
+
 ## Codex
 
 The Codex plugin bundle lives in this same directory and is referenced from the

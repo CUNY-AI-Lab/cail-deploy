@@ -204,6 +204,8 @@ After scaffolding or adapting the repo, use this loop:
    - `get_build_job_status`
    - `get_project_status`
    - confirm the harness can actually see these tools before you say Kale Deploy is connected
+   - in Claude Code, the most reliable auth path is the interactive `/mcp` screen
+   - if the harness opens a browser login, use only the newest URL from that exact attempt
 6. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`.
 7. After the install step, continue with one of:
    - `validate_project` for a non-production branch or preflight build
@@ -223,6 +225,9 @@ Only ask for the extra GitHub user-auth step when you are managing project secre
 - `delete_project_secret`
 
 If one of those tools returns `nextAction="connect_github_user"`, stop and hand the user the returned `connectGitHubUserUrl`.
+
+For those secret tools, pass the Kale `projectName` slug, not `owner/repo`.
+If you only know the repository, call `get_repository_status` first and use its returned `projectName`.
 
 ## Worked example
 

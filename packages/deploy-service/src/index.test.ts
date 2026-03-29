@@ -609,7 +609,10 @@ test("mcp project secret tools return a clear GitHub connect handoff when repo-a
   };
   assert.equal(result.result.isError, true);
   assert.equal(result.result.structuredContent?.nextAction, "connect_github_user");
-  assert.match(result.result.structuredContent?.connectGitHubUserUrl ?? "", /\/api\/github\/user-auth\/start\?/);
+  assert.match(
+    result.result.structuredContent?.connectGitHubUserUrl ?? "",
+    /^https:\/\/auth\.example\/api\/github\/user-auth\/start\?/
+  );
 });
 
 test("github user auth start redirects to GitHub with signed repository context", async (t) => {
@@ -778,7 +781,7 @@ test("project secrets API returns a GitHub connect handoff before repo-admin acc
   };
   assert.equal(body.nextAction, "connect_github_user");
   assert.equal(body.repositoryFullName, "szweibel/cail-assets-build-test");
-  assert.match(body.connectGitHubUserUrl ?? "", /\/api\/github\/user-auth\/start\?/);
+  assert.match(body.connectGitHubUserUrl ?? "", /^https:\/\/auth\.example\/api\/github\/user-auth\/start\?/);
 });
 
 test("project secrets can be stored, listed, and synced to the live worker", async (t) => {

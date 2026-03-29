@@ -539,7 +539,7 @@ deployServiceApp.get("/", async (c) => {
   const liveProjectCount = liveProjects.length;
   const marketingName = "Kale Deploy";
   const marketingSource = "From the CUNY AI Lab";
-  const claudeSetupPrompt = `Connect ${marketingName} in this Claude Code environment. If you can run terminal commands yourself, run:\nclaude mcp add --transport http cail ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. Then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
+  const claudeSetupPrompt = `Connect ${marketingName} in this Claude Code environment. If you can run terminal commands yourself, run:\nclaude mcp add --transport http cail ${mcpEndpoint}\nThen, inside Claude Code, open /mcp, select cail, choose Authenticate, and complete the browser sign-in. Use only the newest browser URL from the current login attempt. After that, verify that you can really use Kale Deploy tools like test_connection, get_repository_status, and register_project before you say ${marketingName} is connected.`;
   const codexSetupPrompt = `Connect ${marketingName} in this Codex environment. If you can run terminal commands yourself, run:\ncodex mcp add cail --url ${mcpEndpoint}\ncodex mcp list\nYou want Kale Deploy to show Auth: Not logged in, not Unsupported. Then run:\ncodex mcp login cail\nUse the newest browser URL from that exact login attempt, complete the sign-in flow, and then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
   const geminiSetupPrompt = `Connect ${marketingName} in this Gemini CLI environment. If you can run terminal commands yourself, run:\ngemini mcp add --transport http cail ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. Then verify that you can see and use Kale Deploy tools like get_repository_status and register_project before you say ${marketingName} is connected.`;
   const buildPrompt = `Use ${marketingName} from the CUNY AI Lab to build me a small web app. If ${marketingName} is not connected yet, connect it first and verify that its tools are available. Then use Kale Deploy to register this repo, hand me any guided GitHub install link if approval is needed, validate the project, and deploy it through Kale.`;
@@ -2553,6 +2553,7 @@ async function authorizeProjectSecretsAccess(
   projectName: string
 ): Promise<ProjectSecretsAuthorization> {
   const serviceBaseUrl = resolveServiceBaseUrl(env, requestUrl);
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(env, requestUrl);
   const connection = buildConnectionHealthPayload(env, serviceBaseUrl, identity);
   let authenticatedIdentity: AuthenticatedAgentRequestIdentity;
 
@@ -2607,7 +2608,7 @@ async function authorizeProjectSecretsAccess(
         nextAction: "connect_github_user",
         projectName,
         repositoryFullName,
-        connectGitHubUserUrl: buildGitHubUserSecretsConnectUrl(serviceBaseUrl, repositoryFullName, projectName),
+        connectGitHubUserUrl: buildGitHubUserSecretsConnectUrl(oauthBaseUrl, repositoryFullName, projectName),
         connectionHealthUrl: connection.connectionHealthUrl
       }
     };
@@ -2631,7 +2632,7 @@ async function authorizeProjectSecretsAccess(
           nextAction: "connect_github_user",
           projectName,
           repositoryFullName,
-          connectGitHubUserUrl: buildGitHubUserSecretsConnectUrl(serviceBaseUrl, repositoryFullName, projectName),
+          connectGitHubUserUrl: buildGitHubUserSecretsConnectUrl(oauthBaseUrl, repositoryFullName, projectName),
           connectionHealthUrl: connection.connectionHealthUrl
         }
       };
@@ -2964,11 +2965,11 @@ function splitRepositoryFullName(repositoryFullName: string): [string, string] {
 }
 
 function buildGitHubUserSecretsConnectUrl(
-  serviceBaseUrl: string,
+  oauthBaseUrl: string,
   repositoryFullName: string,
   projectName: string
 ): string {
-  const url = new URL(`${serviceBaseUrl}/api/github/user-auth/start`);
+  const url = new URL(`${oauthBaseUrl}/api/github/user-auth/start`);
   url.searchParams.set("repositoryFullName", repositoryFullName);
   url.searchParams.set("projectName", projectName);
   return url.toString();
