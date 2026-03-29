@@ -35,7 +35,6 @@ export async function createProjectAdminEntryResponse<TEnv>(input: {
   env: TEnv;
   request: Request;
   requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
-  resolveMcpOauthBaseUrl: (env: TEnv, requestUrl: string) => string;
   resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
   normalizeRequestedProjectName: (projectName: string, reservedProjectNames?: Iterable<string>) => string;
   resolveReservedProjectNames: (env: TEnv, serviceBaseUrl?: string) => Set<string>;
@@ -45,24 +44,15 @@ export async function createProjectAdminEntryResponse<TEnv>(input: {
     serviceBaseUrl?: string
   ) => ProjectContext | undefined;
 }): Promise<Response> {
-  const oauthBaseUrl = input.resolveMcpOauthBaseUrl(input.env, input.request.url);
   const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
   const requestUrl = new URL(input.request.url);
-
-  if (requestUrl.origin !== new URL(oauthBaseUrl).origin) {
-    const redirectUrl = new URL(`${oauthBaseUrl}/projects/control`);
-    for (const [key, value] of requestUrl.searchParams.entries()) {
-      redirectUrl.searchParams.append(key, value);
-    }
-    return Response.redirect(redirectUrl.toString(), 302);
-  }
 
   let identity: AuthenticatedAgentRequestIdentity;
   try {
     identity = await input.requireCloudflareAccessIdentity(input.request, input.env);
   } catch (error) {
     const httpError = asHttpError(error);
-    return htmlResponse(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
+    return htmlResponse(renderProjectControlPanelAuthErrorPage(httpError.message, serviceBaseUrl), httpError.status);
   }
 
   try {
@@ -75,7 +65,7 @@ export async function createProjectAdminEntryResponse<TEnv>(input: {
         projectNameInput,
         input.resolveReservedProjectNames(input.env, serviceBaseUrl)
       );
-      return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName), 302);
+      return Response.redirect(buildProjectControlPanelUrl(serviceBaseUrl, projectName), 302);
     }
 
     if (repositoryFullName?.trim() || repositoryUrl?.trim()) {
@@ -94,7 +84,7 @@ export async function createProjectAdminEntryResponse<TEnv>(input: {
     }
 
     return htmlResponse(renderProjectAdminEntryPage({
-      oauthBaseUrl,
+      controlBaseUrl: serviceBaseUrl,
       serviceBaseUrl,
       signedInEmail: identity.email
     }));
@@ -102,7 +92,7 @@ export async function createProjectAdminEntryResponse<TEnv>(input: {
     const httpError = asHttpError(error);
     const status = httpError.status === 400 || httpError.status === 409 ? 400 : httpError.status;
     return htmlResponse(renderProjectAdminEntryPage({
-      oauthBaseUrl,
+      controlBaseUrl: serviceBaseUrl,
       serviceBaseUrl,
       signedInEmail: identity.email,
       errorMessage: httpError.message
@@ -115,7 +105,6 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
   request: Request;
   projectName: string;
   requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
-  resolveMcpOauthBaseUrl: (env: TEnv, requestUrl: string) => string;
   resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
   authorizeProjectSecretsAccess: (
     env: TEnv,
@@ -135,27 +124,14 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
   ) => Promise<ProjectSecretsListPayload>;
   resolveMcpOauthSecret: (env: TEnv) => string;
 }): Promise<Response> {
-  const oauthBaseUrl = input.resolveMcpOauthBaseUrl(input.env, input.request.url);
-  const requestUrl = new URL(input.request.url);
-  if (requestUrl.origin !== new URL(oauthBaseUrl).origin) {
-    const redirectUrl = new URL(`${oauthBaseUrl}/projects/${encodeURIComponent(input.projectName)}/control`);
-    const flash = requestUrl.searchParams.get("flash");
-    const message = requestUrl.searchParams.get("message");
-    if (flash) {
-      redirectUrl.searchParams.set("flash", flash);
-    }
-    if (message) {
-      redirectUrl.searchParams.set("message", message);
-    }
-    return Response.redirect(redirectUrl.toString(), 302);
-  }
+  const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
 
   let identity: AuthenticatedAgentRequestIdentity;
   try {
     identity = await input.requireCloudflareAccessIdentity(input.request, input.env);
   } catch (error) {
     const httpError = asHttpError(error);
-    return htmlResponse(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
+    return htmlResponse(renderProjectControlPanelAuthErrorPage(httpError.message, serviceBaseUrl), httpError.status);
   }
 
   try {
@@ -169,12 +145,12 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
 
     if (!authorization.ok) {
       const connectUrl = authorization.body.nextAction === "connect_github_user"
-        ? buildGitHubUserSecretsConnectUrl(oauthBaseUrl, input.projectName, {
-            returnTo: buildProjectControlPanelUrl(oauthBaseUrl, input.projectName)
+        ? buildGitHubUserSecretsConnectUrl(serviceBaseUrl, input.projectName, {
+            returnTo: buildProjectControlPanelUrl(serviceBaseUrl, input.projectName)
           })
         : authorization.body.connectGitHubUserUrl;
       return htmlResponse(renderProjectControlPanelGatePage({
-        oauthBaseUrl,
+        serviceBaseUrl,
         summary: authorization.body.summary,
         connectUrl,
         flash
@@ -186,14 +162,14 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
       input.buildProjectSecretsListPayload(input.env, authorization.project, authorization.githubLogin),
       createProjectControlFormToken({
         secret: input.resolveMcpOauthSecret(input.env),
-        issuer: oauthBaseUrl,
+        issuer: serviceBaseUrl,
         subject: identity.subject,
         projectName: input.projectName
       })
     ]);
 
     return htmlResponse(renderProjectControlPanelPage({
-      oauthBaseUrl,
+      controlBaseUrl: serviceBaseUrl,
       signedInEmail: identity.email,
       projectName: authorization.project.projectName,
       repositoryFullName: authorization.project.githubRepo,
@@ -218,17 +194,17 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
   } catch (error) {
     const httpError = asHttpError(error);
     if (httpError.status === 404) {
-      const connectUrl = buildGitHubUserSecretsConnectUrl(oauthBaseUrl, input.projectName, {
-        returnTo: buildProjectControlPanelUrl(oauthBaseUrl, input.projectName)
+      const connectUrl = buildGitHubUserSecretsConnectUrl(serviceBaseUrl, input.projectName, {
+        returnTo: buildProjectControlPanelUrl(serviceBaseUrl, input.projectName)
       });
       return htmlResponse(renderProjectControlPanelGatePage({
-        oauthBaseUrl,
+        serviceBaseUrl,
         summary: "Project settings are only visible to people who can manage this Kale project.",
         connectUrl
       }), 403);
     }
 
-    return htmlResponse(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
+    return htmlResponse(renderProjectControlPanelAuthErrorPage(httpError.message, serviceBaseUrl), httpError.status);
   }
 }
 
@@ -237,7 +213,7 @@ export async function createProjectControlSecretSetResponse<TEnv>(input: {
   request: Request;
   projectName: string;
   requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
-  resolveMcpOauthBaseUrl: (env: TEnv, requestUrl: string) => string;
+  resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
   resolveMcpOauthSecret: (env: TEnv) => string;
   authorizeProjectSecretsAccess: (
     env: TEnv,
@@ -270,7 +246,7 @@ export async function createProjectControlSecretDeleteResponse<TEnv>(input: {
   projectName: string;
   secretName: string;
   requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
-  resolveMcpOauthBaseUrl: (env: TEnv, requestUrl: string) => string;
+  resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
   resolveMcpOauthSecret: (env: TEnv) => string;
   authorizeProjectSecretsAccess: (
     env: TEnv,
@@ -296,7 +272,7 @@ async function createProjectControlSecretMutationResponse<TEnv>(input: {
   request: Request;
   projectName: string;
   requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
-  resolveMcpOauthBaseUrl: (env: TEnv, requestUrl: string) => string;
+  resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
   resolveMcpOauthSecret: (env: TEnv) => string;
   authorizeProjectSecretsAccess: (
     env: TEnv,
@@ -311,21 +287,21 @@ async function createProjectControlSecretMutationResponse<TEnv>(input: {
     form: FormData;
   }) => Promise<ProjectSecretMutationPayload>;
 }): Promise<Response> {
-  const oauthBaseUrl = input.resolveMcpOauthBaseUrl(input.env, input.request.url);
+  const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
   let identity: AuthenticatedAgentRequestIdentity;
 
   try {
     identity = await input.requireCloudflareAccessIdentity(input.request, input.env);
   } catch (error) {
     const httpError = asHttpError(error);
-    return htmlResponse(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
+    return htmlResponse(renderProjectControlPanelAuthErrorPage(httpError.message, serviceBaseUrl), httpError.status);
   }
 
   try {
     const form = await input.request.formData();
     await verifyProjectControlFormToken({
       secret: input.resolveMcpOauthSecret(input.env),
-      issuer: oauthBaseUrl,
+      issuer: serviceBaseUrl,
       token: getRequiredProjectControlFormField(form, "formToken"),
       subject: identity.subject,
       projectName: input.projectName
@@ -338,7 +314,7 @@ async function createProjectControlSecretMutationResponse<TEnv>(input: {
       input.projectName
     );
     if (!authorization.ok) {
-      return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, input.projectName, {
+      return Response.redirect(buildProjectControlPanelUrl(serviceBaseUrl, input.projectName, {
         flash: "error",
         message: authorization.body.summary
       }), 302);
@@ -351,13 +327,13 @@ async function createProjectControlSecretMutationResponse<TEnv>(input: {
       form
     });
 
-    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, input.projectName, {
+    return Response.redirect(buildProjectControlPanelUrl(serviceBaseUrl, input.projectName, {
       flash: result.nextAction === "redeploy_to_apply_secret" ? "warning" : "success",
       message: result.warning ?? result.summary
     }), 302);
   } catch (error) {
     const httpError = asHttpError(error);
-    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, input.projectName, {
+    return Response.redirect(buildProjectControlPanelUrl(serviceBaseUrl, input.projectName, {
       flash: "error",
       message: httpError.message
     }), 302);

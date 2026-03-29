@@ -70,11 +70,11 @@ export function renderGitHubUserAuthErrorPage(message: string, serviceBaseUrl: s
 }
 
 export function buildProjectControlPanelUrl(
-  oauthBaseUrl: string,
+  baseUrl: string,
   projectName: string,
   options?: { flash?: "success" | "warning" | "error"; message?: string }
 ): string {
-  const url = new URL(`${oauthBaseUrl}/projects/${encodeURIComponent(projectName)}/control`);
+  const url = new URL(`${baseUrl}/projects/${encodeURIComponent(projectName)}/control`);
   if (options?.flash) {
     url.searchParams.set("flash", options.flash);
   }
@@ -95,7 +95,7 @@ export function readProjectControlFlash(requestUrl: string): ProjectControlFlash
   return { tone, message };
 }
 
-export function renderProjectControlPanelAuthErrorPage(message: string, oauthBaseUrl: string): string {
+export function renderProjectControlPanelAuthErrorPage(message: string, serviceBaseUrl: string): string {
   const visibleMessage = normalizeProjectControlAuthErrorMessage(message);
   return `<!doctype html>
 <html lang="en">
@@ -113,7 +113,7 @@ export function renderProjectControlPanelAuthErrorPage(message: string, oauthBas
         <h1>Project settings are not available yet</h1>
         <p>${escapeHtml(visibleMessage)}</p>
         <div class="actions">
-          <a class="button" href="${escapeHtml(oauthBaseUrl)}">Return to Kale Deploy</a>
+          <a class="button" href="${escapeHtml(serviceBaseUrl)}">Return to Kale Deploy</a>
         </div>
       </section>
     </main>
@@ -130,12 +130,12 @@ function normalizeProjectControlAuthErrorMessage(message: string): string {
 }
 
 export function renderProjectAdminEntryPage(input: {
-  oauthBaseUrl: string;
+  controlBaseUrl: string;
   serviceBaseUrl: string;
   signedInEmail: string;
   errorMessage?: string;
 }): string {
-  const { oauthBaseUrl, serviceBaseUrl, signedInEmail, errorMessage } = input;
+  const { controlBaseUrl, serviceBaseUrl, signedInEmail, errorMessage } = input;
 
   return `<!doctype html>
 <html lang="en">
@@ -200,7 +200,7 @@ export function renderProjectAdminEntryPage(input: {
         <p class="page-meta">Signed in as <strong>${escapeHtml(signedInEmail)}</strong></p>
         ${errorMessage ? `<div class="notice notice-error"><p>${escapeHtml(errorMessage)}</p></div>` : ""}
         <div class="lookup-grid">
-          <form class="lookup-group" method="get" action="${escapeHtml(`${oauthBaseUrl}/projects/control`)}">
+          <form class="lookup-group" method="get" action="${escapeHtml(`${controlBaseUrl}/projects/control`)}">
             <label for="projectName">Project name</label>
             <div class="lookup-row">
               <input id="projectName" type="text" name="projectName" placeholder="my-project" />
@@ -208,7 +208,7 @@ export function renderProjectAdminEntryPage(input: {
             </div>
           </form>
           <p class="divider-or">or</p>
-          <form class="lookup-group" method="get" action="${escapeHtml(`${oauthBaseUrl}/projects/control`)}">
+          <form class="lookup-group" method="get" action="${escapeHtml(`${controlBaseUrl}/projects/control`)}">
             <label for="repositoryFullName">GitHub repo</label>
             <div class="lookup-row">
               <input id="repositoryFullName" type="text" name="repositoryFullName" placeholder="owner/repo" />
@@ -226,12 +226,12 @@ export function renderProjectAdminEntryPage(input: {
 }
 
 export function renderProjectControlPanelGatePage(input: {
-  oauthBaseUrl: string;
+  serviceBaseUrl: string;
   summary: string;
   connectUrl?: string;
   flash?: ProjectControlFlash;
 }): string {
-  const { oauthBaseUrl, summary, connectUrl, flash } = input;
+  const { serviceBaseUrl, summary, connectUrl, flash } = input;
   const toneClass = flash ? `notice notice-${flash.tone}` : "";
 
   return `<!doctype html>
@@ -277,7 +277,7 @@ export function renderProjectControlPanelGatePage(input: {
         </div>
         <div class="actions">
           ${connectUrl ? `<a class="button" href="${escapeHtml(connectUrl)}">Connect your GitHub account</a>` : ""}
-          <a class="button secondary" href="${escapeHtml(oauthBaseUrl)}">Return to Kale Deploy</a>
+          <a class="button secondary" href="${escapeHtml(serviceBaseUrl)}">Return to Kale Deploy</a>
         </div>
       </section>
     </main>
@@ -286,7 +286,7 @@ export function renderProjectControlPanelGatePage(input: {
 }
 
 export function renderProjectControlPanelPage(input: {
-  oauthBaseUrl: string;
+  controlBaseUrl: string;
   signedInEmail: string;
   projectName: string;
   repositoryFullName: string;
@@ -305,7 +305,7 @@ export function renderProjectControlPanelPage(input: {
   flash?: ProjectControlFlash;
 }): string {
   const {
-    oauthBaseUrl,
+    controlBaseUrl,
     signedInEmail,
     projectName,
     repositoryFullName,
@@ -709,7 +709,7 @@ export function renderProjectControlPanelPage(input: {
                     <p><code class="secret-name">${escapeHtml(secret.secretName)}</code></p>
                     <p class="secret-meta">Set by ${escapeHtml(secret.githubLogin)} &middot; ${escapeHtml(secret.updatedAt)}</p>
                   </div>
-                  <form class="inline-form" method="post" action="${escapeHtml(`${oauthBaseUrl}/projects/${encodeURIComponent(projectName)}/control/secrets/${encodeURIComponent(secret.secretName)}/delete`)}">
+                  <form class="inline-form" method="post" action="${escapeHtml(`${controlBaseUrl}/projects/${encodeURIComponent(projectName)}/control/secrets/${encodeURIComponent(secret.secretName)}/delete`)}">
                     <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
                     <button class="btn-delete" type="submit">Delete</button>
                   </form>
@@ -717,7 +717,7 @@ export function renderProjectControlPanelPage(input: {
               `).join("")}
             </ul>`
           : `<div class="notice" style="margin-top: 16px;"><p>No secrets stored yet.</p></div>`}
-        <form class="secret-form" method="post" action="${escapeHtml(`${oauthBaseUrl}/projects/${encodeURIComponent(projectName)}/control/secrets`)}">
+        <form class="secret-form" method="post" action="${escapeHtml(`${controlBaseUrl}/projects/${encodeURIComponent(projectName)}/control/secrets`)}">
           <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
           <p class="secret-form-title">Add or update a secret</p>
           <div class="field-grid">

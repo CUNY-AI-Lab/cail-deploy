@@ -34,7 +34,6 @@ import {
   createGitHubSetupResponse
 } from "./repository-onboarding-controller";
 import {
-  buildProjectControlPanelUrl,
   describeGitHubUserAuthContinueLabel,
   renderGitHubUserAuthErrorPage,
   renderGitHubUserAuthSuccessPage,
@@ -881,7 +880,7 @@ deployServiceApp.get("/", async (c) => {
 
       <footer class="page-footer">
         ${installUrl ? `<a href="${escapeHtml(installUrl)}">GitHub App</a>` : ""}
-        <a href="${escapeHtml(`${oauthBaseUrl}/projects/control`)}">Project admin</a>
+        <a href="${escapeHtml(`${serviceBaseUrl}/projects/control`)}">Project admin</a>
         <a href="${escapeHtml(repositoryUrl)}">GitHub</a>
       </footer>
     </main>
@@ -1458,7 +1457,6 @@ deployServiceApp.get("/projects/control", async (c) => {
     env: c.env,
     request: c.req.raw,
     requireCloudflareAccessIdentity,
-    resolveMcpOauthBaseUrl,
     resolveServiceBaseUrl,
     normalizeRequestedProjectName,
     resolveReservedProjectNames,
@@ -1472,7 +1470,6 @@ deployServiceApp.get("/projects/:projectName/control", async (c) => {
     request: c.req.raw,
     projectName: c.req.param("projectName"),
     requireCloudflareAccessIdentity,
-    resolveMcpOauthBaseUrl,
     resolveServiceBaseUrl,
     authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
       authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
@@ -1488,7 +1485,7 @@ deployServiceApp.post("/projects/:projectName/control/secrets", async (c) => {
     request: c.req.raw,
     projectName: c.req.param("projectName"),
     requireCloudflareAccessIdentity,
-    resolveMcpOauthBaseUrl,
+    resolveServiceBaseUrl,
     resolveMcpOauthSecret,
     authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
       authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
@@ -1504,7 +1501,7 @@ deployServiceApp.post("/projects/:projectName/control/secrets/:secretName/delete
     projectName: c.req.param("projectName"),
     secretName: c.req.param("secretName"),
     requireCloudflareAccessIdentity,
-    resolveMcpOauthBaseUrl,
+    resolveServiceBaseUrl,
     resolveMcpOauthSecret,
     authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
       authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),

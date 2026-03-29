@@ -612,8 +612,8 @@ function renderSetupPageContent(input: {
   installUrl?: string;
   installReturnObserved?: boolean;
 }): string {
-  const { lifecycle, appName, serviceBaseUrl, oauthBaseUrl, installUrl, installReturnObserved } = input;
-  const settingsUrl = buildProjectControlPanelUrl(oauthBaseUrl, lifecycle.projectName);
+  const { lifecycle, appName, serviceBaseUrl, installUrl, installReturnObserved } = input;
+  const settingsUrl = buildProjectControlPanelUrl(serviceBaseUrl, lifecycle.projectName);
   const stage = describeRepositorySetupStage(lifecycle, appName, {
     installReturnObserved,
     flowPhase: "setup"
@@ -768,7 +768,7 @@ function renderRepositoryDeveloperDetails(input: {
   serviceBaseUrl: string;
   oauthBaseUrl: string;
 }): string {
-  const { lifecycle, serviceBaseUrl, oauthBaseUrl } = input;
+  const { lifecycle, serviceBaseUrl } = input;
 
   return `<details class="dev-details">
       <summary>Developer details</summary>
@@ -776,7 +776,7 @@ function renderRepositoryDeveloperDetails(input: {
         <div class="detail-label">Repository</div><div class="detail-value"><a href="${escapeHtml(lifecycle.repository.htmlUrl)}"><code>${escapeHtml(lifecycle.repository.fullName)}</code></a></div>
         <div class="detail-label">Project</div><div class="detail-value"><code>${escapeHtml(lifecycle.projectName)}</code></div>
         <div class="detail-label">Public URL</div><div class="detail-value"><code>${escapeHtml(lifecycle.projectUrl)}</code></div>
-        <div class="detail-label">Settings URL</div><div class="detail-value"><code>${escapeHtml(buildProjectControlPanelUrl(oauthBaseUrl, lifecycle.projectName))}</code></div>
+        <div class="detail-label">Settings URL</div><div class="detail-value"><code>${escapeHtml(buildProjectControlPanelUrl(serviceBaseUrl, lifecycle.projectName))}</code></div>
         <div class="detail-label">Repo status API</div><div class="detail-value"><code>${escapeHtml(lifecycle.repositoryStatusUrl)}</code></div>
         <div class="detail-label">Project status API</div><div class="detail-value"><code>${escapeHtml(lifecycle.statusUrl)}</code></div>
         <div class="detail-label">Validate API</div><div class="detail-value"><code>${escapeHtml(lifecycle.validateUrl)}</code></div>

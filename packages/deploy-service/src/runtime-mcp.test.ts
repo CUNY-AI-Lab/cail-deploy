@@ -228,7 +228,7 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app and deploy it with Kale Deploy/);
   assert.match(html, /smoke-test/);
-  assert.match(html, /href="https:\/\/auth\.example\/projects\/control"/);
+  assert.match(html, /href="https:\/\/deploy\.example\/projects\/control"/);
 });
 
 test("mcp advertises OAuth metadata when unauthorized", async () => {

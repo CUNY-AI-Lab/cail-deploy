@@ -184,7 +184,7 @@ test("github user auth callback returns to project settings when the flow starte
   });
 
   const accessJwt = await createAccessJwt("person@cuny.edu");
-  const startResponse = await fetchRaw(new Request("https://auth.example/api/github/user-auth/start?repositoryFullName=szweibel/cail-assets-build-test&projectName=cail-assets-build-test&returnTo=https%3A%2F%2Fauth.example%2Fprojects%2Fcail-assets-build-test%2Fcontrol", {
+  const startResponse = await fetchRaw(new Request("https://deploy.example/api/github/user-auth/start?repositoryFullName=szweibel/cail-assets-build-test&projectName=cail-assets-build-test&returnTo=https%3A%2F%2Fdeploy.example%2Fprojects%2Fcail-assets-build-test%2Fcontrol", {
     method: "GET",
     headers: {
       "cf-access-jwt-assertion": accessJwt,
@@ -611,12 +611,18 @@ test("project secrets reject new secrets after the Worker secret cap is reached"
   assert.match(body.error, /at most 120 secrets/i);
 });
 
-test("project control panel redirects public requests to the Access-protected host", async () => {
-  const { env } = createTestContext();
+test("project control panel shows the same browser-session message regardless of host when Access headers are missing", async () => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
 
-  const response = await fetchRaw(new Request("https://deploy.example/projects/kale-cache-smoke-test/control"), env);
-  assert.equal(response.status, 302);
-  assert.equal(response.headers.get("location"), "https://auth.example/projects/kale-cache-smoke-test/control");
+  const response = await fetchRaw(new Request("https://auth.example/projects/kale-cache-smoke-test/control"), env);
+  assert.equal(response.status, 401);
+  const html = await response.text();
+  assert.match(html, /This page needs your CUNY browser session/i);
+  assert.doesNotMatch(html, /Missing Cloudflare Access JWT assertion/i);
 });
 
 test("project admin entry shows a plain-language browser-session message when Access headers are missing", async () => {
@@ -626,22 +632,25 @@ test("project admin entry shows a plain-language browser-session message when Ac
     CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
   });
 
-  const response = await fetchRaw(new Request("https://auth.example/projects/control"), env);
+  const response = await fetchRaw(new Request("https://deploy.example/projects/control"), env);
   assert.equal(response.status, 401);
   const html = await response.text();
   assert.match(html, /This page needs your CUNY browser session/i);
   assert.doesNotMatch(html, /Missing Cloudflare Access JWT assertion/i);
 });
 
-test("project admin entry redirects public requests to the Access-protected host", async () => {
-  const { env } = createTestContext();
+test("project admin entry shows the same browser-session message regardless of host when Access headers are missing", async () => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
 
-  const response = await fetchRaw(new Request("https://deploy.example/projects/control?repositoryFullName=szweibel%2Fkale-cache-smoke-test"), env);
-  assert.equal(response.status, 302);
-  assert.equal(
-    response.headers.get("location"),
-    "https://auth.example/projects/control?repositoryFullName=szweibel%2Fkale-cache-smoke-test"
-  );
+  const response = await fetchRaw(new Request("https://auth.example/projects/control?repositoryFullName=szweibel%2Fkale-cache-smoke-test"), env);
+  assert.equal(response.status, 401);
+  const html = await response.text();
+  assert.match(html, /This page needs your CUNY browser session/i);
+  assert.doesNotMatch(html, /Missing Cloudflare Access JWT assertion/i);
 });
 
 test("project admin entry renders a private lookup page for signed-in users", async (t) => {
@@ -653,7 +662,7 @@ test("project admin entry renders a private lookup page for signed-in users", as
   installAccessFetchMock(t);
   const accessJwt = await createAccessJwt("person@cuny.edu");
 
-  const response = await fetchRaw(new Request("https://auth.example/projects/control", {
+  const response = await fetchRaw(new Request("https://deploy.example/projects/control", {
     headers: {
       "cf-access-jwt-assertion": accessJwt,
       "cf-access-authenticated-user-email": "person@cuny.edu"
@@ -677,16 +686,16 @@ test("project admin entry can open settings by project name or repo lookup", asy
   installAccessFetchMock(t);
   const accessJwt = await createAccessJwt("person@cuny.edu");
 
-  const byProject = await fetchRaw(new Request("https://auth.example/projects/control?projectName=kale-cache-smoke-test", {
+  const byProject = await fetchRaw(new Request("https://deploy.example/projects/control?projectName=kale-cache-smoke-test", {
     headers: {
       "cf-access-jwt-assertion": accessJwt,
       "cf-access-authenticated-user-email": "person@cuny.edu"
     }
   }), env);
   assert.equal(byProject.status, 302);
-  assert.equal(byProject.headers.get("location"), "https://auth.example/projects/kale-cache-smoke-test/control");
+  assert.equal(byProject.headers.get("location"), "https://deploy.example/projects/kale-cache-smoke-test/control");
 
-  const byRepo = await fetchRaw(new Request("https://auth.example/projects/control?repositoryFullName=szweibel%2Fkale-cache-smoke-test", {
+  const byRepo = await fetchRaw(new Request("https://deploy.example/projects/control?repositoryFullName=szweibel%2Fkale-cache-smoke-test", {
     headers: {
       "cf-access-jwt-assertion": accessJwt,
       "cf-access-authenticated-user-email": "person@cuny.edu"
@@ -718,7 +727,7 @@ test("project control panel asks the user to connect GitHub before showing setti
   });
   const accessJwt = await createAccessJwt("person@cuny.edu");
 
-  const response = await fetchRaw(new Request("https://auth.example/projects/kale-cache-smoke-test/control", {
+  const response = await fetchRaw(new Request("https://deploy.example/projects/kale-cache-smoke-test/control", {
     headers: {
       "cf-access-jwt-assertion": accessJwt,
       "cf-access-authenticated-user-email": "person@cuny.edu"
@@ -732,7 +741,7 @@ test("project control panel asks the user to connect GitHub before showing setti
   assert.doesNotMatch(html, /szweibel\/kale-cache-smoke-test/);
   assert.doesNotMatch(html, /kale-cache-smoke-test\.cuny\.qzz\.io/);
   assert.match(html, /Return to Kale Deploy/);
-  assert.match(html, /returnTo=https%3A%2F%2Fauth\.example%2Fprojects%2Fkale-cache-smoke-test%2Fcontrol/);
+  assert.match(html, /returnTo=https%3A%2F%2Fdeploy\.example%2Fprojects%2Fkale-cache-smoke-test%2Fcontrol/);
 });
 
 test("project control panel does not reveal whether an unknown slug exists", async (t) => {
@@ -744,7 +753,7 @@ test("project control panel does not reveal whether an unknown slug exists", asy
   installAccessFetchMock(t);
   const accessJwt = await createAccessJwt("person@cuny.edu");
 
-  const response = await fetchRaw(new Request("https://auth.example/projects/does-not-exist/control", {
+  const response = await fetchRaw(new Request("https://deploy.example/projects/does-not-exist/control", {
     headers: {
       "cf-access-jwt-assertion": accessJwt,
       "cf-access-authenticated-user-email": "person@cuny.edu"
@@ -845,7 +854,7 @@ test("project control panel shows secrets and accepts a browser form submission 
   });
 
   const accessJwt = await createAccessJwt("person@cuny.edu");
-  const pageResponse = await fetchRaw(new Request("https://auth.example/projects/kale-cache-smoke-test/control", {
+  const pageResponse = await fetchRaw(new Request("https://deploy.example/projects/kale-cache-smoke-test/control", {
     headers: {
       "cf-access-jwt-assertion": accessJwt,
       "cf-access-authenticated-user-email": "person@cuny.edu"
@@ -864,7 +873,7 @@ test("project control panel shows secrets and accepts a browser form submission 
   form.set("secretName", "ANTHROPIC_API_KEY");
   form.set("secretValue", "sk-test-value");
 
-  const saveResponse = await fetchRaw(new Request("https://auth.example/projects/kale-cache-smoke-test/control/secrets", {
+  const saveResponse = await fetchRaw(new Request("https://deploy.example/projects/kale-cache-smoke-test/control/secrets", {
     method: "POST",
     headers: {
       "cf-access-jwt-assertion": accessJwt,
