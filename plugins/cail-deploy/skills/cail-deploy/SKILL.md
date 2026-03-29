@@ -229,6 +229,21 @@ If one of those tools returns `nextAction="connect_github_user"`, stop and hand 
 For those secret tools, pass the Kale `projectName` slug, not `owner/repo`.
 If you only know the repository, call `get_repository_status` first and use its returned `projectName`.
 
+### Secret-management example
+
+For a repo `szweibel/kale-cache-smoke-test` and a secret named `OPENAI_API_KEY`:
+
+1. Call `get_repository_status` for `szweibel/kale-cache-smoke-test`.
+2. Read the returned `projectName`.
+3. Call `set_project_secret` with:
+   - `projectName`
+   - `secretName="OPENAI_API_KEY"`
+   - `value="<the secret value>"`
+4. If Kale returns `nextAction="connect_github_user"`, stop immediately and give the user the returned `connectGitHubUserUrl`.
+5. After the user finishes that browser step, call the same secret tool again with the same arguments.
+6. If the tool succeeds, report that the secret is saved. Do not echo the secret value back to the user.
+7. If the project is already live, tell the user whether Kale updated the live site immediately or whether the change will apply on the next deploy.
+
 ## Worked example
 
 For a repo `szweibel/cail-deploy-smoke-test`:

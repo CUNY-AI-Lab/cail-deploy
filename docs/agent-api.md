@@ -168,6 +168,14 @@ Behavior:
 - if a project is already live, Kale also tries to push the secret change directly to the live Worker without waiting for a redeploy
 - if that live update fails, the secret is still saved and will apply on the next deploy
 
+Agent pattern:
+
+1. If you only know `owner/repo`, call `get_repository_status` first and read the returned `projectName`.
+2. Call `list_project_secrets`, `set_project_secret`, or `delete_project_secret` with that `projectName`.
+3. If Kale returns `nextAction="connect_github_user"`, stop and hand the user `connectGitHubUserUrl`.
+4. After the user completes that browser step, retry the same secret tool.
+5. Never repeat the secret value back to the user after writing it.
+
 Example:
 
 ```bash
