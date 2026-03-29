@@ -19,10 +19,12 @@ The runner deployment artifacts live in:
 - `packages/build-runner/compose.yaml`
 - `packages/build-runner/.env.runner.example`
 
+`compose.yaml` is a reference for the container shape, but the simplest reliable setup is plain Docker.
+
 ## Setup
 
 1. Clone this repository onto the VM.
-2. Install Docker Engine and the Docker Compose plugin.
+2. Install Docker Engine.
 3. Copy the env template:
 
 ```bash
@@ -39,10 +41,24 @@ cp .env.runner.example .env.runner
 - `RUNNER_ID`
 - optionally `BUILD_WORKER_IMAGE` if you do not want the default `kale-build-runner:local`
 
-5. Start the service:
+5. Build the image and start the service:
 
 ```bash
-docker compose up -d --build
+docker build -t kale-build-runner:local -f packages/build-runner/Dockerfile ../..
+
+docker rm -f cail-build-runner 2>/dev/null || true
+docker run -d \
+  --name cail-build-runner \
+  --restart unless-stopped \
+  --init \
+  --env-file .env.runner \
+  -e RUNNER_WORKDIR_ROOT=/var/lib/cail-build-runner/work \
+  -e RUNNER_HEALTH_PORT=8080 \
+  -e BUILD_WORKER_IMAGE=kale-build-runner:local \
+  -e BUILD_WORKER_CACHE_VOLUME=cail-build-runner-cache \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -p 127.0.0.1:8080:8080 \
+  kale-build-runner:local
 ```
 
 ## Operations
@@ -57,19 +73,31 @@ curl http://127.0.0.1:8080/healthz
 Inspect logs:
 
 ```bash
-docker compose logs -f build-runner
+docker logs -f cail-build-runner
 ```
 
 Restart after env changes:
 
 ```bash
-docker compose up -d --build
+docker rm -f cail-build-runner
+docker run -d \
+  --name cail-build-runner \
+  --restart unless-stopped \
+  --init \
+  --env-file .env.runner \
+  -e RUNNER_WORKDIR_ROOT=/var/lib/cail-build-runner/work \
+  -e RUNNER_HEALTH_PORT=8080 \
+  -e BUILD_WORKER_IMAGE=kale-build-runner:local \
+  -e BUILD_WORKER_CACHE_VOLUME=cail-build-runner-cache \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -p 127.0.0.1:8080:8080 \
+  kale-build-runner:local
 ```
 
 Stop the service:
 
 ```bash
-docker compose down
+docker rm -f cail-build-runner
 ```
 
 ## Behavior
@@ -85,7 +113,7 @@ docker compose down
 ## Notes
 
 - The runner is independent of the public project domain. It can stay on a VM while the deploy-service sits behind a public front door like `https://cuny.qzz.io/kale`.
-- The Compose file binds the health port only to `127.0.0.1`, not the public internet.
+- The recommended `docker run` command binds the health port only to `127.0.0.1`, not the public internet.
 - The dispatcher needs access to `/var/run/docker.sock` so it can launch disposable build containers on the host daemon.
 - The shared cache volume is for package downloads only. Project workspaces are not reused across builds.
 - If the shared package cache ever looks corrupted or grows too large, prune it with `npm run ops:runner-cache-prune` after confirming no disposable build containers are active.
