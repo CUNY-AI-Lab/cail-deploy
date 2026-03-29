@@ -1166,7 +1166,8 @@ deployServiceApp.get("/github/install", async (c) => {
   const installDetails = repositoryLifecycle
     ? renderRepositoryDeveloperDetails({
         lifecycle: repositoryLifecycle,
-        serviceBaseUrl
+        serviceBaseUrl,
+        oauthBaseUrl: resolveMcpOauthBaseUrl(c.env, c.req.raw.url)
       })
     : "";
 
@@ -1356,14 +1357,14 @@ deployServiceApp.get("/github/setup", async (c) => {
 
   const bannerByStage = repositoryLifecycle
     ? {
-        live: { className: "status-ready", icon: "&#10003;", label: "Live on Kale Deploy" },
-        build_running: { className: "status-pending", icon: "&#8635;", label: "Build in progress" },
-        build_queued: { className: "status-pending", icon: "&#9719;", label: "Queued for build" },
-        build_failed: { className: "status-danger", icon: "&#9888;", label: "Build needs attention" },
-        github_install: { className: "status-pending", icon: "&#9719;", label: "Connect GitHub" },
-        awaiting_push: { className: "status-ready", icon: "&#10148;", label: "Ready for first push" },
-        name_conflict: { className: "status-danger", icon: "&#9888;", label: "Choose a different project name" },
-        app_setup: { className: "status-config", icon: "&#9881;", label: "Configuration needed" }
+        live: { className: "status-ready", icon: "&#10003;", label: "Live" },
+        build_running: { className: "status-pending", icon: "&#8635;", label: "Building" },
+        build_queued: { className: "status-pending", icon: "&#9719;", label: "Build queued" },
+        build_failed: { className: "status-danger", icon: "&#9888;", label: "Build failed" },
+        github_install: { className: "status-pending", icon: "&#9719;", label: "GitHub needed" },
+        awaiting_push: { className: "status-ready", icon: "&#10148;", label: "Ready to deploy" },
+        name_conflict: { className: "status-danger", icon: "&#9888;", label: "Name taken" },
+        app_setup: { className: "status-config", icon: "&#9881;", label: "Setup needed" }
       }[repositoryLifecycle.workflowStage]
     : undefined;
 
@@ -1386,7 +1387,8 @@ deployServiceApp.get("/github/setup", async (c) => {
         lifecycle: repositoryLifecycle,
         installUrl,
         appName,
-        serviceBaseUrl
+        serviceBaseUrl,
+        oauthBaseUrl: resolveMcpOauthBaseUrl(c.env, c.req.raw.url)
       })
     : `<div class="actions">
           ${installUrl
@@ -1404,7 +1406,8 @@ deployServiceApp.get("/github/setup", async (c) => {
   const projectDetails = repositoryLifecycle
     ? renderRepositoryDeveloperDetails({
         lifecycle: repositoryLifecycle,
-        serviceBaseUrl
+        serviceBaseUrl,
+        oauthBaseUrl: resolveMcpOauthBaseUrl(c.env, c.req.raw.url)
       })
     : "";
 
@@ -1662,6 +1665,7 @@ deployServiceApp.get("/api/auth/session", async (c) => {
 // Ordinary deploys should not send users through this second GitHub auth step.
 deployServiceApp.get("/api/github/user-auth/start", async (c) => {
   const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
 
   try {
     const identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
@@ -1678,7 +1682,7 @@ deployServiceApp.get("/api/github/user-auth/start", async (c) => {
       email: identity.email,
       repositoryFullName: repositoryContext?.repositoryFullName,
       projectName: repositoryContext?.projectName,
-      returnTo: normalizeOptionalGitHubUserAuthReturnTo(c.req.query("returnTo"), serviceBaseUrl)
+      returnTo: normalizeOptionalGitHubUserAuthReturnTo(c.req.query("returnTo"), [serviceBaseUrl, oauthBaseUrl])
     });
 
     return Response.redirect(buildGitHubUserAuthorizeUrl(authConfig, state), 302);
@@ -1927,6 +1931,175 @@ deployServiceApp.delete("/api/projects/:projectName/secrets/:secretName", async 
   } catch (error) {
     const httpError = asHttpError(error);
     return c.json({ error: httpError.message }, { status: httpError.status });
+  }
+});
+
+deployServiceApp.get("/projects/:projectName/control", async (c) => {
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
+  const requestUrl = new URL(c.req.raw.url);
+  if (requestUrl.origin !== new URL(oauthBaseUrl).origin) {
+    const redirectUrl = new URL(`${oauthBaseUrl}/projects/${encodeURIComponent(c.req.param("projectName"))}/control`);
+    const flash = c.req.query("flash");
+    const message = c.req.query("message");
+    if (flash) {
+      redirectUrl.searchParams.set("flash", flash);
+    }
+    if (message) {
+      redirectUrl.searchParams.set("message", message);
+    }
+    return Response.redirect(redirectUrl.toString(), 302);
+  }
+
+  let identity: CloudflareAccessRequestIdentity;
+
+  try {
+    identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
+  }
+
+  const projectName = c.req.param("projectName");
+
+  try {
+    const project = await getProject(c.env.CONTROL_PLANE_DB, projectName);
+    if (!project) {
+      throw new HttpError(404, `Project '${projectName}' does not exist yet.`);
+    }
+
+    const authorization = await authorizeProjectSecretsAccess(c.env, c.req.raw.url, identity, projectName);
+    const flash = readProjectControlFlash(c.req.raw.url);
+
+    if (!authorization.ok) {
+      return c.html(renderProjectControlPanelGatePage({
+        oauthBaseUrl,
+        serviceBaseUrl: resolveServiceBaseUrl(c.env, c.req.raw.url),
+        project,
+        authorization,
+        flash
+      }), authorization.status);
+    }
+
+    const [statusResult, secretsPayload, formToken] = await Promise.all([
+      buildProjectStatusResponse(c.env, projectName),
+      buildProjectSecretsListPayload(c.env, authorization.project, authorization.githubLogin),
+      createProjectControlFormToken({
+        secret: resolveMcpOauthSecret(c.env),
+        issuer: oauthBaseUrl,
+        subject: identity.subject,
+        projectName
+      })
+    ]);
+
+    return c.html(renderProjectControlPanelPage({
+      oauthBaseUrl,
+      serviceBaseUrl: resolveServiceBaseUrl(c.env, c.req.raw.url),
+      identity,
+      project: authorization.project,
+      status: statusResult.body,
+      secrets: secretsPayload,
+      formToken,
+      flash
+    }));
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
+  }
+});
+
+deployServiceApp.post("/projects/:projectName/control/secrets", async (c) => {
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
+  let identity: CloudflareAccessRequestIdentity;
+
+  try {
+    identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
+  }
+
+  const projectName = c.req.param("projectName");
+
+  try {
+    const form = await c.req.formData();
+    await verifyProjectControlFormToken({
+      secret: resolveMcpOauthSecret(c.env),
+      issuer: oauthBaseUrl,
+      token: getRequiredProjectControlFormField(form, "formToken"),
+      subject: identity.subject,
+      projectName
+    });
+
+    const authorization = await authorizeProjectSecretsAccess(c.env, c.req.raw.url, identity, projectName);
+    if (!authorization.ok) {
+      return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
+        flash: "error",
+        message: authorization.body.summary
+      }), 302);
+    }
+
+    const result = await setProjectSecretValue(
+      c.env,
+      authorization,
+      getRequiredProjectControlFormField(form, "secretName"),
+      getRequiredProjectControlFormField(form, "secretValue")
+    );
+
+    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
+      flash: result.nextAction === "redeploy_to_apply_secret" ? "warning" : "success",
+      message: result.warning ?? result.summary
+    }), 302);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
+      flash: "error",
+      message: httpError.message
+    }), 302);
+  }
+});
+
+deployServiceApp.post("/projects/:projectName/control/secrets/:secretName/delete", async (c) => {
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
+  let identity: CloudflareAccessRequestIdentity;
+
+  try {
+    identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderProjectControlPanelAuthErrorPage(httpError.message, oauthBaseUrl), httpError.status);
+  }
+
+  const projectName = c.req.param("projectName");
+
+  try {
+    const form = await c.req.formData();
+    await verifyProjectControlFormToken({
+      secret: resolveMcpOauthSecret(c.env),
+      issuer: oauthBaseUrl,
+      token: getRequiredProjectControlFormField(form, "formToken"),
+      subject: identity.subject,
+      projectName
+    });
+
+    const authorization = await authorizeProjectSecretsAccess(c.env, c.req.raw.url, identity, projectName);
+    if (!authorization.ok) {
+      return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
+        flash: "error",
+        message: authorization.body.summary
+      }), 302);
+    }
+
+    const result = await removeProjectSecretValue(c.env, authorization, c.req.param("secretName"));
+    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
+      flash: result.nextAction === "redeploy_to_apply_secret" ? "warning" : "success",
+      message: result.warning ?? result.summary
+    }), 302);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return Response.redirect(buildProjectControlPanelUrl(oauthBaseUrl, projectName, {
+      flash: "error",
+      message: httpError.message
+    }), 302);
   }
 });
 
@@ -2967,11 +3140,15 @@ function splitRepositoryFullName(repositoryFullName: string): [string, string] {
 function buildGitHubUserSecretsConnectUrl(
   oauthBaseUrl: string,
   repositoryFullName: string,
-  projectName: string
+  projectName: string,
+  returnTo?: string
 ): string {
   const url = new URL(`${oauthBaseUrl}/api/github/user-auth/start`);
   url.searchParams.set("repositoryFullName", repositoryFullName);
   url.searchParams.set("projectName", projectName);
+  if (returnTo) {
+    url.searchParams.set("returnTo", returnTo);
+  }
   return url.toString();
 }
 
@@ -4029,8 +4206,11 @@ function renderGitHubUserAuthSuccessPage(input: {
     ? `${input.serviceBaseUrl}/github/setup?repositoryFullName=${encodeURIComponent(repositoryContext.repositoryFullName)}&projectName=${encodeURIComponent(repositoryContext.projectName)}`
     : `${input.serviceBaseUrl}/github/setup`;
   const continueUrl = input.state.returnTo ?? setupUrl;
-  const continueLabel =
-    repositoryContext || continueUrl !== input.serviceBaseUrl ? "Back to this project's setup" : "Continue in Kale Deploy";
+  const continueLabel = describeGitHubUserAuthContinueLabel({
+    serviceBaseUrl: input.serviceBaseUrl,
+    continueUrl,
+    hasRepositoryContext: Boolean(repositoryContext)
+  });
   const showHomeButton = continueUrl !== input.serviceBaseUrl;
 
   return `<!doctype html>
@@ -4083,6 +4263,421 @@ function renderGitHubUserAuthErrorPage(message: string, serviceBaseUrl: string):
     </main>
   </body>
 </html>`;
+}
+
+async function createProjectControlFormToken(input: {
+  secret: string;
+  issuer: string;
+  subject: string;
+  projectName: string;
+}): Promise<string> {
+  return new SignJWT({
+    project_name: input.projectName
+  })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setIssuer(input.issuer)
+    .setAudience("project-control-form")
+    .setSubject(input.subject)
+    .setIssuedAt()
+    .setExpirationTime("30m")
+    .sign(new TextEncoder().encode(input.secret));
+}
+
+async function verifyProjectControlFormToken(input: {
+  secret: string;
+  issuer: string;
+  token: string;
+  subject: string;
+  projectName: string;
+}): Promise<void> {
+  const { payload } = await jwtVerify(input.token, new TextEncoder().encode(input.secret), {
+    issuer: input.issuer,
+    audience: "project-control-form",
+    subject: input.subject
+  });
+
+  if (payload.project_name !== input.projectName) {
+    throw new HttpError(403, "This form token does not belong to the current Kale project.");
+  }
+}
+
+function getRequiredProjectControlFormField(form: FormData, field: string): string {
+  const value = form.get(field);
+  if (typeof value !== "string" || !value.trim()) {
+    throw new HttpError(400, `Missing required form field '${field}'.`);
+  }
+
+  return value.trim();
+}
+
+function buildProjectControlPanelUrl(
+  oauthBaseUrl: string,
+  projectName: string,
+  options?: { flash?: "success" | "warning" | "error"; message?: string }
+): string {
+  const url = new URL(`${oauthBaseUrl}/projects/${encodeURIComponent(projectName)}/control`);
+  if (options?.flash) {
+    url.searchParams.set("flash", options.flash);
+  }
+  if (options?.message) {
+    url.searchParams.set("message", options.message);
+  }
+  return url.toString();
+}
+
+function readProjectControlFlash(requestUrl: string):
+  | { tone: "success" | "warning" | "error"; message: string }
+  | undefined {
+  const url = new URL(requestUrl);
+  const tone = url.searchParams.get("flash");
+  const message = url.searchParams.get("message");
+  if (!message || (tone !== "success" && tone !== "warning" && tone !== "error")) {
+    return undefined;
+  }
+
+  return { tone, message };
+}
+
+function renderProjectControlPanelAuthErrorPage(message: string, oauthBaseUrl: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kale Deploy Project Settings</title>
+    ${faviconLink()}
+    ${baseStyles("")}
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <div class="logo">${logoHtml("44px")}</div>
+        <h1>Project settings are not available yet</h1>
+        <p>${escapeHtml(message)}</p>
+        <div class="actions">
+          <a class="button" href="${escapeHtml(oauthBaseUrl)}">Return to Kale Deploy</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
+function renderProjectControlPanelGatePage(input: {
+  oauthBaseUrl: string;
+  serviceBaseUrl: string;
+  project: ProjectRecord;
+  authorization: Extract<ProjectSecretsAuthorization, { ok: false }>;
+  flash?: { tone: "success" | "warning" | "error"; message: string };
+}): string {
+  const { oauthBaseUrl, serviceBaseUrl, project, authorization, flash } = input;
+  const connectUrl = authorization.body.nextAction === "connect_github_user"
+    ? buildGitHubUserSecretsConnectUrl(
+        oauthBaseUrl,
+        project.githubRepo,
+        project.projectName,
+        buildProjectControlPanelUrl(oauthBaseUrl, project.projectName)
+      )
+    : undefined;
+  const setupUrl = buildGuidedSetupUrl(serviceBaseUrl, project.githubRepo, project.projectName);
+  const toneClass = flash ? `notice notice-${flash.tone}` : "";
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(project.projectName)} Settings</title>
+    ${faviconLink()}
+    ${baseStyles(`
+      .panel-meta {
+        display: grid;
+        gap: 8px;
+        margin-top: 18px;
+      }
+      .panel-meta p {
+        margin: 0;
+        color: var(--muted);
+      }
+      .notice-error {
+        background: #fff3f1;
+        border-color: #f3b8ad;
+      }
+      .notice-success {
+        background: #eefaf3;
+        border-color: #b9e3c8;
+      }
+      .notice-warning {
+        background: #fff9ea;
+        border-color: #ead28a;
+      }
+    `)}
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <div class="logo">${logoHtml("44px")}</div>
+        <h1>${escapeHtml(project.projectName)} settings</h1>
+        ${flash ? `<div class="${toneClass}"><p>${escapeHtml(flash.message)}</p></div>` : ""}
+        <p>This page is only for people who can manage this project.</p>
+        <div class="panel-meta">
+          <p><strong>GitHub repo:</strong> <code>${escapeHtml(project.githubRepo)}</code></p>
+          ${project.deploymentUrl ? `<p><strong>Live site:</strong> <a href="${escapeHtml(project.deploymentUrl)}">${escapeHtml(project.deploymentUrl)}</a></p>` : ""}
+        </div>
+        <div class="notice">
+          <p>${escapeHtml(authorization.body.summary)}</p>
+        </div>
+        <div class="actions">
+          ${connectUrl ? `<a class="button" href="${escapeHtml(connectUrl)}">Connect your GitHub account</a>` : ""}
+          <a class="button secondary" href="${escapeHtml(setupUrl)}">Back to project setup</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
+function renderProjectControlPanelPage(input: {
+  oauthBaseUrl: string;
+  serviceBaseUrl: string;
+  identity: CloudflareAccessRequestIdentity;
+  project: ProjectRecord;
+  status: Record<string, unknown>;
+  secrets: ProjectSecretsListPayload;
+  formToken: string;
+  flash?: { tone: "success" | "warning" | "error"; message: string };
+}): string {
+  const { oauthBaseUrl, serviceBaseUrl, identity, project, status, secrets, formToken, flash } = input;
+  const statusLabel = typeof status.status === "string" ? status.status.replaceAll("_", " ") : "unknown";
+  const deploymentUrl = typeof status.deployment_url === "string" ? status.deployment_url : project.deploymentUrl;
+  const buildLogUrl = typeof status.build_log_url === "string" ? status.build_log_url : undefined;
+  const errorMessage = typeof status.error_message === "string" ? status.error_message : undefined;
+  const updatedAt = typeof status.updated_at === "string" ? status.updated_at : project.updatedAt;
+  const repoUrl = `https://github.com/${project.githubRepo}`;
+  const setupUrl = buildGuidedSetupUrl(serviceBaseUrl, project.githubRepo, project.projectName);
+  const toneClass = flash ? `notice notice-${flash.tone}` : "";
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(project.projectName)} Settings</title>
+    ${faviconLink()}
+    ${baseStyles(`
+      .panel-grid {
+        display: grid;
+        gap: 20px;
+      }
+      .overview-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .overview-card {
+        border: 1px solid var(--border);
+        background: #fafbfd;
+        border-radius: 14px;
+        padding: 14px 16px;
+      }
+      .overview-card p {
+        margin: 0;
+      }
+      .overview-label {
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .notice-error {
+        background: #fff3f1;
+        border-color: #f3b8ad;
+      }
+      .notice-success {
+        background: #eefaf3;
+        border-color: #b9e3c8;
+      }
+      .notice-warning {
+        background: #fff9ea;
+        border-color: #ead28a;
+      }
+      .secret-list {
+        list-style: none;
+        margin: 18px 0 0;
+        padding: 0;
+        display: grid;
+        gap: 10px;
+      }
+      .secret-item {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #fafbfd;
+      }
+      .secret-item p {
+        margin: 0;
+      }
+      .secret-item code {
+        font-size: 0.95rem;
+      }
+      .secret-meta {
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+      .inline-form {
+        margin: 0;
+      }
+      .inline-form button {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: white;
+        color: var(--ink);
+        padding: 8px 12px;
+        font: inherit;
+        font-size: 0.88rem;
+        cursor: pointer;
+      }
+      .secret-form {
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .secret-form label {
+        font-size: 0.92rem;
+        font-weight: 600;
+        color: var(--muted);
+      }
+      .secret-form input {
+        width: 100%;
+        padding: 11px 12px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        font: inherit;
+      }
+      .secret-form input:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(59, 107, 204, 0.1);
+      }
+      .field-grid {
+        display: grid;
+        gap: 12px;
+      }
+      .field-help {
+        margin: 2px 0 0;
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+      @media (min-width: 720px) {
+        .field-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+    `)}
+  </head>
+  <body>
+    <main>
+      <section class="card panel-grid">
+        <div class="logo">${logoHtml("44px")}</div>
+        <div>
+          <h1>${escapeHtml(project.projectName)} settings</h1>
+          <p>You are signed in as <strong>${escapeHtml(identity.email)}</strong>. These settings apply to the Kale project backed by <code>${escapeHtml(project.githubRepo)}</code>.</p>
+        </div>
+        ${flash ? `<div class="${toneClass}"><p>${escapeHtml(flash.message)}</p></div>` : ""}
+        ${errorMessage ? `<div class="notice notice-warning"><p><strong>Latest issue:</strong> ${escapeHtml(errorMessage)}</p></div>` : ""}
+        <div class="actions">
+          ${deploymentUrl ? `<a class="button" href="${escapeHtml(deploymentUrl)}">Open live site</a>` : ""}
+          <a class="button secondary" href="${escapeHtml(repoUrl)}">Open GitHub repo</a>
+          <a class="button secondary" href="${escapeHtml(setupUrl)}">View setup page</a>
+        </div>
+        <div class="overview-grid">
+          <section class="overview-card">
+            <p class="overview-label">Status</p>
+            <p><strong>${escapeHtml(statusLabel)}</strong></p>
+          </section>
+          <section class="overview-card">
+            <p class="overview-label">Live URL</p>
+            <p>${deploymentUrl ? `<a href="${escapeHtml(deploymentUrl)}">${escapeHtml(deploymentUrl)}</a>` : "Not live yet"}</p>
+          </section>
+          <section class="overview-card">
+            <p class="overview-label">Last updated</p>
+            <p>${escapeHtml(updatedAt)}</p>
+          </section>
+          <section class="overview-card">
+            <p class="overview-label">Build details</p>
+            <p>${buildLogUrl ? `<a href="${escapeHtml(buildLogUrl)}">Open build log</a>` : "No build log for the latest state"}</p>
+          </section>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 24px;">
+        <h2>Secrets and API keys</h2>
+        <p>Secret values are never shown again after you save them.</p>
+        ${secrets.count === 0
+          ? `<div class="notice"><p>No secrets are stored for this project yet.</p></div>`
+          : `<ul class="secret-list">
+              ${secrets.secrets.map((secret) => `
+                <li class="secret-item">
+                  <div>
+                    <p><code>${escapeHtml(secret.secretName)}</code></p>
+                    <p class="secret-meta">Last changed by ${escapeHtml(secret.githubLogin)} on ${escapeHtml(secret.updatedAt)}</p>
+                  </div>
+                  <form class="inline-form" method="post" action="${escapeHtml(`${oauthBaseUrl}/projects/${encodeURIComponent(project.projectName)}/control/secrets/${encodeURIComponent(secret.secretName)}/delete`)}">
+                    <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
+                    <button type="submit">Delete</button>
+                  </form>
+                </li>
+              `).join("")}
+            </ul>`}
+        <form class="secret-form" method="post" action="${escapeHtml(`${oauthBaseUrl}/projects/${encodeURIComponent(project.projectName)}/control/secrets`)}">
+          <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
+          <div class="field-grid">
+            <div>
+              <label for="secret-name">Secret name</label>
+              <input id="secret-name" name="secretName" placeholder="OPENAI_API_KEY" required />
+              <p class="field-help">Use uppercase letters, numbers, and underscores.</p>
+            </div>
+            <div>
+              <label for="secret-value">Secret value</label>
+              <input id="secret-value" type="password" name="secretValue" required />
+              <p class="field-help">Kale saves the value securely and does not show it back.</p>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="button" type="submit">Save secret</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
+function describeGitHubUserAuthContinueLabel(input: {
+  serviceBaseUrl: string;
+  continueUrl: string;
+  hasRepositoryContext: boolean;
+}): string {
+  if (input.continueUrl === input.serviceBaseUrl) {
+    return "Continue in Kale Deploy";
+  }
+
+  const pathname = new URL(input.continueUrl).pathname;
+  if (/^\/projects\/[^/]+\/control$/.test(pathname) || /^\/projects\/[^/]+\/settings$/.test(pathname)) {
+    return "Back to project settings";
+  }
+
+  if (input.hasRepositoryContext) {
+    return "Back to this project's setup";
+  }
+
+  return "Continue in Kale Deploy";
 }
 
 function resolveServiceBaseUrl(env: Env, requestUrl: string): string {
@@ -4249,15 +4844,24 @@ async function verifyGitHubUserAuthStateToken(input: {
   };
 }
 
-function normalizeOptionalGitHubUserAuthReturnTo(value: string | undefined, serviceBaseUrl: string): string | undefined {
+function normalizeOptionalGitHubUserAuthReturnTo(
+  value: string | undefined,
+  allowedBaseUrls: string[]
+): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) {
     return undefined;
   }
 
-  const url = new URL(trimmed, serviceBaseUrl);
-  if (url.origin !== new URL(serviceBaseUrl).origin) {
-    throw new HttpError(400, "GitHub returnTo URLs must stay on this Kale Deploy origin.");
+  const defaultBaseUrl = allowedBaseUrls[0];
+  if (!defaultBaseUrl) {
+    throw new HttpError(500, "Missing Kale Deploy origin for GitHub return URLs.");
+  }
+
+  const url = new URL(trimmed, defaultBaseUrl);
+  const allowedOrigins = new Set(allowedBaseUrls.map((baseUrl) => new URL(baseUrl).origin));
+  if (!allowedOrigins.has(url.origin)) {
+    throw new HttpError(400, "GitHub returnTo URLs must stay on a Kale Deploy origin.");
   }
 
   return url.toString();
@@ -5646,8 +6250,10 @@ function renderRepositoryLifecycleActions(input: {
   installUrl?: string;
   appName: string;
   serviceBaseUrl: string;
+  oauthBaseUrl: string;
 }): string {
-  const { lifecycle, installUrl, appName, serviceBaseUrl } = input;
+  const { lifecycle, installUrl, appName, serviceBaseUrl, oauthBaseUrl } = input;
+  const settingsUrl = buildProjectControlPanelUrl(oauthBaseUrl, lifecycle.projectName);
 
   switch (lifecycle.workflowStage) {
     case "app_setup":
@@ -5662,21 +6268,27 @@ function renderRepositoryLifecycleActions(input: {
             : ""}
         </div>`;
     case "awaiting_push":
-      return `<div class="notice"><p>Your repository is connected. Push to <code>main</code> when you are ready to put the first version online.</p></div>`;
+      return `<div class="notice"><p>Your repository is connected. Push to <code>main</code> when you are ready to put the first version online.</p></div>
+        <div class="actions">
+          <a class="button secondary" href="${escapeHtml(settingsUrl)}">Project settings</a>
+        </div>`;
     case "build_queued":
     case "build_running":
       return `<div class="actions">
           <a class="button" href="${escapeHtml(buildGuidedSetupUrl(serviceBaseUrl, lifecycle.repository.fullName, lifecycle.projectName))}">View setup progress</a>
+          <a class="button secondary" href="${escapeHtml(settingsUrl)}">Project settings</a>
           ${lifecycle.deploymentUrl ? `<a class="button secondary" href="${escapeHtml(lifecycle.deploymentUrl)}">Open live site</a>` : ""}
         </div>`;
     case "build_failed":
       return `<div class="actions">
           <a class="button" href="${escapeHtml(buildGuidedSetupUrl(serviceBaseUrl, lifecycle.repository.fullName, lifecycle.projectName))}">Review what happened</a>
+          <a class="button secondary" href="${escapeHtml(settingsUrl)}">Project settings</a>
           ${lifecycle.buildJobStatusUrl ? `<a class="button secondary" href="${escapeHtml(lifecycle.buildJobStatusUrl)}">Open build details</a>` : ""}
         </div>`;
     case "live":
       return `<div class="actions">
           ${lifecycle.deploymentUrl ? `<a class="button" href="${escapeHtml(lifecycle.deploymentUrl)}">Open live site</a>` : ""}
+          <a class="button secondary" href="${escapeHtml(settingsUrl)}">Project settings</a>
           <a class="button secondary" href="${escapeHtml(buildGuidedSetupUrl(serviceBaseUrl, lifecycle.repository.fullName, lifecycle.projectName))}">View setup progress</a>
         </div>`;
     case "name_conflict":
@@ -5755,7 +6367,7 @@ function renderRepositoryLifecycleOverview(input: {
 
   return `<div class="state-grid">
       <section class="state-card primary">
-        <p class="state-label">Where you are</p>
+        <p class="state-label">Status</p>
         <h2 id="current-state-headline">${escapeHtml(stage.headline)}</h2>
         <p id="current-state-summary">${escapeHtml(lifecycle.summary)}</p>
         <p id="github-handoff-summary"${handoffSummary ? "" : " hidden"}>${handoffSummary ? `<strong>You came back from GitHub:</strong> ${escapeHtml(handoffSummary)}` : ""}</p>
@@ -5764,17 +6376,17 @@ function renderRepositoryLifecycleOverview(input: {
         </div>
       </section>
       <section class="state-card">
-        <p class="state-label">GitHub connection</p>
+        <p class="state-label">GitHub</p>
         <h3 id="repository-coverage-title">${escapeHtml(repositoryCoverage.title)}</h3>
         <p id="repository-coverage-body">${escapeHtml(repositoryCoverage.body)}</p>
       </section>
       <section class="state-card">
-        <p class="state-label">What you should do</p>
+        <p class="state-label">Next step</p>
         <h3 id="user-next-title">${escapeHtml(stage.userTitle)}</h3>
         <p id="user-next-body">${escapeHtml(stage.userBody)}</p>
       </section>
       <section class="state-card">
-        <p class="state-label">What happens automatically</p>
+        <p class="state-label">Behind the scenes</p>
         <h3 id="agent-next-title">${escapeHtml(stage.agentTitle)}</h3>
         <p id="agent-next-body">${escapeHtml(stage.agentBody)}</p>
       </section>
@@ -5796,7 +6408,7 @@ function renderRepositoryLiveRefreshPanel(input: {
 
   return `<div class="notice" id="live-refresh-panel">
       <p><strong>Live refresh</strong></p>
-      <p id="live-refresh-summary">Check whether GitHub is connected or whether the latest build finished without leaving this page.</p>
+      <p id="live-refresh-summary">Check for status updates without leaving this page.</p>
       <div class="actions">
         <button class="button secondary" type="button" id="live-refresh-button">Check again without reloading</button>
       </div>
@@ -5809,8 +6421,9 @@ function renderRepositoryLiveRefreshPanel(input: {
 function renderRepositoryDeveloperDetails(input: {
   lifecycle: RepositoryLifecyclePayload;
   serviceBaseUrl: string;
+  oauthBaseUrl: string;
 }): string {
-  const { lifecycle, serviceBaseUrl } = input;
+  const { lifecycle, serviceBaseUrl, oauthBaseUrl } = input;
 
   return `<details class="dev-details">
       <summary>Developer details</summary>
@@ -5818,6 +6431,7 @@ function renderRepositoryDeveloperDetails(input: {
         <div class="detail-label">Repository</div><div class="detail-value"><a href="${escapeHtml(lifecycle.repository.htmlUrl)}"><code>${escapeHtml(lifecycle.repository.fullName)}</code></a></div>
         <div class="detail-label">Project</div><div class="detail-value"><code>${escapeHtml(lifecycle.projectName)}</code></div>
         <div class="detail-label">Public URL</div><div class="detail-value"><code>${escapeHtml(lifecycle.projectUrl)}</code></div>
+        <div class="detail-label">Settings URL</div><div class="detail-value"><code>${escapeHtml(buildProjectControlPanelUrl(oauthBaseUrl, lifecycle.projectName))}</code></div>
         <div class="detail-label">Repo status API</div><div class="detail-value"><code>${escapeHtml(lifecycle.repositoryStatusUrl)}</code></div>
         <div class="detail-label">Project status API</div><div class="detail-value"><code>${escapeHtml(lifecycle.statusUrl)}</code></div>
         <div class="detail-label">Validate API</div><div class="detail-value"><code>${escapeHtml(lifecycle.validateUrl)}</code></div>
@@ -5872,18 +6486,18 @@ function renderRepositoryLiveRefreshScript(): string {
     "    switch (nextState.installStatus) {",
     "      case 'installed':",
     "        return {",
-    "          title: 'GitHub is connected for Kale Deploy',",
-    "          body: 'The GitHub app named ' + appName + ' is approved for this repository, so pushes to main can go live.'",
+    "          title: 'Connected',",
+    "          body: 'The ' + appName + ' GitHub app can access this repo.'",
     "        };",
     "      case 'not_installed':",
     "        return {",
-    "          title: 'GitHub still needs one approval',",
-    "          body: 'A person with access to this repo needs to approve the GitHub app named ' + appName + ' before publishing can start.'",
+    "          title: 'Not connected yet',",
+    "          body: 'Someone with repo access needs to approve the ' + appName + ' app.'",
     "        };",
     "      default:",
     "        return {",
-    "          title: 'GitHub setup is not finished yet',",
-    "          body: 'Kale Deploy still needs its shared GitHub connection before any repository can be published. The GitHub app will be named ' + appName + '.'",
+    "          title: 'Not set up',",
+    "          body: 'The ' + appName + ' GitHub app hasn\\u2019t been created yet.'",
     "        };",
     "    }",
     "  }",
@@ -5892,125 +6506,125 @@ function renderRepositoryLiveRefreshScript(): string {
     "    switch (nextState.workflowStage) {",
     "      case 'app_setup':",
     "        return {",
-    "          headline: 'Kale Deploy still needs its shared GitHub setup',",
-    "          userTitle: 'Finish the one-time GitHub setup',",
-    "          userBody: 'Kale Deploy needs its shared GitHub connection before any repository can be published. The GitHub app will appear as ' + appName + '. After that, come back here and continue.',",
-    "          agentTitle: 'Wait for the shared GitHub setup',",
-    "          agentBody: 'Your agent can keep preparing the project, but publishing cannot start until that shared GitHub step is finished.'",
+    "          headline: 'GitHub setup is not done yet',",
+    "          userTitle: 'Complete the one-time GitHub setup',",
+    "          userBody: 'The ' + appName + ' GitHub app needs to be created before any repo can be deployed. Follow the link above, then come back.',",
+    "          agentTitle: 'Waiting on GitHub setup',",
+    "          agentBody: 'Deploys are blocked until the GitHub app is created. The project can still be prepared in the meantime.'",
     "        };",
     "      case 'github_install':",
     "        if (installReturnObserved) {",
     "          return {",
-    "            headline: 'You came back from GitHub, but this repository still is not connected',",
-    "            userTitle: 'Update repository access in GitHub',",
-    "            userBody: 'GitHub has not granted this specific repository access yet. Open the GitHub flow again, include this repo, then refresh this page.',",
-    "            agentTitle: 'Wait for GitHub to cover this repo',",
-    "            agentBody: 'Your agent should wait until GitHub is connected for this repo. Do not validate or push yet.'",
+    "            headline: 'GitHub did not grant access to this repo',",
+    "            userTitle: 'Try the GitHub flow again',",
+    "            userBody: 'You came back from GitHub, but this repo wasn\\u2019t included. Open GitHub again, make sure this repo is selected, then come back.',",
+    "            agentTitle: 'Waiting for repo access',",
+    "            agentBody: 'GitHub access isn\\u2019t confirmed for this repo yet. Nothing to do until the GitHub step is done.'",
     "          };",
     "        }",
     "        if (phase === 'install') {",
     "          return {",
-    "            headline: 'This repository is ready for the GitHub approval step',",
+    "            headline: 'Ready for GitHub approval',",
     "            userTitle: 'Continue to GitHub',",
-    "            userBody: 'Continue to GitHub, approve or update access for this repository in the ' + appName + ' app, and GitHub will send you back here.',",
-    "            agentTitle: 'Pause while GitHub is open',",
-    "            agentBody: 'Your agent should hand control to you for the GitHub browser step, then continue when you return.'",
+    "            userBody: 'Approve this repo in the ' + appName + ' app on GitHub. You\\u2019ll be sent back here when it\\u2019s done.',",
+    "            agentTitle: 'Paused for GitHub',",
+    "            agentBody: 'The user is completing the GitHub approval step in their browser.'",
     "          };",
     "        }",
     "        return {",
-    "          headline: 'This repository still needs GitHub approval',",
-    "          userTitle: 'Approve GitHub for this repo',",
-    "          userBody: 'Click the button below and finish the GitHub screen for the ' + appName + ' app. After that, return here and the repo is ready for its first push.',",
-    "          agentTitle: 'Pause for the GitHub step',",
-    "          agentBody: 'Your agent should wait for the GitHub step, then continue once the repo is connected.'",
+    "          headline: 'This repo needs GitHub approval',",
+    "          userTitle: 'Approve GitHub access',",
+    "          userBody: 'Click the button below to approve the ' + appName + ' app for this repo. Come back here when you\\u2019re done.',",
+    "          agentTitle: 'Paused for GitHub',",
+    "          agentBody: 'Waiting for GitHub access to be approved for this repo.'",
     "        };",
     "      case 'awaiting_push':",
     "        if (installReturnObserved) {",
     "          return {",
-    "            headline: 'GitHub connection is confirmed for this repository',",
-    "            userTitle: 'Push to main or ask for a validation run',",
-    "            userBody: 'The GitHub install step is complete for this repo. Push to the default branch when ready, or ask the agent to run one validation pass first.',",
-    "            agentTitle: 'Run the final loop',",
-    "            agentBody: 'Your agent can now validate, push to main, and keep checking until the live URL is ready.'",
+    "            headline: 'GitHub is connected',",
+    "            userTitle: 'Push to deploy',",
+    "            userBody: 'GitHub access is confirmed. Push to the default branch to start your first deploy, or ask for a validation check first.',",
+    "            agentTitle: 'Ready to go',",
+    "            agentBody: 'GitHub is confirmed. Validate, push to the default branch, and check for the live URL.'",
     "          };",
     "        }",
     "        if (phase === 'install') {",
     "          return {",
-    "            headline: 'This repository is already connected to Kale Deploy',",
-    "            userTitle: 'Push to main or ask for a validation run',",
-    "            userBody: 'You do not need to go through GitHub again for this repo. Open setup or push to the default branch when you are ready.',",
-    "            agentTitle: 'Run the final loop',",
-    "            agentBody: 'Your agent can skip GitHub, validate or push immediately, and then keep checking progress.'",
+    "            headline: 'Already connected',",
+    "            userTitle: 'Push to deploy',",
+    "            userBody: 'This repo already has GitHub access. Push to the default branch whenever you\\u2019re ready.',",
+    "            agentTitle: 'Ready to go',",
+    "            agentBody: 'GitHub is already connected. Validate or push to the default branch, then check for the live URL.'",
     "          };",
     "        }",
     "        return {",
-    "          headline: 'The repository is connected and ready',",
-    "          userTitle: 'Push to main or ask for a validation run',",
-    "          userBody: 'If the code looks ready, push to the default branch. If you want one more check first, ask your agent to run a validation pass.',",
-    "          agentTitle: 'Run the final loop',",
-    "          agentBody: 'Your agent can validate the current branch, push to main, and then keep checking until the site goes live.'",
+    "          headline: 'Connected and ready',",
+    "          userTitle: 'Push to deploy',",
+    "          userBody: 'Push to the default branch to start your first deploy. Want a dry run first? Ask for a validation check.',",
+    "          agentTitle: 'Ready to go',",
+    "          agentBody: 'Validate the branch, push to the default branch, and check for the live URL.'",
     "        };",
     "      case 'build_queued':",
     "        return {",
-    "          headline: 'Kale Deploy has accepted the build job',",
-    "          userTitle: 'Wait a moment and check again',",
-    "          userBody: 'Nothing else is needed right now. Kale Deploy is waiting to pick up the job.',",
-    "          agentTitle: 'Keep checking for progress',",
-    "          agentBody: 'Your agent should keep checking until it can report either a live URL or a build failure.'",
+    "          headline: 'Build is queued',",
+    "          userTitle: 'Nothing to do right now',",
+    "          userBody: 'Your build is in line. This page will update when it starts.',",
+    "          agentTitle: 'Build starting soon',",
+    "          agentBody: 'The build is queued. Keep checking until it finishes or fails.'",
     "        };",
     "      case 'build_running':",
     "        return {",
-    "          headline: 'A managed build is running now',",
-    "          userTitle: 'Give the runner a moment',",
-    "          userBody: 'The build is in progress. You can keep this page open and check again in a moment.',",
-    "          agentTitle: 'Watch for success or failure',",
-    "          agentBody: 'Your agent should keep checking, gather any failure details, and only announce success once the app is live.'",
+    "          headline: 'Building now',",
+    "          userTitle: 'Sit tight',",
+    "          userBody: 'Your project is being built. This usually takes a minute or two.',",
+    "          agentTitle: 'Build in progress',",
+    "          agentBody: 'A build is running. Keep checking until it goes live or fails.'",
     "        };",
     "      case 'build_failed':",
     "        return {",
-    "          headline: 'The latest build did not make it live',",
-    "          userTitle: 'Hand the error back to the agent',",
-    "          userBody: 'Ask your agent to fix the problem and try again. The technical details are available below if you need them.',",
-    "          agentTitle: 'Use the failure details and retry',",
-    "          agentBody: 'Your agent should read the failure details, update the repository, and try the same loop again.'",
+    "          headline: 'Build failed',",
+    "          userTitle: 'Check the error below',",
+    "          userBody: 'Something went wrong. The details are below \\u2014 fix the issue and push again, or ask your agent to help.',",
+    "          agentTitle: 'Fix and retry',",
+    "          agentBody: 'The build failed. Read the error details below, fix the code, and push again.'",
     "        };",
     "      case 'live':",
     "        return {",
     "          headline: 'Your project is live',",
     "          userTitle: 'Visit your site or keep building',",
     "          userBody: 'Your site is live now. Push to main to deploy updates.',",
-    "          agentTitle: 'Auto-deploys are on',",
-    "          agentBody: 'Pushes to main will update the live URL. Your agent can verify each deploy by checking the live site.'",
+    "          agentTitle: 'Auto-deploy is on',",
+    "          agentBody: 'Every push to main updates the live site.'",
     "        };",
     "      case 'name_conflict':",
     "        return {",
-    "          headline: 'This repo needs a different public project name',",
-    "          userTitle: 'Choose one of the suggested names',",
-    "          userBody: 'Project names map directly to public URLs, so this repo needs a different slug before it can go live.',",
-    "          agentTitle: 'Re-register with a new slug',",
-    "          agentBody: 'The agent should pick an available suggestion, re-run registration with that project name, and continue the GitHub-first flow.'",
+    "          headline: 'That project name is taken',",
+    "          userTitle: 'Pick a different name',",
+    "          userBody: 'Project names become part of the public URL. Choose from the suggestions below.',",
+    "          agentTitle: 'Re-register with a new name',",
+    "          agentBody: 'Pick an available name from the suggestions and re-register the project.'",
     "        };",
     "      default:",
     "        return {",
-    "          headline: appName + ' setup is waiting on the next lifecycle step',",
+    "          headline: 'Checking status...',",
     "          userTitle: 'Refresh this page',",
-    "          userBody: 'The current repository state was not recognized cleanly. Refresh the page or reopen the setup link for this repository.',",
-    "          agentTitle: 'Check the latest status',",
-    "          agentBody: 'Your agent should check the latest repository status and continue from the next step it reports.'",
+    "          userBody: 'Something unexpected happened. Refresh or reopen the setup link.',",
+    "          agentTitle: 'Check status again',",
+    "          agentBody: 'The current state wasn\\u2019t recognized. Check the repository status and continue from whatever step it reports.'",
     "        };",
     "    }",
     "  }",
     "",
     "  function bannerState(nextState) {",
     "    switch (nextState.workflowStage) {",
-    "      case 'live': return { className: 'status-ready', icon: '\\u2713', label: 'Live on Kale Deploy' };",
-    "      case 'build_running': return { className: 'status-pending', icon: '\\u21bb', label: 'Build in progress' };",
-    "      case 'build_queued': return { className: 'status-pending', icon: '\\u25cf', label: 'Queued for build' };",
-    "      case 'build_failed': return { className: 'status-danger', icon: '\\u26a0', label: 'Build needs attention' };",
-    "      case 'github_install': return { className: 'status-pending', icon: '\\u25cf', label: 'Connect GitHub' };",
-    "      case 'awaiting_push': return { className: 'status-ready', icon: '\\u27a4', label: 'Ready for first push' };",
-    "      case 'name_conflict': return { className: 'status-danger', icon: '\\u26a0', label: 'Choose a different project name' };",
-    "      default: return { className: 'status-config', icon: '\\u2699', label: 'Configuration needed' };",
+    "      case 'live': return { className: 'status-ready', icon: '\\u2713', label: 'Live' };",
+    "      case 'build_running': return { className: 'status-pending', icon: '\\u21bb', label: 'Building' };",
+    "      case 'build_queued': return { className: 'status-pending', icon: '\\u25cf', label: 'Build queued' };",
+    "      case 'build_failed': return { className: 'status-danger', icon: '\\u26a0', label: 'Build failed' };",
+    "      case 'github_install': return { className: 'status-pending', icon: '\\u25cf', label: 'GitHub needed' };",
+    "      case 'awaiting_push': return { className: 'status-ready', icon: '\\u27a4', label: 'Ready to deploy' };",
+    "      case 'name_conflict': return { className: 'status-danger', icon: '\\u26a0', label: 'Name taken' };",
+    "      default: return { className: 'status-config', icon: '\\u2699', label: 'Setup needed' };",
     "    }",
     "  }",
     "",
@@ -6072,7 +6686,7 @@ function renderRepositoryLiveRefreshScript(): string {
     "      bannerLabelEl.textContent = banner.label;",
     "    }",
     "    if (summaryEl) {",
-    "      summaryEl.textContent = 'Check whether GitHub is connected or whether the latest build finished without leaving this page.';",
+    "      summaryEl.textContent = 'Check for status updates without leaving this page.';",
     "    }",
     "    if (message) setResult(message, nextState);",
     "  }",
@@ -6196,18 +6810,18 @@ function describeRepositoryCoverage(
   switch (lifecycle.installStatus) {
     case "installed":
       return {
-        title: "GitHub is connected for Kale Deploy",
-        body: `The GitHub app named ${appName} is approved for this repository, so pushes to main can go live.`
+        title: "Connected",
+        body: `The ${appName} GitHub app can access this repo.`
       };
     case "not_installed":
       return {
-        title: "GitHub still needs one approval",
-        body: `A person with access to this repo needs to approve the GitHub app named ${appName} before publishing can start.`
+        title: "Not connected yet",
+        body: `Someone with repo access needs to approve the ${appName} app.`
       };
     case "app_unconfigured":
       return {
-        title: "GitHub setup is not finished yet",
-        body: `Kale Deploy still needs its shared GitHub connection before any repository can be published. The GitHub app will be named ${appName}.`
+        title: "Not set up",
+        body: `The ${appName} GitHub app hasn't been created yet.`
       };
   }
 }
@@ -6232,108 +6846,106 @@ function describeRepositorySetupStage(
   switch (lifecycle.workflowStage) {
     case "app_setup":
       return {
-        headline: "Kale Deploy still needs its shared GitHub setup",
-        userTitle: "Finish the one-time GitHub setup",
-        userBody: `Kale Deploy needs its shared GitHub connection before any repository can be published. The GitHub app will appear as ${appName}. After that, come back here and continue.`,
-        agentTitle: "Wait for the shared GitHub setup",
-        agentBody: "Your agent can keep preparing the project, but publishing cannot start until that shared GitHub step is finished."
+        headline: "GitHub setup is not done yet",
+        userTitle: "Complete the one-time GitHub setup",
+        userBody: `The ${appName} GitHub app needs to be created before any repo can be deployed. Follow the link above, then come back.`,
+        agentTitle: "Waiting on GitHub setup",
+        agentBody: "Deploys are blocked until the GitHub app is created. The project can still be prepared in the meantime."
       };
     case "github_install":
       return {
         headline: installReturnObserved
-          ? "You came back from GitHub, but this repository still is not connected"
+          ? "GitHub did not grant access to this repo"
           : flowPhase === "install"
-            ? "This repository is ready for the GitHub approval step"
-            : "This repository still needs GitHub approval",
+            ? "Ready for GitHub approval"
+            : "This repo needs GitHub approval",
         userTitle: installReturnObserved
-          ? "Update repository access in GitHub"
+          ? "Try the GitHub flow again"
           : flowPhase === "install"
             ? "Continue to GitHub"
-            : "Approve GitHub for this repo",
+            : "Approve GitHub access",
         userBody: installReturnObserved
-          ? "GitHub has not granted this specific repository access yet. Open the GitHub flow again, include this repo, then refresh this page."
+          ? "You came back from GitHub, but this repo wasn't included. Open GitHub again, make sure this repo is selected, then come back."
           : flowPhase === "install"
-            ? `Continue to GitHub, approve or update access for this repository in the ${appName} app, and GitHub will send you back here.`
-            : `Click the button below and finish the GitHub screen for the ${appName} app. After that, return here and the repo is ready for its first push.`,
+            ? `Approve this repo in the ${appName} app on GitHub. You'll be sent back here when it's done.`
+            : `Click the button below to approve the ${appName} app for this repo. Come back here when you're done.`,
         agentTitle: installReturnObserved
-          ? "Wait for GitHub to cover this repo"
-          : flowPhase === "install"
-            ? "Pause while GitHub is open"
-            : "Pause for the GitHub step",
+          ? "Waiting for repo access"
+          : "Paused for GitHub",
         agentBody: installReturnObserved
-          ? "Your agent should wait until GitHub is connected for this repo. Do not validate or push yet."
+          ? "GitHub access isn't confirmed for this repo yet. Nothing to do until the GitHub step is done."
           : flowPhase === "install"
-            ? "Your agent should hand control to you for the GitHub browser step, then continue when you return."
-            : "Your agent should wait for the GitHub step, then continue once the repo is connected."
+            ? "The user is completing the GitHub approval step in their browser."
+            : "Waiting for GitHub access to be approved for this repo."
       };
     case "awaiting_push":
       return {
         headline: installReturnObserved
-          ? "GitHub connection is confirmed for this repository"
+          ? "GitHub is connected"
           : flowPhase === "install"
-            ? "This repository is already connected to Kale Deploy"
-            : "The repository is connected and ready",
-        userTitle: "Push to main or ask for a validation run",
+            ? "Already connected"
+            : "Connected and ready",
+        userTitle: "Push to deploy",
         userBody: installReturnObserved
-          ? "The GitHub install step is complete for this repo. Push to the default branch when ready, or ask the agent to run one validation pass first."
+          ? "GitHub access is confirmed. Push to the default branch to start your first deploy, or ask for a validation check first."
           : flowPhase === "install"
-            ? "You do not need to go through GitHub again for this repo. Open setup or push to the default branch when you are ready."
-            : "If the code looks ready, push to the default branch. If you want one more check first, ask your agent to run a validation pass.",
-        agentTitle: "Run the final loop",
+            ? "This repo already has GitHub access. Push to the default branch whenever you're ready."
+            : "Push to the default branch to start your first deploy. Want a dry run first? Ask for a validation check.",
+        agentTitle: "Ready to go",
         agentBody: installReturnObserved
-          ? "Your agent can now validate, push to main, and keep checking until the live URL is ready."
+          ? "GitHub is confirmed. Validate, push to the default branch, and check for the live URL."
           : flowPhase === "install"
-            ? "Your agent can skip GitHub, validate or push immediately, and then keep checking progress."
-            : "Your agent can validate the current branch, push to main, and then keep checking until the site goes live."
+            ? "GitHub is already connected. Validate or push to the default branch, then check for the live URL."
+            : "Validate the branch, push to the default branch, and check for the live URL."
       };
     case "build_queued":
       return {
-        headline: "Kale Deploy has accepted the build job",
-        userTitle: "Wait a moment and check again",
-        userBody: "Nothing else is needed right now. Kale Deploy is waiting to pick up the job.",
-        agentTitle: "Keep checking for progress",
-        agentBody: "Your agent should keep checking until it can report either a live URL or a build failure."
+        headline: "Build is queued",
+        userTitle: "Nothing to do right now",
+        userBody: "Your build is in line. This page will update when it starts.",
+        agentTitle: "Build starting soon",
+        agentBody: "The build is queued. Keep checking until it finishes or fails."
       };
     case "build_running":
       return {
-        headline: "A managed build is running now",
-        userTitle: "Give the runner a moment",
-        userBody: "The build is in progress. You can keep this page open and check again in a moment.",
-        agentTitle: "Watch for success or failure",
-        agentBody: "Your agent should keep checking, gather any failure details, and only announce success once the app is live."
+        headline: "Building now",
+        userTitle: "Sit tight",
+        userBody: "Your project is being built. This usually takes a minute or two.",
+        agentTitle: "Build in progress",
+        agentBody: "A build is running. Keep checking until it goes live or fails."
       };
     case "build_failed":
       return {
-        headline: "The latest build did not make it live",
-        userTitle: "Hand the error back to the agent",
-        userBody: "Ask your agent to fix the problem and try again. The technical details are available below if you need them.",
-        agentTitle: "Use the failure details and retry",
-        agentBody: "Your agent should read the failure details, update the repository, and try the same loop again."
+        headline: "Build failed",
+        userTitle: "Check the error below",
+        userBody: "Something went wrong. The details are below \u2014 fix the issue and push again, or ask your agent to help.",
+        agentTitle: "Fix and retry",
+        agentBody: "The build failed. Read the error details below, fix the code, and push again."
       };
     case "live":
       return {
         headline: "Your project is live",
         userTitle: "Visit your site or keep building",
         userBody: "Your site is live now. Push to main to deploy updates.",
-        agentTitle: "Auto-deploys are on",
-        agentBody: "Pushes to main will update the live URL. Your agent can verify each deploy by checking the live site."
+        agentTitle: "Auto-deploy is on",
+        agentBody: "Every push to main updates the live site."
       };
     case "name_conflict":
       return {
-        headline: "This repo needs a different public project name",
-        userTitle: "Choose one of the suggested names",
-        userBody: "Project names map directly to public URLs, so this repo needs a different slug before it can go live.",
-        agentTitle: "Re-register with a new slug",
-        agentBody: "The agent should pick an available suggestion, re-run registration with that project name, and continue the GitHub-first flow."
+        headline: "That project name is taken",
+        userTitle: "Pick a different name",
+        userBody: "Project names become part of the public URL. Choose from the suggestions below.",
+        agentTitle: "Re-register with a new name",
+        agentBody: "Pick an available name from the suggestions and re-register the project."
       };
   }
 
   return {
-    headline: `${appName} setup is waiting on the next lifecycle step`,
+    headline: "Checking status...",
     userTitle: "Refresh this page",
-    userBody: "The current repository state was not recognized cleanly. Refresh the page or reopen the setup link for this repository.",
-    agentTitle: "Check the latest status",
-    agentBody: "Your agent should check the latest repository status and continue from the next step it reports."
+    userBody: "Something unexpected happened. Refresh or reopen the setup link.",
+    agentTitle: "Check status again",
+    agentBody: "The current state wasn't recognized. Check the repository status and continue from whatever step it reports."
   };
 }
 
@@ -6396,7 +7008,7 @@ function resolveRepositoryWorkflowState(input: {
     return {
       nextAction: "choose_different_project_name",
       stage: "name_conflict",
-      summary: `Project name '${input.projectName}' is already reserved by ${input.claimedRepositoryFullName ?? "another repository"}.`
+      summary: `The name '${input.projectName}' is taken by ${input.claimedRepositoryFullName ?? "another repository"}.`
     };
   }
 
@@ -6404,7 +7016,7 @@ function resolveRepositoryWorkflowState(input: {
     return {
       nextAction: "poll_status",
       stage: "build_queued",
-      summary: "A managed build has been queued for this repository."
+      summary: "Your build is in the queue."
     };
   }
 
@@ -6412,7 +7024,7 @@ function resolveRepositoryWorkflowState(input: {
     return {
       nextAction: "poll_status",
       stage: "build_running",
-      summary: "A managed build or deployment is currently running for this repository."
+      summary: "Building now."
     };
   }
 
@@ -6420,7 +7032,7 @@ function resolveRepositoryWorkflowState(input: {
     return {
       nextAction: "inspect_failure",
       stage: "build_failed",
-      summary: "The most recent deployment attempt failed. Inspect the structured error details and push a fix."
+      summary: "The last build failed."
     };
   }
 
@@ -6428,7 +7040,7 @@ function resolveRepositoryWorkflowState(input: {
     return {
       nextAction: "view_live_project",
       stage: "live",
-      summary: "Your site is deployed and live."
+      summary: "Your site is live."
     };
   }
 
@@ -6436,7 +7048,7 @@ function resolveRepositoryWorkflowState(input: {
     return {
       nextAction: "configure_github_app",
       stage: "app_setup",
-      summary: "Kale Deploy is not fully connected to GitHub yet. The shared GitHub app still needs one-time setup."
+      summary: "GitHub isn't set up yet."
     };
   }
 
@@ -6444,14 +7056,14 @@ function resolveRepositoryWorkflowState(input: {
     return {
       nextAction: "install_github_app",
       stage: "github_install",
-      summary: "Approve the GitHub app named CAIL Deploy on this repository before pushing to the default branch."
+      summary: "This repo needs GitHub access."
     };
   }
 
   return {
     nextAction: "push_to_default_branch",
     stage: "awaiting_push",
-    summary: "The repository is connected. Push to the default branch to trigger the first managed deployment."
+    summary: "Connected. Push to deploy."
   };
 }
 

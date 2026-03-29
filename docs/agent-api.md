@@ -167,6 +167,7 @@ Behavior:
 - Kale stores the desired secret state in its control plane and injects it as `secret_text` during deploy
 - if a project is already live, Kale also tries to push the secret change directly to the live Worker without waiting for a redeploy
 - if that live update fails, the secret is still saved and will apply on the next deploy
+- humans can also manage secrets in the Access-protected project settings page on the Kale auth host
 
 Agent pattern:
 

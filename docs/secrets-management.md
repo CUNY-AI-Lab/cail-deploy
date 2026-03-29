@@ -125,6 +125,17 @@ In practice this means secret CRUD should be allowed only when:
 2. the user has linked a GitHub account to Kale, and
 3. GitHub reports write, maintain, or admin access on the repository that owns the Kale project.
 
+### Browser control panel
+
+Kale also exposes a browser-based project settings page for secret management.
+
+- URL shape: `https://<auth-host>/projects/<projectName>/control`
+- the page is behind Cloudflare Access
+- the whole page is treated as a project-admin surface, not a public status page
+- if the signed-in CUNY user has not yet linked their GitHub account for repo-admin checks, Kale shows a short gate page and asks them to confirm GitHub before showing settings
+
+This keeps ordinary setup pages broadly readable while reserving secret entry for the smaller group of people who can actually administer the repo.
+
 ### Student-side usage
 
 The deploy service is the authority for production bindings. In student code, secrets are accessed as standard Worker environment variables:

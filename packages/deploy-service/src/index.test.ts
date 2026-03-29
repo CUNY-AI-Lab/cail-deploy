@@ -624,16 +624,13 @@ test("github user auth start redirects to GitHub with signed repository context"
   installAccessFetchMock(t);
   const accessJwt = await createAccessJwt("person@cuny.edu");
 
-  const response = await fetchApp(
-    "GET",
-    "/api/github/user-auth/start?repositoryFullName=szweibel/cail-assets-build-test&projectName=cail-assets-build-test",
-    env,
-    undefined,
-    {
+  const response = await fetchRaw(new Request("https://auth.example/api/github/user-auth/start?repositoryFullName=szweibel/cail-assets-build-test&projectName=cail-assets-build-test", {
+    method: "GET",
+    headers: {
       "cf-access-jwt-assertion": accessJwt,
       "cf-access-authenticated-user-email": "person@cuny.edu"
     }
-  );
+  }), env);
 
   assert.equal(response.status, 302);
   const location = new URL(response.headers.get("location") ?? "");
@@ -715,24 +712,19 @@ test("github user auth callback stores the linked GitHub account for later proje
   });
 
   const accessJwt = await createAccessJwt("person@cuny.edu");
-  const startResponse = await fetchApp(
-    "GET",
-    "/api/github/user-auth/start?repositoryFullName=szweibel/cail-assets-build-test&projectName=cail-assets-build-test",
-    env,
-    undefined,
-    {
+  const startResponse = await fetchRaw(new Request("https://auth.example/api/github/user-auth/start?repositoryFullName=szweibel/cail-assets-build-test&projectName=cail-assets-build-test", {
+    method: "GET",
+    headers: {
       "cf-access-jwt-assertion": accessJwt,
       "cf-access-authenticated-user-email": "person@cuny.edu"
     }
-  );
+  }), env);
   const state = new URL(startResponse.headers.get("location") ?? "").searchParams.get("state");
   assert.ok(state);
 
-  const callbackResponse = await fetchApp(
-    "GET",
-    `/github/user-auth/callback?code=github-code-123&state=${encodeURIComponent(state ?? "")}`,
-    env
-  );
+  const callbackResponse = await fetchRaw(new Request(
+    `https://auth.example/github/user-auth/callback?code=github-code-123&state=${encodeURIComponent(state ?? "")}`
+  ), env);
   assert.equal(callbackResponse.status, 200);
   const callbackHtml = await callbackResponse.text();
   assert.match(callbackHtml, /GitHub is connected to Kale Deploy/);
@@ -744,6 +736,72 @@ test("github user auth callback stores the linked GitHub account for later proje
   assert.equal(stored?.github_user_id, 9001);
   assert.equal(typeof stored?.access_token_encrypted, "string");
   assert.equal(typeof stored?.refresh_token_encrypted, "string");
+});
+
+test("github user auth callback returns to project settings when the flow started from settings", async (t) => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.origin === "https://access.example" && url.pathname === "/cdn-cgi/access/certs") {
+      return jsonResponse({
+        keys: [
+          {
+            ...TEST_ACCESS_PRIVATE_KEY.publicKey,
+            use: "sig",
+            alg: "RS256",
+            kid: "test-access-key"
+          }
+        ]
+      });
+    }
+
+    if (url.origin === "https://github.com" && url.pathname === "/login/oauth/access_token") {
+      return jsonResponse({
+        access_token: "github-user-token",
+        expires_in: 3600,
+        refresh_token: "github-refresh-token",
+        refresh_token_expires_in: 86400
+      });
+    }
+
+    if (url.origin === "https://api.github.com" && url.pathname === "/user") {
+      return jsonResponse({
+        id: 9001,
+        login: "szweibel"
+      });
+    }
+
+    return originalFetch(input, init);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const startResponse = await fetchRaw(new Request("https://auth.example/api/github/user-auth/start?repositoryFullName=szweibel/cail-assets-build-test&projectName=cail-assets-build-test&returnTo=https%3A%2F%2Fauth.example%2Fprojects%2Fcail-assets-build-test%2Fcontrol", {
+    method: "GET",
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+  const state = new URL(startResponse.headers.get("location") ?? "").searchParams.get("state");
+  assert.ok(state);
+
+  const callbackResponse = await fetchRaw(new Request(
+    `https://deploy.example/github/user-auth/callback?code=github-code-123&state=${encodeURIComponent(state ?? "")}`
+  ), env);
+  assert.equal(callbackResponse.status, 200);
+  const callbackHtml = await callbackResponse.text();
+  assert.match(callbackHtml, /Back to project settings/);
 });
 
 test("project secrets API returns a GitHub connect handoff before repo-admin access is confirmed", async (t) => {
@@ -920,6 +978,166 @@ test("project secrets can be stored, listed, and synced to the live worker", asy
   assert.deepEqual(listBody.secrets.map((secret) => secret.secretName), ["OPENAI_API_KEY"]);
 });
 
+test("project control panel redirects public requests to the Access-protected host", async () => {
+  const { env } = createTestContext();
+
+  const response = await fetchRaw(new Request("https://deploy.example/projects/kale-cache-smoke-test/control"), env);
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("location"), "https://auth.example/projects/kale-cache-smoke-test/control");
+});
+
+test("project control panel asks the user to connect GitHub before showing settings", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  db.putProject({
+    projectName: "kale-cache-smoke-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/kale-cache-smoke-test",
+    deploymentUrl: "https://kale-cache-smoke-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-29T00:00:00.000Z",
+    updatedAt: "2026-03-29T00:00:00.000Z"
+  });
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+
+  const response = await fetchRaw(new Request("https://auth.example/projects/kale-cache-smoke-test/control", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+
+  assert.equal(response.status, 403);
+  const html = await response.text();
+  assert.match(html, /Connect your GitHub account/);
+  assert.match(html, /This signed-in CUNY identity has not yet confirmed a GitHub account/i);
+  assert.match(html, /Back to project setup/);
+  assert.match(html, /returnTo=https%3A%2F%2Fauth\.example%2Fprojects%2Fkale-cache-smoke-test%2Fcontrol/);
+});
+
+test("project control panel shows secrets and accepts a browser form submission for repo admins", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.origin === "https://access.example" && url.pathname === "/cdn-cgi/access/certs") {
+      return jsonResponse({
+        keys: [
+          {
+            ...TEST_ACCESS_PRIVATE_KEY.publicKey,
+            use: "sig",
+            alg: "RS256",
+            kid: "test-access-key"
+          }
+        ]
+      });
+    }
+
+    if (url.origin === "https://api.github.com" && url.pathname === "/repos/szweibel/kale-cache-smoke-test") {
+      return jsonResponse({
+        id: 7,
+        name: "kale-cache-smoke-test",
+        full_name: "szweibel/kale-cache-smoke-test",
+        default_branch: "main",
+        html_url: "https://github.com/szweibel/kale-cache-smoke-test",
+        clone_url: "https://github.com/szweibel/kale-cache-smoke-test.git",
+        private: false,
+        owner: { login: "szweibel" },
+        permissions: {
+          admin: false,
+          maintain: false,
+          push: true,
+          pull: true
+        }
+      });
+    }
+
+    return originalFetch(input, init);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  db.putProject({
+    projectName: "kale-cache-smoke-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/kale-cache-smoke-test",
+    deploymentUrl: "https://kale-cache-smoke-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: undefined,
+    createdAt: "2026-03-29T00:00:00.000Z",
+    updatedAt: "2026-03-29T00:00:00.000Z"
+  });
+  db.putGitHubUserAuth({
+    access_subject: "user:person@cuny.edu",
+    access_email: "person@cuny.edu",
+    github_user_id: 9001,
+    github_login: "szweibel",
+    access_token_encrypted: await sealStoredValueForTest(env, "github-user-token"),
+    access_token_expires_at: "2030-01-01T00:00:00.000Z",
+    refresh_token_encrypted: null,
+    refresh_token_expires_at: null,
+    created_at: "2026-03-29T00:00:00.000Z",
+    updated_at: "2026-03-29T00:00:00.000Z"
+  });
+  db.putProjectSecret({
+    project_name: "kale-cache-smoke-test",
+    secret_name: "OPENAI_API_KEY",
+    ciphertext: "ciphertext",
+    iv: "iv",
+    github_user_id: 9001,
+    github_login: "szweibel",
+    created_at: "2026-03-29T00:00:00.000Z",
+    updated_at: "2026-03-29T00:00:00.000Z"
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const pageResponse = await fetchRaw(new Request("https://auth.example/projects/kale-cache-smoke-test/control", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+  assert.equal(pageResponse.status, 200);
+  const html = await pageResponse.text();
+  assert.match(html, /Secrets and API keys/);
+  assert.match(html, /OPENAI_API_KEY/);
+
+  const formTokenMatch = html.match(/name="formToken" value="([^"]+)"/);
+  assert.ok(formTokenMatch);
+
+  const form = new FormData();
+  form.set("formToken", formTokenMatch?.[1] ?? "");
+  form.set("secretName", "ANTHROPIC_API_KEY");
+  form.set("secretValue", "sk-test-value");
+
+  const saveResponse = await fetchRaw(new Request("https://auth.example/projects/kale-cache-smoke-test/control/secrets", {
+    method: "POST",
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    },
+    body: form
+  }), env);
+
+  assert.equal(saveResponse.status, 302);
+  assert.match(saveResponse.headers.get("location") ?? "", /flash=success/);
+  const savedSecret = db.selectProjectSecret("kale-cache-smoke-test", "ANTHROPIC_API_KEY");
+  assert.ok(savedSecret);
+});
+
 test("project registration returns structured state for an existing project", async () => {
   const { env, db } = createTestContext({
     GITHUB_APP_ID: undefined,
@@ -1037,7 +1255,7 @@ test("repository status returns a repo-first lifecycle summary", async () => {
   assert.equal(body.repositoryStatusUrl, "https://deploy.example/api/repositories/szweibel/cail-deploy-smoke-test/status");
   assert.equal(body.workflowStage, "live");
   assert.equal(body.nextAction, "view_live_project");
-  assert.match(body.summary, /deployed and live/i);
+  assert.match(body.summary, /site is live/i);
   assert.equal(body.deploymentUrl, "https://cail-deploy-smoke-test.cuny.qzz.io");
 });
 
@@ -1176,8 +1394,8 @@ test("guided install stores repo context and renders a GitHub handoff page", asy
   assert.match(setCookie, /cail_github_install_context=/);
   assert.match(setCookie, /Path=\//);
   const html = await response.text();
-  assert.match(html, /Connect GitHub/);
-  assert.match(html, /This repository is ready for the GitHub approval step/);
+  assert.match(html, /GitHub needed/);
+  assert.match(html, /Ready for GitHub approval/);
   assert.match(html, /Continue to GitHub/);
   assert.match(html, /View setup progress/);
   assert.match(html, /Check again without reloading/);
@@ -1200,8 +1418,8 @@ test("guided install explains when the repository is already covered", async (t)
 
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /This repository is already connected to Kale Deploy/);
-  assert.match(html, /You do not need to go through GitHub again for this repo/);
+  assert.match(html, /Already connected/);
+  assert.match(html, /This repo already has GitHub access/);
   assert.match(html, /View setup progress/);
   assert.match(html, /Open GitHub again/);
   assert.match(html, /Check again without reloading/);
@@ -1223,12 +1441,12 @@ test("setup page verifies repository coverage for the guided install context", a
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /Ready for first push/);
+  assert.match(html, /Ready to deploy/);
   assert.match(html, /szweibel\/cail-deploy-smoke-test/);
-  assert.match(html, /GitHub connection/);
-  assert.match(html, /GitHub is connected for Kale Deploy/);
-  assert.match(html, /What happens automatically/);
-  assert.match(html, /GitHub connection is confirmed for this repository/);
+  assert.match(html, /GitHub/);
+  assert.match(html, /Connected/);
+  assert.match(html, /Behind the scenes/);
+  assert.match(html, /GitHub is connected/);
   assert.match(html, /You came back from GitHub:/);
   assert.match(html, /Push or validate/);
   assert.match(html, /Check again without reloading/);
@@ -1252,10 +1470,10 @@ test("setup page explains when GitHub returned but the repository is still not c
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /You came back from GitHub, but this repository still is not connected/);
-  assert.match(html, /Update repository access in GitHub/);
+  assert.match(html, /GitHub did not grant access to this repo/);
+  assert.match(html, /Try the GitHub flow again/);
   assert.match(html, /Connect GitHub for this repo/);
-  assert.match(html, /Do not validate or push yet/i);
+  assert.match(html, /Nothing to do until the GitHub step is done/i);
 });
 
 test("validate queues a build-only job and returns a pollable status URL", async (t) => {
