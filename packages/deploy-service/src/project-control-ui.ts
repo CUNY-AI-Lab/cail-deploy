@@ -96,6 +96,7 @@ export function readProjectControlFlash(requestUrl: string): ProjectControlFlash
 }
 
 export function renderProjectControlPanelAuthErrorPage(message: string, oauthBaseUrl: string): string {
+  const visibleMessage = normalizeProjectControlAuthErrorMessage(message);
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -110,7 +111,7 @@ export function renderProjectControlPanelAuthErrorPage(message: string, oauthBas
       <section class="card">
         <div class="logo">${logoHtml("44px")}</div>
         <h1>Project settings are not available yet</h1>
-        <p>${escapeHtml(message)}</p>
+        <p>${escapeHtml(visibleMessage)}</p>
         <div class="actions">
           <a class="button" href="${escapeHtml(oauthBaseUrl)}">Return to Kale Deploy</a>
         </div>
@@ -118,6 +119,14 @@ export function renderProjectControlPanelAuthErrorPage(message: string, oauthBas
     </main>
   </body>
 </html>`;
+}
+
+function normalizeProjectControlAuthErrorMessage(message: string): string {
+  if (message === "Missing Cloudflare Access JWT assertion.") {
+    return "This page needs your CUNY browser session. Open Project settings from Kale Deploy in your browser and try again.";
+  }
+
+  return message;
 }
 
 export function renderProjectAdminEntryPage(input: {

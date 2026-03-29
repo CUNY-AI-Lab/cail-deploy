@@ -619,6 +619,20 @@ test("project control panel redirects public requests to the Access-protected ho
   assert.equal(response.headers.get("location"), "https://auth.example/projects/kale-cache-smoke-test/control");
 });
 
+test("project admin entry shows a plain-language browser-session message when Access headers are missing", async () => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+
+  const response = await fetchRaw(new Request("https://auth.example/projects/control"), env);
+  assert.equal(response.status, 401);
+  const html = await response.text();
+  assert.match(html, /This page needs your CUNY browser session/i);
+  assert.doesNotMatch(html, /Missing Cloudflare Access JWT assertion/i);
+});
+
 test("project admin entry redirects public requests to the Access-protected host", async () => {
   const { env } = createTestContext();
 
