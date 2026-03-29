@@ -1,0 +1,1107 @@
+import assert from "node:assert/strict";
+import type { TestContext } from "node:test";
+import test from "node:test";
+
+import { CloudflareApiClient } from "./lib/cloudflare";
+import {
+  createTestContext,
+  fetchApp,
+  fetchRaw,
+  installAccessFetchMock,
+  installGitHubFetchMock,
+  createAccessJwt,
+  repositoryRecord,
+  sealStoredValueForTest
+} from "./test-support";
+
+test("project registration returns structured state for an existing project", async () => {
+  const { env, db } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+
+  db.putProject({
+    projectName: "cail-deploy-smoke-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-deploy-smoke-test",
+    deploymentUrl: "https://cail-deploy-smoke-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-26T22:40:54.747Z",
+    updatedAt: "2026-03-26T22:41:04.957Z"
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/cail-deploy-smoke-test"
+  });
+  assert.equal(response.status, 200);
+
+  const body = await response.json() as {
+    ok: boolean;
+    projectName: string;
+    projectAvailable: boolean;
+    projectUrl: string;
+    installStatus: string;
+    guidedInstallUrl?: string;
+    latestStatus: string;
+  };
+
+  assert.equal(body.ok, true);
+  assert.equal(body.projectName, "cail-deploy-smoke-test");
+  assert.equal(body.projectAvailable, true);
+  assert.equal(body.projectUrl, "https://cail-deploy-smoke-test.cuny.qzz.io");
+  assert.equal(body.installStatus, "app_unconfigured");
+  assert.equal(body.guidedInstallUrl, undefined);
+  assert.equal(body.latestStatus, "live");
+});
+
+test("CloudflareApiClient paginates R2 bucket lookup", async (t: TestContext) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    assert.equal(url.pathname, "/client/v4/accounts/account-123/r2/buckets");
+    if (url.searchParams.get("cursor") === "page-2") {
+      return new Response(JSON.stringify({
+        success: true,
+        errors: [],
+        result: { buckets: [{ name: "wanted-bucket" }] },
+        result_info: {}
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      errors: [],
+      result: { buckets: [{ name: "other-bucket" }] },
+      result_info: { cursor: "page-2" }
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new CloudflareApiClient({
+    accountId: "account-123",
+    apiToken: "token-123"
+  });
+  const bucket = await client.findR2BucketByName("wanted-bucket");
+  assert.equal(bucket?.name, "wanted-bucket");
+});
+
+test("repository status returns a repo-first lifecycle summary", async () => {
+  const { env, db } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+
+  db.putProject({
+    projectName: "cail-deploy-smoke-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-deploy-smoke-test",
+    deploymentUrl: "https://cail-deploy-smoke-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-26T22:40:54.747Z",
+    updatedAt: "2026-03-26T22:41:04.957Z"
+  });
+
+  const response = await fetchApp("GET", "/api/repositories/szweibel/cail-deploy-smoke-test/status", env);
+  assert.equal(response.status, 200);
+
+  const body = await response.json() as {
+    ok: boolean;
+    repositoryStatusUrl: string;
+    workflowStage: string;
+    nextAction: string;
+    summary: string;
+    deploymentUrl: string;
+  };
+
+  assert.equal(body.ok, true);
+  assert.equal(body.repositoryStatusUrl, "https://deploy.example/api/repositories/szweibel/cail-deploy-smoke-test/status");
+  assert.equal(body.workflowStage, "live");
+  assert.equal(body.nextAction, "view_live_project");
+  assert.match(body.summary, /site is live/i);
+  assert.equal(body.deploymentUrl, "https://cail-deploy-smoke-test.cuny.qzz.io");
+});
+
+test("project registration returns a repo-aware guided install URL when the app is configured", async (t: TestContext) => {
+  const { env } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-deploy-smoke-test",
+    headSha: "unused"
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/cail-deploy-smoke-test"
+  });
+  assert.equal(response.status, 200);
+
+  const body = await response.json() as {
+    guidedInstallUrl: string;
+    installStatus: string;
+  };
+
+  assert.equal(
+    body.guidedInstallUrl,
+    "https://deploy.example/github/install?repositoryFullName=szweibel%2Fcail-deploy-smoke-test&projectName=cail-deploy-smoke-test"
+  );
+  assert.equal(body.installStatus, "installed");
+});
+
+test("project registration returns suggested alternative slugs on conflict", async () => {
+  const { env, db } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+
+  db.putProject({
+    projectName: "archive",
+    ownerLogin: "otherperson",
+    githubRepo: "otherperson/archive",
+    deploymentUrl: "https://archive.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-archive",
+    createdAt: "2026-03-26T22:40:54.747Z",
+    updatedAt: "2026-03-26T22:41:04.957Z"
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/archive"
+  });
+  assert.equal(response.status, 409);
+
+  const body = await response.json() as {
+    ok: boolean;
+    nextAction: string;
+    existingRepositoryFullName: string;
+    suggestedProjectNames: Array<{ projectName: string; projectUrl: string }>;
+  };
+
+  assert.equal(body.ok, false);
+  assert.equal(body.nextAction, "choose_different_project_name");
+  assert.equal(body.existingRepositoryFullName, "otherperson/archive");
+  assert.ok(body.suggestedProjectNames.length > 0);
+  assert.equal(body.suggestedProjectNames[0]?.projectName, "archive-szweibel");
+  assert.equal(body.suggestedProjectNames[0]?.projectUrl, "https://archive-szweibel.cuny.qzz.io");
+});
+
+test("project registration rejects slugs longer than the public hostname limit", async () => {
+  const { env } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/archive",
+    projectName: "a".repeat(64)
+  });
+  assert.equal(response.status, 400);
+
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /no longer than 63 characters/i);
+});
+
+test("project registration treats same-owner different repositories as a conflict", async () => {
+  const { env, db } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+
+  db.putProject({
+    projectName: "archive",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/archive-one",
+    deploymentUrl: "https://archive.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-archive",
+    createdAt: "2026-03-26T22:40:54.747Z",
+    updatedAt: "2026-03-26T22:41:04.957Z"
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/archive-two",
+    projectName: "archive"
+  });
+  assert.equal(response.status, 409);
+
+  const body = await response.json() as {
+    existingRepositoryFullName: string;
+    nextAction: string;
+  };
+
+  assert.equal(body.existingRepositoryFullName, "szweibel/archive-one");
+  assert.equal(body.nextAction, "choose_different_project_name");
+});
+
+test("project registration avoids reserved platform hostnames", async () => {
+  const { env } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/runtime"
+  });
+  assert.equal(response.status, 200);
+
+  const body = await response.json() as {
+    projectName: string;
+    projectUrl: string;
+  };
+
+  assert.equal(body.projectName, "runtime-app");
+  assert.equal(body.projectUrl, "https://runtime-app.cuny.qzz.io");
+});
+
+test("guided install stores repo context and renders a GitHub handoff page", async (t: TestContext) => {
+  const { env } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-deploy-smoke-test",
+    headSha: "unused",
+    installed: false
+  });
+
+  const response = await fetchApp(
+    "GET",
+    "/github/install?repositoryFullName=szweibel/cail-deploy-smoke-test&projectName=cail-deploy-smoke-test",
+    env
+  );
+
+  assert.equal(response.status, 200);
+  const setCookie = response.headers.get("set-cookie") ?? "";
+  assert.match(setCookie, /cail_github_install_context=/);
+  assert.match(setCookie, /Path=\//);
+  const html = await response.text();
+  assert.match(html, /GitHub needed/);
+  assert.match(html, /Ready for GitHub approval/);
+  assert.match(html, /Continue to GitHub/);
+  assert.match(html, /View setup progress/);
+  assert.match(html, /Check for updates/);
+  assert.match(html, /repository-live-refresh-bootstrap/);
+});
+
+test("guided install explains when the repository is already covered", async (t: TestContext) => {
+  const { env } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-deploy-smoke-test",
+    headSha: "unused",
+    installed: true
+  });
+
+  const response = await fetchApp(
+    "GET",
+    "/github/install?repositoryFullName=szweibel/cail-deploy-smoke-test&projectName=cail-deploy-smoke-test",
+    env
+  );
+
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Already connected/);
+  assert.match(html, /This repo already has GitHub access/);
+  assert.match(html, /View setup progress/);
+  assert.match(html, /Open GitHub again/);
+  assert.match(html, /Check for updates/);
+});
+
+test("setup page verifies repository coverage for the guided install context", async (t: TestContext) => {
+  const { env } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-deploy-smoke-test",
+    headSha: "unused",
+    installed: true
+  });
+
+  const response = await fetchApp(
+    "GET",
+    "/github/setup?repositoryFullName=szweibel/cail-deploy-smoke-test&projectName=cail-deploy-smoke-test&installation_id=42&setup_action=install",
+    env
+  );
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /Ready to deploy/);
+  assert.match(html, /szweibel\/cail-deploy-smoke-test/);
+  assert.match(html, /GitHub is connected/);
+  assert.match(html, /Push to the default branch/);
+  assert.match(html, /Check for updates/);
+  assert.match(html, /https:\/\/deploy\.example\/api\/projects\/cail-deploy-smoke-test\/status/);
+  assert.match(html, /https:\/\/deploy\.example\/api\/repositories\/szweibel\/cail-deploy-smoke-test\/status/);
+});
+
+test("setup page explains when GitHub returned but the repository is still not covered", async (t: TestContext) => {
+  const { env } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-deploy-smoke-test",
+    headSha: "unused",
+    installed: false
+  });
+
+  const response = await fetchApp(
+    "GET",
+    "/github/setup?repositoryFullName=szweibel/cail-deploy-smoke-test&projectName=cail-deploy-smoke-test&installation_id=42&setup_action=install",
+    env
+  );
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /GitHub did not grant access to this repo/);
+  assert.match(html, /Try the GitHub flow again/);
+  assert.match(html, /Connect GitHub for this repo/);
+});
+
+test("validate queues a build-only job and returns a pollable status URL", async (t: TestContext) => {
+  const { env, db, queue } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-assets-build-test",
+    headSha: "abc123def456"
+  });
+
+  const response = await fetchApp("POST", "/api/validate", env, {
+    repositoryFullName: "szweibel/cail-assets-build-test",
+    ref: "main"
+  });
+  assert.equal(response.status, 202);
+
+  const body = await response.json() as {
+    ok: boolean;
+    jobId: string;
+    jobKind: string;
+    status: string;
+    buildStatus: string;
+    statusUrl: string;
+  };
+
+  assert.equal(body.ok, true);
+  assert.equal(body.jobKind, "validation");
+  assert.equal(body.status, "queued");
+  assert.equal(body.buildStatus, "queued");
+  assert.match(body.statusUrl, /\/api\/build-jobs\/.+\/status$/);
+  assert.equal(queue.sent.length, 1);
+  assert.equal(queue.sent[0]?.trigger.event, "validate");
+
+  const savedJob = db.getBuildJob(body.jobId);
+  assert.ok(savedJob);
+  assert.equal(savedJob?.eventName, "validate");
+  assert.equal(savedJob?.headSha, "abc123def456");
+});
+
+test("validate reuses the repository's existing project slug by default", async (t: TestContext) => {
+  const { env, db, queue } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-assets-build-test",
+    headSha: "abc123def456"
+  });
+
+  db.putProject({
+    projectName: "custom-assets-site",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://custom-assets-site.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-28T00:00:00.000Z",
+    updatedAt: "2026-03-28T00:05:00.000Z"
+  });
+
+  const response = await fetchApp("POST", "/api/validate", env, {
+    repositoryFullName: "szweibel/cail-assets-build-test",
+    ref: "main"
+  });
+  assert.equal(response.status, 202);
+  assert.equal(queue.sent.length, 1);
+  assert.equal(queue.sent[0]?.deployment.suggestedProjectName, "custom-assets-site");
+});
+
+test("validate does not enforce a daily cap by default", async (t: TestContext) => {
+  const { env, db, queue } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-assets-build-test",
+    headSha: "abc123def456"
+  });
+
+  for (let index = 0; index < 25; index += 1) {
+    db.putBuildJob({
+      jobId: `job-${index}`,
+      eventName: "validate",
+      installationId: 42,
+      repository: repositoryRecord("cail-assets-build-test"),
+      ref: "refs/heads/main",
+      headSha: `sha-${index}`,
+      checkRunId: 500 + index,
+      status: "success",
+      projectName: "cail-assets-build-test",
+      createdAt: `2026-03-28T0${Math.min(index, 9)}:00:00.000Z`,
+      updatedAt: `2026-03-28T0${Math.min(index, 9)}:05:00.000Z`,
+      completedAt: `2026-03-28T0${Math.min(index, 9)}:05:00.000Z`
+    });
+  }
+
+  const response = await fetchApp("POST", "/api/validate", env, {
+    repositoryFullName: "szweibel/cail-assets-build-test",
+    ref: "main"
+  });
+  assert.equal(response.status, 202);
+
+  const body = await response.json() as {
+    ok: boolean;
+    status: string;
+  };
+
+  assert.equal(body.ok, true);
+  assert.equal(body.status, "queued");
+  assert.equal(queue.sent.length, 1);
+});
+
+test("deployments reject oversized total upload bundles before provisioning resources", async () => {
+  const { env } = createTestContext();
+  const metadata = {
+    projectName: "oversized-upload",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/oversized-upload",
+    workerUpload: {
+      main_module: "index.js",
+      compatibility_date: "2026-03-28",
+      bindings: []
+    },
+    staticAssets: {
+      files: [
+        {
+          path: "assets/hero.bin",
+          partName: "asset-hero",
+          contentType: "application/octet-stream"
+        }
+      ]
+    }
+  };
+  const form = new FormData();
+  form.append("metadata", JSON.stringify(metadata));
+  form.append("index.js", new File([new Uint8Array(46 * 1024 * 1024)], "index.js", { type: "application/javascript" }));
+  form.append("asset-hero", new File([new Uint8Array(46 * 1024 * 1024)], "hero.bin", { type: "application/octet-stream" }));
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: form
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token",
+    CLOUDFLARE_API_TOKEN: "cloudflare-token"
+  });
+
+  assert.equal(response.status, 413);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /deployment bundle is too large/i);
+});
+
+test("deployments keep repo-scoped DB, FILES, and CACHE resources when a repo changes slugs", async (t: TestContext) => {
+  const { env, db } = createTestContext();
+  db.putProject({
+    projectName: "old-slug",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/renameable-project",
+    deploymentUrl: "https://old-slug.cuny.qzz.io",
+    databaseId: "db-existing",
+    filesBucketName: "kale-files-old-slug",
+    cacheNamespaceId: "kv-existing",
+    hasAssets: false,
+    latestDeploymentId: "dep-old",
+    createdAt: "2026-03-28T10:00:00.000Z",
+    updatedAt: "2026-03-28T10:05:00.000Z"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.pathname === "/client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/new-slug") {
+      const form = await request.formData();
+      const metadataEntry = form.get("metadata");
+      assert.ok(metadataEntry instanceof File);
+      const workerUpload = JSON.parse(await metadataEntry.text()) as {
+        bindings: Array<Record<string, string>>;
+      };
+
+      const dbBinding = workerUpload.bindings.find((binding) => binding.name === "DB");
+      const cacheBinding = workerUpload.bindings.find((binding) => binding.name === "CACHE");
+      const filesBinding = workerUpload.bindings.find((binding) => binding.name === "FILES");
+      assert.equal(dbBinding?.id, "db-existing");
+      assert.equal(cacheBinding?.namespace_id, "kv-existing");
+      assert.equal(filesBinding?.bucket_name, "kale-files-old-slug");
+      return new Response("", { status: 200 });
+    }
+
+    if (
+      url.pathname.includes("/d1/database")
+      || url.pathname.includes("/storage/kv/namespaces")
+      || url.pathname.includes("/r2/buckets")
+    ) {
+      throw new Error(`Unexpected resource provisioning lookup during slug rename: ${request.method} ${request.url}`);
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const metadata = {
+    projectName: "new-slug",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/renameable-project",
+    workerUpload: {
+      main_module: "index.js",
+      compatibility_date: "2026-03-28",
+      bindings: [
+        { type: "d1", name: "DB", id: "placeholder-db" },
+        { type: "kv_namespace", name: "CACHE", namespace_id: "placeholder-cache" },
+        { type: "r2_bucket", name: "FILES", bucket_name: "placeholder-files" }
+      ]
+    }
+  };
+  const form = new FormData();
+  form.append("metadata", JSON.stringify(metadata));
+  form.append("index.js", new File(["export default { fetch() { return new Response('ok'); } };"], "index.js", {
+    type: "application/javascript"
+  }));
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: form
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    project: {
+      projectName: string;
+    };
+  };
+  assert.equal(body.project.projectName, "new-slug");
+
+  const renamedProject = db.selectProject("new-slug") as {
+    database_id: string | null;
+    files_bucket_name: string | null;
+    cache_namespace_id: string | null;
+  } | null;
+  assert.equal(renamedProject?.database_id, "db-existing");
+  assert.equal(renamedProject?.files_bucket_name, "kale-files-old-slug");
+  assert.equal(renamedProject?.cache_namespace_id, "kv-existing");
+});
+
+test("deployments keep repo-scoped project secrets when a repo changes slugs", async (t: TestContext) => {
+  const { env, db } = createTestContext();
+  db.putProject({
+    projectName: "old-slug",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/renameable-project",
+    deploymentUrl: "https://old-slug.cuny.qzz.io",
+    databaseId: "db-existing",
+    hasAssets: false,
+    latestDeploymentId: "dep-old",
+    createdAt: "2026-03-28T10:00:00.000Z",
+    updatedAt: "2026-03-28T10:05:00.000Z"
+  });
+  const sealed = JSON.parse(await sealStoredValueForTest(env, "sk-rename-secret")) as { ciphertext: string; iv: string };
+  db.putProjectSecret({
+    github_repo: "szweibel/renameable-project",
+    project_name: "old-slug",
+    secret_name: "OPENAI_API_KEY",
+    ciphertext: sealed.ciphertext,
+    iv: sealed.iv,
+    github_user_id: 9001,
+    github_login: "szweibel",
+    created_at: "2026-03-28T10:00:00.000Z",
+    updated_at: "2026-03-28T10:00:00.000Z"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.pathname === "/client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/new-slug") {
+      const form = await request.formData();
+      const metadataEntry = form.get("metadata");
+      assert.ok(metadataEntry instanceof File);
+      const workerUpload = JSON.parse(await metadataEntry.text()) as {
+        bindings: Array<Record<string, string>>;
+      };
+
+      const secretBinding = workerUpload.bindings.find((binding) => binding.name === "OPENAI_API_KEY");
+      assert.deepEqual(secretBinding, {
+        type: "secret_text",
+        name: "OPENAI_API_KEY",
+        text: "sk-rename-secret"
+      });
+      return new Response("", { status: 200 });
+    }
+
+    if (
+      url.pathname.includes("/d1/database")
+      || url.pathname.includes("/storage/kv/namespaces")
+      || url.pathname.includes("/r2/buckets")
+    ) {
+      throw new Error(`Unexpected resource provisioning lookup during slug rename: ${request.method} ${request.url}`);
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const metadata = {
+    projectName: "new-slug",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/renameable-project",
+    workerUpload: {
+      main_module: "index.js",
+      compatibility_date: "2026-03-28",
+      bindings: [
+        { type: "d1", name: "DB", id: "placeholder-db" }
+      ]
+    }
+  };
+  const form = new FormData();
+  form.append("metadata", JSON.stringify(metadata));
+  form.append("index.js", new File(["export default { fetch() { return new Response('ok'); } };"], "index.js", {
+    type: "application/javascript"
+  }));
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: form
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 200);
+});
+
+test("deployments inject stored project secrets as secret_text bindings", async (t: TestContext) => {
+  const { env, db } = createTestContext();
+  db.putProject({
+    projectName: "secret-app",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/secret-app",
+    deploymentUrl: "https://secret-app.cuny.qzz.io",
+    databaseId: "db-existing",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-29T12:00:00.000Z",
+    updatedAt: "2026-03-29T12:05:00.000Z"
+  });
+  const sealed = JSON.parse(await sealStoredValueForTest(env, "sk-live-secret")) as { ciphertext: string; iv: string };
+  db.putProjectSecret({
+    github_repo: "szweibel/secret-app",
+    project_name: "secret-app",
+    secret_name: "OPENAI_API_KEY",
+    ciphertext: sealed.ciphertext,
+    iv: sealed.iv,
+    github_user_id: 9001,
+    github_login: "szweibel",
+    created_at: "2026-03-29T12:00:00.000Z",
+    updated_at: "2026-03-29T12:00:00.000Z"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.pathname === "/client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/secret-app") {
+      const form = await request.formData();
+      const metadataEntry = form.get("metadata");
+      assert.ok(metadataEntry instanceof File);
+      const workerUpload = JSON.parse(await metadataEntry.text()) as {
+        bindings: Array<Record<string, string>>;
+      };
+
+      const secretBinding = workerUpload.bindings.find((binding) => binding.name === "OPENAI_API_KEY");
+      assert.deepEqual(secretBinding, {
+        type: "secret_text",
+        name: "OPENAI_API_KEY",
+        text: "sk-live-secret"
+      });
+      return new Response("", { status: 200 });
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const metadata = {
+    projectName: "secret-app",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/secret-app",
+    workerUpload: {
+      main_module: "index.js",
+      compatibility_date: "2026-03-29",
+      bindings: [
+        { type: "d1", name: "DB", id: "placeholder-db" }
+      ]
+    }
+  };
+  const form = new FormData();
+  form.append("metadata", JSON.stringify(metadata));
+  form.append("index.js", new File(["export default { fetch() { return new Response('ok'); } };"], "index.js", {
+    type: "application/javascript"
+  }));
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: form
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 200);
+});
+
+test("validate requires auth when Cloudflare Access is configured", async () => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud"
+  });
+
+  const response = await fetchApp("POST", "/api/validate", env, {
+    repositoryFullName: "szweibel/cail-assets-build-test",
+    ref: "main"
+  });
+
+  assert.equal(response.status, 401);
+  const body = await response.json() as {
+    nextAction: string;
+    connectionHealthUrl: string;
+    oauthProtectedResourceMetadata: string;
+  };
+  assert.equal(body.nextAction, "complete_browser_login");
+  assert.equal(body.connectionHealthUrl, "https://deploy.example/.well-known/kale-connection.json");
+  assert.equal(body.oauthProtectedResourceMetadata, "https://deploy.example/.well-known/oauth-protected-resource/mcp");
+});
+
+test("project registration requires auth when Cloudflare Access is configured", async () => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud"
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/cail-assets-build-test"
+  });
+
+  assert.equal(response.status, 401);
+});
+
+test("project status requires auth when Cloudflare Access is configured", async () => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud"
+  });
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: true,
+    latestDeploymentId: "dep-live",
+    createdAt: "2026-03-26T20:00:00.000Z",
+    updatedAt: "2026-03-26T20:10:00.000Z"
+  });
+
+  const response = await fetchApp("GET", "/api/projects/cail-assets-build-test/status", env);
+  assert.equal(response.status, 401);
+});
+
+test("api auth session is permanently disabled in favor of MCP OAuth", async () => {
+  const { env } = createTestContext();
+
+  const response = await fetchApp("GET", "/api/auth/session", env);
+  assert.equal(response.status, 410);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /standard MCP OAuth discovery/i);
+});
+
+test("Cloudflare Access allows an allowed email to call project registration directly", async (t: TestContext) => {
+  const { env } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined,
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+
+  const registerResponse = await fetchApp(
+    "POST",
+    "/api/projects/register",
+    env,
+    {
+      repositoryFullName: "szweibel/cail-assets-build-test"
+    },
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+  assert.equal(registerResponse.status, 200);
+
+  const registerBody = await registerResponse.json() as {
+    ok: boolean;
+    projectName: string;
+    installStatus: string;
+  };
+  assert.equal(registerBody.ok, true);
+  assert.equal(registerBody.projectName, "cail-assets-build-test");
+  assert.equal(registerBody.installStatus, "app_unconfigured");
+});
+
+test("Cloudflare Access allows subdomains of configured email domains", async (t: TestContext) => {
+  const { env } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined,
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const accessJwt = await createAccessJwt("person@gc.cuny.edu");
+
+  const response = await fetchApp(
+    "POST",
+    "/api/projects/register",
+    env,
+    {
+      repositoryFullName: "szweibel/cail-assets-build-test"
+    },
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@gc.cuny.edu"
+    }
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    ok: boolean;
+  };
+  assert.equal(body.ok, true);
+});
+
+test("Cloudflare Access rejects disallowed email domains", async (t: TestContext) => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const accessJwt = await createAccessJwt("person@example.com");
+
+  const response = await fetchApp(
+    "POST",
+    "/api/projects/register",
+    env,
+    {
+      repositoryFullName: "szweibel/cail-assets-build-test"
+    },
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@example.com"
+    }
+  );
+
+  assert.equal(response.status, 403);
+});
+
+test("build-job status requires auth when Cloudflare Access is configured", async () => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud"
+  });
+  db.putBuildJob({
+    jobId: "job-protected-1",
+    eventName: "validate",
+    installationId: 1,
+    repository: repositoryRecord("cail-assets-build-test"),
+    ref: "main",
+    headSha: "validate-sha",
+    checkRunId: 99,
+    status: "success",
+    createdAt: "2026-03-26T21:00:00.000Z",
+    updatedAt: "2026-03-26T21:05:00.000Z"
+  });
+
+  const response = await fetchApp("GET", "/api/build-jobs/job-protected-1/status", env);
+  assert.equal(response.status, 401);
+});
+
+test("broad status APIs redact detailed build logs", async () => {
+  const { env, db } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: true,
+    latestDeploymentId: "dep-live",
+    createdAt: "2026-03-26T20:00:00.000Z",
+    updatedAt: "2026-03-26T20:10:00.000Z"
+  });
+  db.putBuildJob({
+    jobId: "job-failed-1",
+    eventName: "push",
+    installationId: 1,
+    repository: repositoryRecord("cail-assets-build-test"),
+    ref: "main",
+    headSha: "failed-sha",
+    checkRunId: 101,
+    status: "failure",
+    createdAt: "2026-03-26T21:00:00.000Z",
+    updatedAt: "2026-03-26T21:05:00.000Z",
+    completedAt: "2026-03-26T21:05:00.000Z",
+    projectName: "cail-assets-build-test",
+    errorKind: "build_failure",
+    errorMessage: "Build failed.",
+    errorDetail: "Sensitive build log line",
+    buildLogUrl: "https://logs.example/job-failed-1"
+  });
+
+  const repositoryStatusResponse = await fetchApp("GET", "/api/repositories/szweibel/cail-assets-build-test/status", env);
+  assert.equal(repositoryStatusResponse.status, 200);
+  const repositoryStatus = await repositoryStatusResponse.json() as Record<string, unknown>;
+  assert.equal("errorDetail" in repositoryStatus, false);
+  assert.equal("buildLogUrl" in repositoryStatus, false);
+
+  const projectStatusResponse = await fetchApp("GET", "/api/projects/cail-assets-build-test/status", env);
+  assert.equal(projectStatusResponse.status, 200);
+  const projectStatus = await projectStatusResponse.json() as Record<string, unknown>;
+  assert.equal("error_detail" in projectStatus, false);
+  assert.equal("build_log_url" in projectStatus, false);
+
+  const buildJobStatusResponse = await fetchApp("GET", "/api/build-jobs/job-failed-1/status", env);
+  assert.equal(buildJobStatusResponse.status, 200);
+  const buildJobStatus = await buildJobStatusResponse.json() as Record<string, unknown>;
+  assert.equal("error_detail" in buildJobStatus, false);
+  assert.equal("build_log_url" in buildJobStatus, false);
+});
+
+test("validate accepts Cloudflare Access auth", async (t: TestContext) => {
+  const { env, queue } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-assets-build-test",
+    headSha: "abc123def456"
+  });
+  installAccessFetchMock(t);
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+
+  const response = await fetchApp(
+    "POST",
+    "/api/validate",
+    env,
+    {
+      repositoryFullName: "szweibel/cail-assets-build-test",
+      ref: "main"
+    },
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+
+  assert.equal(response.status, 202);
+  assert.equal(queue.sent.length, 1);
+});
+
+test("project status ignores validate jobs while build-job status normalizes validation success to passed", async () => {
+  const { env, db } = createTestContext();
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: true,
+    latestDeploymentId: "dep-live",
+    createdAt: "2026-03-26T20:00:00.000Z",
+    updatedAt: "2026-03-26T20:10:00.000Z"
+  });
+  db.putBuildJob({
+    jobId: "job-validate-1",
+    eventName: "validate",
+    installationId: 1,
+    repository: repositoryRecord("cail-assets-build-test"),
+    ref: "main",
+    headSha: "validate-sha",
+    checkRunId: 99,
+    status: "success",
+    createdAt: "2026-03-26T21:00:00.000Z",
+    updatedAt: "2026-03-26T21:05:00.000Z",
+    startedAt: "2026-03-26T21:00:10.000Z",
+    completedAt: "2026-03-26T21:05:00.000Z",
+    projectName: "cail-assets-build-test"
+  });
+
+  const projectStatusResponse = await fetchApp("GET", "/api/projects/cail-assets-build-test/status", env);
+  assert.equal(projectStatusResponse.status, 200);
+  const projectStatus = await projectStatusResponse.json() as {
+    status: string;
+    build_status?: string;
+    deployment_url: string;
+  };
+  assert.equal(projectStatus.status, "live");
+  assert.equal(projectStatus.build_status, undefined);
+  assert.equal(projectStatus.deployment_url, "https://cail-assets-build-test.cuny.qzz.io");
+
+  const buildJobStatusResponse = await fetchApp("GET", "/api/build-jobs/job-validate-1/status", env);
+  assert.equal(buildJobStatusResponse.status, 200);
+  const buildJobStatus = await buildJobStatusResponse.json() as {
+    jobKind: string;
+    status: string;
+    build_status: string;
+  };
+  assert.equal(buildJobStatus.jobKind, "validation");
+  assert.equal(buildJobStatus.status, "passed");
+  assert.equal(buildJobStatus.build_status, "success");
+});
