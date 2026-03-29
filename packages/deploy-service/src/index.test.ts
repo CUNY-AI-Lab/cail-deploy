@@ -724,10 +724,9 @@ test("github user auth callback stores the linked GitHub account for later proje
   ), env);
   assert.equal(callbackResponse.status, 200);
   const callbackHtml = await callbackResponse.text();
-  assert.match(callbackHtml, /GitHub is connected to Kale Deploy/);
-  assert.match(callbackHtml, /finish checking whether this GitHub account can manage/i);
-  assert.match(callbackHtml, /Back to this project&#39;s setup/);
-  assert.match(callbackHtml, /Go to the Kale homepage/);
+  assert.match(callbackHtml, /GitHub connected/);
+  assert.match(callbackHtml, /Signed in as/);
+  assert.match(callbackHtml, /Back to Kale Deploy/);
   const stored = db.selectGitHubUserAuth("user:person@cuny.edu");
   assert.ok(stored);
   assert.equal(stored?.github_login, "szweibel");

@@ -1303,7 +1303,6 @@ deployServiceApp.get("/github/install", async (c) => {
     <main>
       <section class="card">
         <div class="logo">${logoHtml("44px")}</div>
-        <p class="section-muted">${escapeHtml(marketingName)} uses the GitHub app named <strong>${escapeHtml(appName)}</strong>.</p>
         <div class="status-banner"><span aria-hidden="true">&#10132;</span> Connect GitHub</div>
         ${installOverview}
         ${primaryAction}
@@ -4283,7 +4282,7 @@ function renderOauthAuthorizationErrorPage(message: string): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CAIL Deploy OAuth Error</title>
+    <title>Kale Deploy Sign-In Error</title>
     ${faviconLink()}
     ${baseStyles("")}
   </head>
@@ -4291,9 +4290,9 @@ function renderOauthAuthorizationErrorPage(message: string): string {
     <main>
       <section class="card">
         <div class="logo">${logoHtml("44px")}</div>
-        <h1>CAIL Deploy login could not continue</h1>
+        <h1>Sign-in could not continue</h1>
         <p>${escapeHtml(message)}</p>
-        <p>Return to your agent harness and try the connection again after signing in with your CUNY email.</p>
+        <p>Go back to your agent and try connecting again.</p>
       </section>
     </main>
   </body>
@@ -4331,7 +4330,7 @@ function renderGitHubUserAuthSuccessPage(input: {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Kale Deploy GitHub Connected</title>
+    <title>GitHub Connected</title>
     ${faviconLink()}
     ${baseStyles("")}
   </head>
@@ -4339,14 +4338,13 @@ function renderGitHubUserAuthSuccessPage(input: {
     <main>
       <section class="card">
         <div class="logo">${logoHtml("44px")}</div>
-        <h1>GitHub is connected to Kale Deploy</h1>
-        <p><strong>${escapeHtml(input.githubUser.login)}</strong> is now linked to Kale Deploy.</p>
-        ${repositoryContext ? `<div class="notice"><p>Return to Kale Deploy to finish checking whether this GitHub account can manage <code>${escapeHtml(repositoryContext.repositoryFullName)}</code>.</p></div>` : ""}
+        <h1>GitHub connected</h1>
+        <p>Signed in as <strong>${escapeHtml(input.githubUser.login)}</strong> on GitHub.</p>
         <div class="actions">
           <a class="button" href="${escapeHtml(continueUrl)}">${escapeHtml(continueLabel)}</a>
-          ${showHomeButton ? `<a class="button secondary" href="${escapeHtml(input.serviceBaseUrl)}">Go to the Kale homepage</a>` : ""}
+          ${showHomeButton ? `<a class="button secondary" href="${escapeHtml(input.serviceBaseUrl)}">Back to Kale Deploy</a>` : ""}
         </div>
-        <p>Return to your agent and continue. Kale can now use this GitHub account for project settings like secrets and API keys.</p>
+        <p>You can close this tab and return to your agent.</p>
       </section>
     </main>
   </body>
@@ -4359,7 +4357,7 @@ function renderGitHubUserAuthErrorPage(message: string, serviceBaseUrl: string):
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Kale Deploy GitHub Connection Error</title>
+    <title>GitHub Connection Error</title>
     ${faviconLink()}
     ${baseStyles("")}
   </head>
@@ -4367,7 +4365,7 @@ function renderGitHubUserAuthErrorPage(message: string, serviceBaseUrl: string):
     <main>
       <section class="card">
         <div class="logo">${logoHtml("44px")}</div>
-        <h1>GitHub could not be connected to Kale Deploy</h1>
+        <h1>GitHub connection failed</h1>
         <p>${escapeHtml(message)}</p>
         <div class="actions">
           <a class="button" href="${escapeHtml(serviceBaseUrl)}">Return to Kale Deploy</a>
@@ -4457,7 +4455,7 @@ function renderProjectControlPanelAuthErrorPage(message: string, oauthBaseUrl: s
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Kale Deploy Project Settings</title>
+    <title>Project Settings</title>
     ${faviconLink()}
     ${baseStyles("")}
   </head>
