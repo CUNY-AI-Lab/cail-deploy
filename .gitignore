@@ -3,6 +3,7 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+.gemini/
 .env
 .env.*
 !.env.example
