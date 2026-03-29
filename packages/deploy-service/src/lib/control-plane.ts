@@ -37,6 +37,7 @@ export type GitHubUserAuthRecord = {
 };
 
 export type ProjectSecretRecord = {
+  githubRepo: string;
   projectName: string;
   secretName: string;
   ciphertext: string;
@@ -48,6 +49,7 @@ export type ProjectSecretRecord = {
 };
 
 export type ProjectSecretMetadata = {
+  githubRepo: string;
   projectName: string;
   secretName: string;
   githubUserId: number;
@@ -158,6 +160,7 @@ type GitHubUserAuthRow = {
 };
 
 type ProjectSecretRow = {
+  github_repo: string;
   project_name: string;
   secret_name: string;
   ciphertext: string;
@@ -374,13 +377,14 @@ export async function deleteGitHubUserAuthByGitHubUserId(
   `).bind(githubUserId).run();
 }
 
-export async function listProjectSecretMetadata(
+export async function listProjectSecretMetadataForRepository(
   db: D1Database,
-  projectName: string
+  githubRepo: string
 ): Promise<ProjectSecretMetadata[]> {
   const session = db.withSession("first-primary");
   const result = await session.prepare(`
     SELECT
+      github_repo,
       project_name,
       secret_name,
       github_user_id,
@@ -388,11 +392,12 @@ export async function listProjectSecretMetadata(
       created_at,
       updated_at
     FROM project_secrets
-    WHERE project_name = ?
+    WHERE github_repo = ?
     ORDER BY secret_name ASC
-  `).bind(projectName).all<Omit<ProjectSecretRow, "ciphertext" | "iv">>();
+  `).bind(githubRepo).all<Omit<ProjectSecretRow, "ciphertext" | "iv">>();
 
   return result.results.map((row) => ({
+    githubRepo: row.github_repo,
     projectName: row.project_name,
     secretName: row.secret_name,
     githubUserId: row.github_user_id,
@@ -402,13 +407,14 @@ export async function listProjectSecretMetadata(
   }));
 }
 
-export async function listProjectSecrets(
+export async function listProjectSecretsForRepository(
   db: D1Database,
-  projectName: string
+  githubRepo: string
 ): Promise<ProjectSecretRecord[]> {
   const session = db.withSession("first-primary");
   const result = await session.prepare(`
     SELECT
+      github_repo,
       project_name,
       secret_name,
       ciphertext,
@@ -418,9 +424,9 @@ export async function listProjectSecrets(
       created_at,
       updated_at
     FROM project_secrets
-    WHERE project_name = ?
+    WHERE github_repo = ?
     ORDER BY secret_name ASC
-  `).bind(projectName).all<ProjectSecretRow>();
+  `).bind(githubRepo).all<ProjectSecretRow>();
 
   return result.results.map(toProjectSecretRecord);
 }
@@ -431,6 +437,7 @@ export async function putProjectSecret(
 ): Promise<void> {
   await db.prepare(`
     INSERT INTO project_secrets (
+      github_repo,
       project_name,
       secret_name,
       ciphertext,
@@ -439,14 +446,16 @@ export async function putProjectSecret(
       github_login,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(project_name, secret_name) DO UPDATE SET
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(github_repo, secret_name) DO UPDATE SET
+      project_name = excluded.project_name,
       ciphertext = excluded.ciphertext,
       iv = excluded.iv,
       github_user_id = excluded.github_user_id,
       github_login = excluded.github_login,
       updated_at = excluded.updated_at
   `).bind(
+    record.githubRepo,
     record.projectName,
     record.secretName,
     record.ciphertext,
@@ -458,16 +467,16 @@ export async function putProjectSecret(
   ).run();
 }
 
-export async function deleteProjectSecret(
+export async function deleteProjectSecretForRepository(
   db: D1Database,
-  projectName: string,
+  githubRepo: string,
   secretName: string
 ): Promise<void> {
   await db.prepare(`
     DELETE FROM project_secrets
-    WHERE project_name = ?
+    WHERE github_repo = ?
       AND secret_name = ?
-  `).bind(projectName, secretName).run();
+  `).bind(githubRepo, secretName).run();
 }
 
 export async function ensureProjectPolicy(
@@ -1032,6 +1041,7 @@ function toProjectPolicyRecord(row: ProjectPolicyRow): ProjectPolicyRecord {
 
 function toProjectSecretRecord(row: ProjectSecretRow): ProjectSecretRecord {
   return {
+    githubRepo: row.github_repo,
     projectName: row.project_name,
     secretName: row.secret_name,
     ciphertext: row.ciphertext,

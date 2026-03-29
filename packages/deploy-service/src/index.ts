@@ -22,7 +22,7 @@ import {
   countActiveBuildJobsForRepository,
   countBuildJobsForRepositoryOnDate,
   consumeOauthGrant,
-  deleteProjectSecret,
+  deleteProjectSecretForRepository,
   deleteGitHubUserAuthByGitHubUserId,
   ensureProjectPolicy,
   getBuildJob,
@@ -32,8 +32,8 @@ import {
   getLatestProjectForRepository,
   getPreferredProjectNameForRepository,
   getProject,
-  listProjectSecretMetadata,
-  listProjectSecrets,
+  listProjectSecretMetadataForRepository,
+  listProjectSecretsForRepository,
   listExpiredRetainedFailedDeployments,
   listProjects,
   listRetainedSuccessfulDeployments,
@@ -1675,13 +1675,19 @@ deployServiceApp.get("/api/github/user-auth/start", async (c) => {
       repositoryUrl: c.req.query("repositoryUrl") ?? undefined,
       projectName: c.req.query("projectName") ?? undefined
     }, c.env, serviceBaseUrl);
+    const standaloneProjectName = !repositoryContext && c.req.query("projectName")
+      ? normalizeRequestedProjectName(
+          c.req.query("projectName") ?? "",
+          resolveReservedProjectNames(c.env, serviceBaseUrl)
+        )
+      : undefined;
     const state = await createGitHubUserAuthStateToken({
       secret: resolveMcpOauthSecret(c.env),
       issuer: serviceBaseUrl,
       subject: identity.subject,
       email: identity.email,
       repositoryFullName: repositoryContext?.repositoryFullName,
-      projectName: repositoryContext?.projectName,
+      projectName: repositoryContext?.projectName ?? standaloneProjectName,
       returnTo: normalizeOptionalGitHubUserAuthReturnTo(c.req.query("returnTo"), [serviceBaseUrl, oauthBaseUrl])
     });
 
@@ -2741,6 +2747,7 @@ async function authorizeProjectSecretsAccess(
   const serviceBaseUrl = resolveServiceBaseUrl(env, requestUrl);
   const oauthBaseUrl = resolveMcpOauthBaseUrl(env, requestUrl);
   const connection = buildConnectionHealthPayload(env, serviceBaseUrl, identity);
+  const connectGitHubUserUrl = buildGitHubUserSecretsConnectUrl(oauthBaseUrl, projectName);
   let authenticatedIdentity: AuthenticatedAgentRequestIdentity;
 
   try {
@@ -2763,10 +2770,9 @@ async function authorizeProjectSecretsAccess(
 
   const project = await getProject(env.CONTROL_PLANE_DB, projectName);
   if (!project) {
-    throw new HttpError(404, `Project '${projectName}' does not exist yet.`);
+    return buildProjectSecretsConnectRequiredResponse(projectName, connectGitHubUserUrl, connection.connectionHealthUrl);
   }
 
-  const repositoryFullName = project.githubRepo;
   const authConfig = tryResolveGitHubUserAuthConfig(env, serviceBaseUrl);
   if (!authConfig) {
     return {
@@ -2777,7 +2783,7 @@ async function authorizeProjectSecretsAccess(
         summary: "Kale Deploy cannot manage project secrets until GitHub-backed admin checks are configured by the operator.",
         nextAction: "operator_configure_github_user_auth",
         projectName,
-        repositoryFullName,
+        repositoryFullName: "unknown",
         connectionHealthUrl: connection.connectionHealthUrl
       }
     };
@@ -2785,66 +2791,69 @@ async function authorizeProjectSecretsAccess(
 
   const linked = await getGitHubUserAuth(env.CONTROL_PLANE_DB, authenticatedIdentity.subject);
   if (!linked) {
-    return {
-      ok: false,
-      status: 403,
-      body: {
-        error: "Confirm your GitHub account before managing project secrets.",
-        summary: "This signed-in CUNY identity has not yet confirmed a GitHub account for Kale project administration.",
-        nextAction: "connect_github_user",
-        projectName,
-        repositoryFullName,
-        connectGitHubUserUrl: buildGitHubUserSecretsConnectUrl(oauthBaseUrl, repositoryFullName, projectName),
-        connectionHealthUrl: connection.connectionHealthUrl
-      }
-    };
+    return buildProjectSecretsConnectRequiredResponse(projectName, connectGitHubUserUrl, connection.connectionHealthUrl);
   }
 
-  const githubUserSession = await resolveGitHubUserSession(env, authConfig, linked);
+  let githubUserSession: Awaited<ReturnType<typeof resolveGitHubUserSession>>;
+  try {
+    githubUserSession = await resolveGitHubUserSession(env, authConfig, linked);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    if (httpError.status === 403) {
+      return buildProjectSecretsConnectRequiredResponse(projectName, connectGitHubUserUrl, connection.connectionHealthUrl);
+    }
+    throw error;
+  }
+
   const repositoryAccess = await fetchGitHubUserRepositoryAccess(
     env,
     githubUserSession.accessToken,
-    repositoryFullName
+    project.githubRepo
   );
 
   if (!repositoryAccess.allowed) {
-    if (repositoryAccess.shouldReconnect) {
-      return {
-        ok: false,
-        status: 403,
-        body: {
-          error: "Reconnect GitHub before managing project secrets.",
-          summary: "Kale Deploy could not verify your current GitHub user authorization for this project.",
-          nextAction: "connect_github_user",
-          projectName,
-          repositoryFullName,
-          connectGitHubUserUrl: buildGitHubUserSecretsConnectUrl(oauthBaseUrl, repositoryFullName, projectName),
-          connectionHealthUrl: connection.connectionHealthUrl
-        }
-      };
-    }
-
-    return {
-      ok: false,
-      status: 403,
-      body: {
-        error: "GitHub write access is required to manage project secrets.",
-        summary: `The linked GitHub user ${githubUserSession.githubLogin} does not have write or admin access to ${repositoryFullName}.`,
-        nextAction: "request_repository_write_access",
-        projectName,
-        repositoryFullName,
-        connectionHealthUrl: connection.connectionHealthUrl
-      }
-    };
+    return buildProjectSecretsConnectRequiredResponse(
+      projectName,
+      connectGitHubUserUrl,
+      connection.connectionHealthUrl,
+      repositoryAccess.shouldReconnect
+        ? "Reconnect GitHub before managing project secrets."
+        : "Connect a GitHub account with write or admin access before managing project secrets.",
+      repositoryAccess.shouldReconnect
+        ? "Kale Deploy could not verify your current GitHub authorization for this project."
+        : "Kale Deploy could not confirm a GitHub account with write or admin access for this project."
+    );
   }
 
   return {
     ok: true,
     project,
-    repositoryFullName,
+    repositoryFullName: project.githubRepo,
     githubLogin: githubUserSession.githubLogin,
     githubUserId: githubUserSession.githubUserId,
     serviceBaseUrl
+  };
+}
+
+function buildProjectSecretsConnectRequiredResponse(
+  projectName: string,
+  connectGitHubUserUrl: string,
+  connectionHealthUrl: string,
+  error = "Confirm your GitHub account before managing project secrets.",
+  summary = "Kale Deploy can only show project secrets after it verifies a GitHub account with write or admin access for this project."
+): Extract<ProjectSecretsAuthorization, { ok: false }> {
+  return {
+    ok: false,
+    status: 403,
+    body: {
+      error,
+      summary,
+      nextAction: "connect_github_user",
+      projectName,
+      repositoryFullName: "unknown",
+      connectGitHubUserUrl,
+      connectionHealthUrl
+    }
   };
 }
 
@@ -2941,7 +2950,7 @@ async function buildProjectSecretsListPayload(
   project: ProjectRecord,
   githubLogin: string
 ): Promise<ProjectSecretsListPayload> {
-  const secrets = await listProjectSecretMetadata(env.CONTROL_PLANE_DB, project.projectName);
+  const secrets = await listProjectSecretMetadataForRepository(env.CONTROL_PLANE_DB, project.githubRepo);
 
   return {
     ok: true,
@@ -2972,10 +2981,11 @@ async function setProjectSecretValue(
   const encryptionKey = resolveControlPlaneEncryptionKey(env);
   const sealed = await encryptStoredText(encryptionKey, secretText);
   const now = new Date().toISOString();
-  const existing = await listProjectSecretMetadata(env.CONTROL_PLANE_DB, authorization.project.projectName);
+  const existing = await listProjectSecretMetadataForRepository(env.CONTROL_PLANE_DB, authorization.project.githubRepo);
   const existingSecret = existing.find((secret) => secret.secretName === secretName);
 
   await putProjectSecret(env.CONTROL_PLANE_DB, {
+    githubRepo: authorization.project.githubRepo,
     projectName: authorization.project.projectName,
     secretName,
     ciphertext: sealed.ciphertext,
@@ -2995,7 +3005,7 @@ async function removeProjectSecretValue(
   secretNameInput: string
 ): Promise<ProjectSecretMutationPayload> {
   const secretName = assertValidProjectSecretName(secretNameInput);
-  await deleteProjectSecret(env.CONTROL_PLANE_DB, authorization.project.projectName, secretName);
+  await deleteProjectSecretForRepository(env.CONTROL_PLANE_DB, authorization.project.githubRepo, secretName);
   return await syncProjectSecretToLiveWorker(env, authorization, secretName, undefined, "delete");
 }
 
@@ -3071,7 +3081,7 @@ async function buildProjectSecretBindings(
   env: Env,
   metadata: DeploymentMetadata
 ): Promise<WorkerBinding[]> {
-  const secrets = await listProjectSecrets(env.CONTROL_PLANE_DB, metadata.projectName);
+  const secrets = await listProjectSecretsForRepository(env.CONTROL_PLANE_DB, metadata.githubRepo);
   if (secrets.length === 0) {
     return [];
   }
@@ -3152,15 +3162,16 @@ function splitRepositoryFullName(repositoryFullName: string): [string, string] {
 
 function buildGitHubUserSecretsConnectUrl(
   oauthBaseUrl: string,
-  repositoryFullName: string,
   projectName: string,
-  returnTo?: string
+  options?: { repositoryFullName?: string; returnTo?: string }
 ): string {
   const url = new URL(`${oauthBaseUrl}/api/github/user-auth/start`);
-  url.searchParams.set("repositoryFullName", repositoryFullName);
   url.searchParams.set("projectName", projectName);
-  if (returnTo) {
-    url.searchParams.set("returnTo", returnTo);
+  if (options?.repositoryFullName) {
+    url.searchParams.set("repositoryFullName", options.repositoryFullName);
+  }
+  if (options?.returnTo) {
+    url.searchParams.set("returnTo", options.returnTo);
   }
   return url.toString();
 }
@@ -4384,14 +4395,10 @@ function renderProjectControlPanelGatePage(input: {
 }): string {
   const { oauthBaseUrl, projectName, authorization, flash } = input;
   const connectUrl = authorization.body.nextAction === "connect_github_user"
-    && authorization.body.repositoryFullName !== "unknown"
-      ? buildGitHubUserSecretsConnectUrl(
-          oauthBaseUrl,
-          authorization.body.repositoryFullName,
-          projectName,
-          buildProjectControlPanelUrl(oauthBaseUrl, projectName)
-        )
-      : authorization.body.connectGitHubUserUrl;
+    ? buildGitHubUserSecretsConnectUrl(oauthBaseUrl, projectName, {
+        returnTo: buildProjectControlPanelUrl(oauthBaseUrl, projectName)
+      })
+    : authorization.body.connectGitHubUserUrl;
   const toneClass = flash ? `notice notice-${flash.tone}` : "";
 
   return `<!doctype html>
@@ -7280,7 +7287,7 @@ function resolveRepositoryWorkflowState(input: {
     return {
       nextAction: "configure_github_app",
       stage: "app_setup",
-      summary: "GitHub isn't set up yet."
+      summary: "The shared GitHub app needs to be created before any repo can deploy."
     };
   }
 

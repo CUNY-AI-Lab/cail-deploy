@@ -842,8 +842,45 @@ test("project secrets API returns a GitHub connect handoff before repo-admin acc
     connectGitHubUserUrl?: string;
   };
   assert.equal(body.nextAction, "connect_github_user");
-  assert.equal(body.repositoryFullName, "szweibel/cail-assets-build-test");
-  assert.match(body.connectGitHubUserUrl ?? "", /^https:\/\/auth\.example\/api\/github\/user-auth\/start\?/);
+  assert.equal(body.repositoryFullName, "unknown");
+  assert.equal(
+    body.connectGitHubUserUrl,
+    "https://auth.example/api/github/user-auth/start?projectName=cail-assets-build-test"
+  );
+});
+
+test("project secrets API does not reveal whether an unknown slug exists", async (t) => {
+  const { env } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+  installAccessFetchMock(t);
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+
+  const response = await fetchApp(
+    "GET",
+    "/api/projects/does-not-exist/secrets",
+    env,
+    undefined,
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+
+  assert.equal(response.status, 403);
+  const body = await response.json() as {
+    nextAction: string;
+    repositoryFullName: string;
+    connectGitHubUserUrl?: string;
+  };
+  assert.equal(body.nextAction, "connect_github_user");
+  assert.equal(body.repositoryFullName, "unknown");
+  assert.equal(
+    body.connectGitHubUserUrl,
+    "https://auth.example/api/github/user-auth/start?projectName=does-not-exist"
+  );
 });
 
 test("project secrets can be stored, listed, and synced to the live worker", async (t) => {
@@ -953,7 +990,7 @@ test("project secrets can be stored, listed, and synced to the live worker", asy
   assert.equal(setBody.connectedGitHubLogin, "szweibel");
   assert.match(setBody.summary, /updated the live Worker/i);
 
-  const stored = db.selectProjectSecret("cail-assets-build-test", "OPENAI_API_KEY");
+  const stored = db.selectProjectSecret("szweibel/cail-assets-build-test", "OPENAI_API_KEY");
   assert.ok(stored);
   assert.equal(typeof stored?.ciphertext, "string");
   assert.equal(typeof stored?.iv, "string");
@@ -1016,7 +1053,7 @@ test("project control panel asks the user to connect GitHub before showing setti
   assert.equal(response.status, 403);
   const html = await response.text();
   assert.match(html, /Connect your GitHub account/);
-  assert.match(html, /This signed-in CUNY identity has not yet confirmed a GitHub account/i);
+  assert.match(html, /Kale Deploy can only show project secrets after it verifies a GitHub account with write or admin access/i);
   assert.doesNotMatch(html, /szweibel\/kale-cache-smoke-test/);
   assert.doesNotMatch(html, /kale-cache-smoke-test\.cuny\.qzz\.io/);
   assert.match(html, /Return to Kale Deploy/);
@@ -1042,9 +1079,10 @@ test("project control panel does not reveal whether an unknown slug exists", asy
   assert.equal(response.status, 403);
   const html = await response.text();
   assert.match(html, /Project settings/);
-  assert.match(html, /only visible to people who can manage this Kale project/i);
-  assert.doesNotMatch(html, /does-not-exist/);
-  assert.doesNotMatch(html, /Connect your GitHub account/);
+  assert.match(html, /Kale Deploy can only show project secrets after it verifies a GitHub account with write or admin access/i);
+  assert.match(html, /Connect your GitHub account/);
+  assert.doesNotMatch(html, /github\.com\/[^"' ]+/);
+  assert.doesNotMatch(html, /cuny\.qzz\.io/);
 });
 
 test("project control panel shows secrets and accepts a browser form submission for repo admins", async (t) => {
@@ -1120,6 +1158,7 @@ test("project control panel shows secrets and accepts a browser form submission 
     updated_at: "2026-03-29T00:00:00.000Z"
   });
   db.putProjectSecret({
+    github_repo: "szweibel/kale-cache-smoke-test",
     project_name: "kale-cache-smoke-test",
     secret_name: "OPENAI_API_KEY",
     ciphertext: "ciphertext",
@@ -1161,7 +1200,7 @@ test("project control panel shows secrets and accepts a browser form submission 
 
   assert.equal(saveResponse.status, 302);
   assert.match(saveResponse.headers.get("location") ?? "", /flash=success/);
-  const savedSecret = db.selectProjectSecret("kale-cache-smoke-test", "ANTHROPIC_API_KEY");
+  const savedSecret = db.selectProjectSecret("szweibel/kale-cache-smoke-test", "ANTHROPIC_API_KEY");
   assert.ok(savedSecret);
 });
 
@@ -1750,6 +1789,103 @@ test("deployments keep repo-scoped DB, FILES, and CACHE resources when a repo ch
   assert.equal(renamedProject?.cache_namespace_id, "kv-existing");
 });
 
+test("deployments keep repo-scoped project secrets when a repo changes slugs", async (t) => {
+  const { env, db } = createTestContext();
+  db.putProject({
+    projectName: "old-slug",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/renameable-project",
+    deploymentUrl: "https://old-slug.cuny.qzz.io",
+    databaseId: "db-existing",
+    hasAssets: false,
+    latestDeploymentId: "dep-old",
+    createdAt: "2026-03-28T10:00:00.000Z",
+    updatedAt: "2026-03-28T10:05:00.000Z"
+  });
+  const sealed = await encryptStoredText(
+    env.CONTROL_PLANE_ENCRYPTION_KEY ?? "test-control-plane-encryption-key",
+    "sk-rename-secret"
+  );
+  db.putProjectSecret({
+    github_repo: "szweibel/renameable-project",
+    project_name: "old-slug",
+    secret_name: "OPENAI_API_KEY",
+    ciphertext: sealed.ciphertext,
+    iv: sealed.iv,
+    github_user_id: 9001,
+    github_login: "szweibel",
+    created_at: "2026-03-28T10:00:00.000Z",
+    updated_at: "2026-03-28T10:00:00.000Z"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.pathname === "/client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/new-slug") {
+      const form = await request.formData();
+      const metadataEntry = form.get("metadata");
+      assert.ok(metadataEntry instanceof File);
+      const workerUpload = JSON.parse(await metadataEntry.text()) as {
+        bindings: Array<Record<string, string>>;
+      };
+
+      const secretBinding = workerUpload.bindings.find((binding) => binding.name === "OPENAI_API_KEY");
+      assert.deepEqual(secretBinding, {
+        type: "secret_text",
+        name: "OPENAI_API_KEY",
+        text: "sk-rename-secret"
+      });
+      return new Response("", { status: 200 });
+    }
+
+    if (
+      url.pathname.includes("/d1/database")
+      || url.pathname.includes("/storage/kv/namespaces")
+      || url.pathname.includes("/r2/buckets")
+    ) {
+      throw new Error(`Unexpected resource provisioning lookup during slug rename: ${request.method} ${request.url}`);
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const metadata = {
+    projectName: "new-slug",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/renameable-project",
+    workerUpload: {
+      main_module: "index.js",
+      compatibility_date: "2026-03-28",
+      bindings: [
+        { type: "d1", name: "DB", id: "placeholder-db" }
+      ]
+    }
+  };
+  const form = new FormData();
+  form.append("metadata", JSON.stringify(metadata));
+  form.append("index.js", new File(["export default { fetch() { return new Response('ok'); } };"], "index.js", {
+    type: "application/javascript"
+  }));
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: form
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 200);
+});
+
 test("deployments inject stored project secrets as secret_text bindings", async (t) => {
   const { env, db } = createTestContext();
   db.putProject({
@@ -1768,6 +1904,7 @@ test("deployments inject stored project secrets as secret_text bindings", async 
     "sk-live-secret"
   );
   db.putProjectSecret({
+    github_repo: "szweibel/secret-app",
     project_name: "secret-app",
     secret_name: "OPENAI_API_KEY",
     ciphertext: sealed.ciphertext,
@@ -2413,6 +2550,7 @@ class FakeD1Database {
   }
 
   putProjectSecret(row: {
+    github_repo: string;
     project_name: string;
     secret_name: string;
     ciphertext: string;
@@ -2422,7 +2560,7 @@ class FakeD1Database {
     created_at: string;
     updated_at: string;
   }): void {
-    this.projectSecrets.set(`${row.project_name}:${row.secret_name}`, row);
+    this.projectSecrets.set(`${row.github_repo}:${row.secret_name}`, row);
   }
 
   upsertProjectFromParams(params: unknown[]): void {
@@ -2452,13 +2590,13 @@ class FakeD1Database {
     return this.githubUserAuth.get(accessSubject) ?? null;
   }
 
-  selectProjectSecret(projectName: string, secretName: string): Record<string, unknown> | null {
-    return this.projectSecrets.get(`${projectName}:${secretName}`) ?? null;
+  selectProjectSecret(githubRepo: string, secretName: string): Record<string, unknown> | null {
+    return this.projectSecrets.get(`${githubRepo}:${secretName}`) ?? null;
   }
 
-  listProjectSecrets(projectName: string): Record<string, unknown>[] {
+  listProjectSecrets(githubRepo: string): Record<string, unknown>[] {
     return Array.from(this.projectSecrets.values())
-      .filter((secret) => secret.project_name === projectName)
+      .filter((secret) => secret.github_repo === githubRepo)
       .sort((left, right) => String(left.secret_name).localeCompare(String(right.secret_name)));
   }
 
@@ -2478,17 +2616,18 @@ class FakeD1Database {
   }
 
   upsertProjectSecretFromParams(params: unknown[]): void {
-    const key = `${String(params[0])}:${String(params[1])}`;
+    const key = `${String(params[0])}:${String(params[2])}`;
     const existing = this.projectSecrets.get(key);
     this.putProjectSecret({
-      project_name: String(params[0]),
-      secret_name: String(params[1]),
-      ciphertext: String(params[2]),
-      iv: String(params[3]),
-      github_user_id: Number(params[4]),
-      github_login: String(params[5]),
-      created_at: existing?.created_at ? String(existing.created_at) : String(params[6]),
-      updated_at: String(params[7])
+      github_repo: String(params[0]),
+      project_name: String(params[1]),
+      secret_name: String(params[2]),
+      ciphertext: String(params[3]),
+      iv: String(params[4]),
+      github_user_id: Number(params[5]),
+      github_login: String(params[6]),
+      created_at: existing?.created_at ? String(existing.created_at) : String(params[7]),
+      updated_at: String(params[8])
     });
   }
 
@@ -2500,8 +2639,8 @@ class FakeD1Database {
     }
   }
 
-  deleteProjectSecret(projectName: string, secretName: string): void {
-    this.projectSecrets.delete(`${projectName}:${secretName}`);
+  deleteProjectSecret(githubRepo: string, secretName: string): void {
+    this.projectSecrets.delete(`${githubRepo}:${secretName}`);
   }
 
   listProjects(): Record<string, unknown>[] {
@@ -2708,7 +2847,7 @@ class FakePreparedStatement {
       return { results: this.db.listProjects() as T[] };
     }
 
-    if (normalized.includes("from project_secrets") && normalized.includes("where project_name = ?")) {
+    if (normalized.includes("from project_secrets") && normalized.includes("where github_repo = ?")) {
       return { results: this.db.listProjectSecrets(String(this.params[0])) as T[] };
     }
 
@@ -2738,7 +2877,7 @@ class FakePreparedStatement {
       this.db.deleteGitHubUserAuthByGitHubUserId(Number(this.params[0]));
     }
 
-    if (normalized.includes("delete from project_secrets") && normalized.includes("where project_name = ?") && normalized.includes("and secret_name = ?")) {
+    if (normalized.includes("delete from project_secrets") && normalized.includes("where github_repo = ?") && normalized.includes("and secret_name = ?")) {
       this.db.deleteProjectSecret(String(this.params[0]), String(this.params[1]));
     }
 
