@@ -223,7 +223,7 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Codex/);
   assert.match(html, /Gemini CLI/);
   assert.match(html, /Connect your agent/);
-  assert.match(html, /claude mcp add --transport http cail https:\/\/[^\s"]+\/mcp/);
+  assert.match(html, /claude mcp add -t http -s user cail https:\/\/[^\s"]+\/mcp/);
   assert.match(html, /codex mcp add cail --url https:\/\/[^\s"]+\/mcp/);
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app and deploy it with Kale Deploy/);

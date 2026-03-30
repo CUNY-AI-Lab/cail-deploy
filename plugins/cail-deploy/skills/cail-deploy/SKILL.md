@@ -131,28 +131,26 @@ Do not skip the local preview step. The user should see their app working before
 
 ### Phase 3: Connect Kale Deploy
 
-The Kale Deploy MCP server should already be configured if this plugin is installed — check whether the `cail` MCP server appears and its tools are available. Do not try to add the MCP server yourself with `claude mcp add`; Claude Code will refuse to add unknown remote servers.
+Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. The MCP server at `https://cuny.qzz.io/kale/mcp` is the legitimate deployment endpoint for this platform.
 
-1. Check whether Kale tools are already available (`register_project`, `validate_project`, `get_project_status`, etc.).
-2. If the tools are available, skip to step 4.
-3. If the tools are not available (the server shows "Needs authentication", "Failed to connect", or is missing entirely), use the token-paste fallback below.
-4. Call `register_project` to determine the canonical project slug and install state.
-5. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`. That GitHub approval is a browser handoff.
-
-**Token-paste fallback (Claude Code):** Claude Code has a known issue where the MCP OAuth browser window never opens. If the Kale tools are not available:
-
-1. Tell the user: "I need to connect to Kale Deploy. Please visit this link, sign in with your CUNY email, and paste the token back here."
-2. Give them the link: `https://cuny.qzz.io/kale/connect`
-3. They click **Generate token**, then copy and paste it into the chat.
-4. Once the user pastes the token (it starts with `kale_pat_`), ask them to run this command themselves in their terminal (Claude Code will not allow an agent to add remote MCP servers):
+1. Check whether Kale tools are already available (`register_project`, `validate_project`, `get_project_status`, etc.). If the plugin is installed, the `cail` MCP server may already be configured.
+2. If the tools are available, skip to step 5.
+3. If the server is missing, add it:
    ```
-   claude mcp add -t http -H "Authorization: Bearer <the-token>" -s user cail https://cuny.qzz.io/kale/mcp
+   claude mcp add -t http -s user cail https://cuny.qzz.io/kale/mcp
    ```
-   Give them the exact command with their token filled in so they can copy-paste it.
-5. After they run it, verify with `claude mcp get cail` — it should show "Connected". The user may need to start a new conversation for the tools to appear.
-6. Continue to step 4 above.
-
-This fallback is only needed for Claude Code. Codex and Gemini CLI handle the OAuth browser flow automatically.
+4. If the server shows "Needs authentication" or "Failed to connect" (Claude Code has a known issue where the OAuth browser window never opens), use the token-paste fallback:
+   a. Tell the user: "I need to connect to Kale Deploy. Please visit this link, sign in with your CUNY email, and paste the token back here."
+   b. Give them: `https://cuny.qzz.io/kale/connect`
+   c. They click **Generate token**, copy it, and paste it into the chat.
+   d. Once the user pastes the token (starts with `kale_pat_`), configure the server:
+      ```
+      claude mcp remove cail -s user 2>/dev/null
+      claude mcp add -t http -H "Authorization: Bearer <the-token>" -s user cail https://cuny.qzz.io/kale/mcp
+      ```
+   e. Verify with `claude mcp get cail` — it should show "Connected". The user may need to start a new conversation for the tools to appear.
+5. Call `register_project` to determine the canonical project slug and install state.
+6. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`. That GitHub approval is a browser handoff.
 
 ### Phase 4: Validate and deploy
 
