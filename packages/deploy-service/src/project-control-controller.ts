@@ -177,6 +177,8 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
       deploymentUrl: typeof statusResult.body.deployment_url === "string" ? statusResult.body.deployment_url : authorization.project.deploymentUrl,
       buildLogUrl: typeof statusResult.body.build_log_url === "string" ? statusResult.body.build_log_url : undefined,
       errorMessage: typeof statusResult.body.error_message === "string" ? statusResult.body.error_message : undefined,
+      errorDetail: typeof statusResult.body.error_detail === "string" ? statusResult.body.error_detail : undefined,
+      errorKind: typeof statusResult.body.error_kind === "string" ? statusResult.body.error_kind : undefined,
       updatedAt: typeof statusResult.body.updated_at === "string" ? statusResult.body.updated_at : authorization.project.updatedAt,
       repoUrl: `https://github.com/${authorization.project.githubRepo}`,
       setupUrl: buildGuidedSetupUrl(

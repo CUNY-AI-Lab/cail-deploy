@@ -9,30 +9,28 @@ Use this skill when the target runtime is CAIL Deploy.
 
 ## What CAIL Deploy is
 
-CAIL Deploy is a GitHub-first deployment platform for the CUNY AI Lab community.
+CAIL Deploy (public name: Kale Deploy) is a GitHub-first deployment platform from the CUNY AI Lab.
 
-- Students build locally with an assistant.
-- The deploy experience itself happens through GitHub.
+- Users build locally with an assistant, then deploy through GitHub.
 - Production hosting uses Cloudflare Workers for Platforms.
 - Public project URLs are host-based: `https://<project-name>.cuny.qzz.io`.
-
-The deploy control plane, not the student's local `wrangler.jsonc`, is responsible for attaching production bindings.
+- The deploy control plane attaches production bindings — the student's local `wrangler.jsonc` is not the source of truth for production.
 
 ## Default technical choices
 
 When there is no strong reason to do otherwise:
 
 - use TypeScript
-- use Hono
+- use Hono for routing
 - serve small HTML pages directly from the Worker
 - add JSON routes only where they are clearly useful
 - use D1 for structured data
-- treat R2 and KV as managed platform extras, not default self-service promises
+- treat R2 and KV as managed platform extras
 - treat AI, Vectorize, and Rooms as approval-only features
 
 ## Good first app shapes
 
-Bias toward projects that make Kale Deploy useful quickly:
+Bias toward projects that make the platform useful quickly:
 
 - exhibit or archive sites
 - course or project sites
@@ -44,43 +42,35 @@ These are usually better targets than heavy SPA stacks or apps that assume a tra
 
 ## Runtime constraints
 
-- JavaScript and TypeScript only
-- no Python
-- no native Node modules
+- JavaScript and TypeScript only — no Python
+- no native Node modules or binary addons
 - no long CPU-heavy tasks
-- do not assume a traditional Node server, filesystem, or process model
 - do not use `app.listen(...)` or frameworks that expect a long-running server process
-- avoid dependencies that require sockets, child processes, or binary addons
+- avoid dependencies that require sockets, child processes, or persistent filesystem state
+- prefer server-rendered HTML plus small JSON APIs over heavy SPA infrastructure
 
 ## Standard binding vocabulary
 
 Use these names consistently in generated code:
 
-- `DB`: D1 database
-- `FILES`: R2 bucket or project-scoped file storage facade
-- `CACHE`: KV namespace
-- `AI`: Workers AI
-- `VECTORIZE`: Vectorize index
-- `ROOMS`: Durable Object namespace
+| Name | Type | Policy |
+|------|------|--------|
+| `DB` | D1 database | Self-service |
+| `FILES` | R2 bucket | Self-service, declare in `wrangler.jsonc` |
+| `CACHE` | KV namespace | Self-service, declare in `wrangler.jsonc` |
+| `AI` | Workers AI | Approval required |
+| `VECTORIZE` | Vectorize index | Approval required |
+| `ROOMS` | Durable Object namespace | Approval required |
 
-Do not invent binding names unless the user explicitly asks.
+Not every project needs every binding. Do not invent binding names unless the user explicitly asks.
 
-Current policy defaults for platform-managed bindings are:
+To request `FILES` or `CACHE`, add the standard binding names to `wrangler.jsonc` under `r2_buckets` or `kv_namespaces`. Use placeholder local values — Kale replaces them with project-isolated resources during deployment.
 
-- `DB`, `FILES`, and `CACHE` are self-service
-- `AI`, `VECTORIZE`, and `ROOMS` require approval
-- `FILES` and `CACHE` are attached as isolated per-project resources when the repository requests them
-
-To request `FILES` or `CACHE`, add the standard binding names to `wrangler.jsonc`:
-
-- `r2_buckets` with `binding: "FILES"`
-- `kv_namespaces` with `binding: "CACHE"`
-
-Kale replaces the production bucket and namespace values during deployment, so local placeholder values are acceptable when the repository only needs the production binding.
+Do not promise AI, vector search, realtime rooms, or large asset hosting unless the user has explicit approval.
 
 ## Project structure
 
-Prefer a structure like:
+Prefer:
 
 ```text
 src/
@@ -107,45 +97,103 @@ This is usually more robust for beginners than a heavy SPA stack.
 
 ## Data patterns
 
-Use D1 for:
-
-- surveys
-- bibliographies
-- submissions
-- inventories
-- lightweight user-generated content
-
-Use R2 for:
-
-- uploaded PDFs
-- images
-- generated files
-
-Use KV for:
-
-- caching
-- feature flags
-- short configuration records
-- light session-like data
+- **D1**: surveys, bibliographies, submissions, inventories, lightweight user-generated content
+- **R2**: uploaded PDFs, images, generated files
+- **KV**: caching, feature flags, short configuration records, light session-like data
 
 ## Error handling
-
-Prefer simple, explicit failures:
 
 - validate inputs close to the edge
 - return plain-language error messages
 - avoid leaking stack traces into HTML
 - use HTTP status codes correctly
 
-## Important deployment fact
+## Agent workflow
 
-`wrangler.jsonc` is local structure and intent metadata. It is not the source of truth for production bindings in CAIL Deploy.
+The development and deployment process has four phases. The agent drives all of them.
 
-When generating code:
+### Phase 1: Build the app locally
 
-- code against the standard binding names
-- keep the config minimal
-- do not claim that a student's local Wrangler config alone provisions production resources
+1. Scaffold the project with `cail-init` (or write the files directly following the structure above).
+2. Install dependencies: `npm install`.
+3. Write the application code.
+4. Start the local dev server: `npm run dev` (runs `wrangler dev`).
+5. **Let the user preview their app at `http://localhost:8787` before moving on.** Tell them the URL, let them look at it, and ask for feedback. The local dev server runs the real Cloudflare Workers runtime, so what works locally will work when deployed.
+6. Iterate on the code based on user feedback. The dev server picks up changes automatically.
+7. Run `npm run check` to catch TypeScript errors before pushing.
+
+Do not skip the local preview step. The user should see their app working before anything goes to GitHub.
+
+### Phase 2: Connect to GitHub
+
+1. Create or connect a GitHub repository.
+2. Commit and push the code.
+
+### Phase 3: Connect Kale Deploy
+
+1. If the harness is not already connected to Kale Deploy, connect to the remote MCP server at `https://cuny.qzz.io/kale/mcp`.
+2. Let the harness complete MCP OAuth through the browser automatically.
+3. Confirm the harness can see Kale tools (`register_project`, `validate_project`, etc.) before proceeding.
+4. Call `register_project` to determine the canonical project slug and install state.
+5. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`. That GitHub approval is a browser handoff.
+
+### Phase 4: Validate and deploy
+
+1. Optionally call `validate_project` for a build-only check before going live. This builds from the GitHub ref without deploying.
+2. Poll `get_build_job_status` until it reaches `passed` or `failed`.
+3. If validation fails, read the `error_detail` field — it contains the build output (last 12KB of logs). Use it to diagnose the problem, fix the code, push again, and re-validate.
+4. For a real deployment, push to the default branch (`main`).
+5. Poll `get_project_status` until the deployment completes.
+
+### When builds fail
+
+The `get_build_job_status` and `get_project_status` MCP tools return:
+
+- `error_message`: a short summary of what went wrong
+- `error_detail`: the build output tail (up to 12KB of logs) — use this to diagnose the actual error
+- `error_kind`: one of `build_failure`, `needs_adaptation`, or `unsupported`
+
+Common failure patterns:
+
+- **`needs_adaptation`**: the project is missing `wrangler.jsonc` or a Worker entrypoint. Run `cail-init` or add the config manually.
+- **`unsupported`**: the project type cannot run on Workers (Python, traditional Node server). Explain the constraint to the user.
+- **`build_failure`**: a dependency failed to install, TypeScript errors, or bundler errors. Read `error_detail` for the specific error and fix it.
+
+After fixing, push again and the deploy service will rebuild automatically.
+
+## Secret management
+
+Project secrets require an extra GitHub user-authorization step. Only initiate this when the user needs to manage secrets.
+
+1. Call `get_repository_status` to get the `projectName` slug.
+2. Call `set_project_secret` with `projectName`, `secretName`, and `value`.
+3. If Kale returns `nextAction="connect_github_user"`, stop and give the user the returned `connectGitHubUserUrl`.
+4. After the user completes that browser step, call the same secret tool again.
+5. If the project is already live, tell the user whether Kale updated the live site immediately or whether the change applies on the next deploy.
+6. Never echo secret values back to the user.
+
+Secret tools use the Kale `projectName` slug, not `owner/repo`. If you only know the repository, call `get_repository_status` first.
+
+The browser settings page is a private admin console — only send users there for project-admin tasks such as secrets, not for ordinary deploy or status checks.
+
+## Deployment-ready checklist
+
+Before asking the user to validate or deploy, the repository should include:
+
+- `package.json` with `dev` and `check` scripts
+- `wrangler.jsonc`
+- `src/index.ts`
+- `AGENTS.md`
+- a root route at `/`
+- a health route at `/api/health`
+
+It should not depend on `app.listen(...)`, Python, native Node modules, or filesystem-backed state.
+
+## Naming conventions
+
+- Project names must be lowercase kebab-case, no longer than 63 characters.
+- Prefer names under 40 characters.
+- Some slugs are reserved for platform infrastructure (including `runtime`).
 
 ## Things to avoid
 
@@ -155,112 +203,4 @@ When generating code:
 - large client-side state systems
 - worker-incompatible ORMs without a proven D1 path
 - overbuilt abstractions for small class projects
-
-## When asked to scaffold
-
-Create a minimal Hono starter with:
-
-- a root HTML route
-- `/api/health`
-- package scripts for `wrangler dev` and TypeScript checking
-- an `AGENTS.md` that records the canonical CAIL runtime assumptions
-- a thin `CLAUDE.md` that points back to `AGENTS.md`
-
-If a slash command or scaffolding script is available, use it. Otherwise, write the files directly.
-
-## Deployment-ready checklist
-
-Before you ask the user to validate or deploy, make sure the repo usually has:
-
-- `package.json`
-- `wrangler.jsonc`
-- `src/index.ts`
-- `AGENTS.md`
-- a root route at `/`
-- `/api/health`
-- `npm run check`
-- `npm run dev`
-
-## Preferred deployment loop for agents
-
-After scaffolding or adapting the repo, use this loop:
-
-1. Run local preflight:
-   - `npm run check`
-   - `npx wrangler dev`
-2. Create or connect the GitHub repo.
-3. If the harness is not already connected to Kale Deploy, connect it to the remote MCP server:
-   - `POST https://cuny.qzz.io/kale/mcp`
-   - Prefer the direct remote MCP connection when possible so the OAuth/browser flow is visible.
-4. Let the harness complete MCP OAuth through the browser:
-   - protected resource metadata: `GET /.well-known/oauth-protected-resource/mcp`
-   - authorization server metadata: `GET /.well-known/oauth-authorization-server`
-   - registration: `POST /oauth/register`
-   - browser login: `GET /api/oauth/authorize`
-   - token exchange: `POST /oauth/token`
-5. Use MCP tools first:
-   - `register_project`
-   - `validate_project`
-   - `get_build_job_status`
-   - `get_project_status`
-   - confirm the harness can actually see these tools before you say Kale Deploy is connected
-   - in Claude Code, the most reliable auth path is the interactive `/mcp` screen
-   - if the harness opens a browser login, use only the newest URL from that exact attempt
-6. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`.
-7. After the install step, continue with one of:
-   - `validate_project` for a non-production branch or preflight build
-   - push to the default branch for a real deployment
-8. Poll:
-   - `get_build_job_status` for a validation job
-   - `get_project_status` for deployment state
-
-Use the structured MCP or JSON responses instead of scraping GitHub check-run prose.
-
-Do not ask the user to confirm a second GitHub account connection for ordinary deploys.
-
-Only ask for the extra GitHub user-auth step when you are managing project secrets:
-
-- `list_project_secrets`
-- `set_project_secret`
-- `delete_project_secret`
-
-Treat the browser settings page as a private admin console, not a general project page:
-
-- only send the user there for project-admin tasks such as secrets
-- do not use it as the default next step for ordinary deploy, validate, or status checks
-- only hand out the exact settings URL when the user needs project administration
-- assume it is behind CUNY sign-in and repo-admin verification
-
-If one of those tools returns `nextAction="connect_github_user"`, stop and hand the user the returned `connectGitHubUserUrl`.
-
-For those secret tools, pass the Kale `projectName` slug, not `owner/repo`.
-If you only know the repository, call `get_repository_status` first and use its returned `projectName`.
-
-### Secret-management example
-
-For a repo `szweibel/kale-cache-smoke-test` and a secret named `OPENAI_API_KEY`:
-
-1. Call `get_repository_status` for `szweibel/kale-cache-smoke-test`.
-2. Read the returned `projectName`.
-3. Call `set_project_secret` with:
-   - `projectName`
-   - `secretName="OPENAI_API_KEY"`
-   - `value="<the secret value>"`
-4. If Kale returns `nextAction="connect_github_user"`, stop immediately and give the user the returned `connectGitHubUserUrl`.
-5. After the user finishes that browser step, call the same secret tool again with the same arguments.
-6. If the tool succeeds, report that the secret is saved. Do not echo the secret value back to the user.
-7. If the project is already live, tell the user whether Kale updated the live site immediately or whether the change will apply on the next deploy.
-
-## Worked example
-
-For a repo `szweibel/cail-deploy-smoke-test`:
-
-1. Add the remote MCP server in Claude Code, Codex, or Gemini CLI.
-2. Let the harness open the browser and complete MCP OAuth automatically.
-3. Call `register_project` with `repository="szweibel/cail-deploy-smoke-test"`.
-4. If needed, hand the user the returned `guidedInstallUrl`.
-5. Call `validate_project` for `ref="main"` without deploying.
-6. Poll `get_build_job_status` until it reaches `passed` or `failed`.
-7. For a real deploy, push to the default branch and poll `get_project_status`.
-
-If the repo is already covered by the GitHub App, the only remaining human step is the GitHub permission click during install. Everything else should be agent-driven.
+- skipping the local preview step

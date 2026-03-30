@@ -104,7 +104,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   ]);
   assert.equal(body.agent_api.runtime_manifest, body.well_known_runtime_url);
   assert.equal(body.agent_api.mcp_endpoint, "https://deploy.example/mcp");
-  assert.equal(body.agent_api.oauth_authorization_metadata, "https://auth.example/.well-known/oauth-authorization-server");
+  assert.equal(body.agent_api.oauth_authorization_metadata, "https://deploy.example/.well-known/oauth-authorization-server");
   assert.equal(body.agent_api.oauth_protected_resource_metadata, "https://deploy.example/.well-known/oauth-protected-resource/mcp");
   assert.equal(body.agent_api.repository_status_template, "https://deploy.example/api/repositories/{owner}/{repo}/status");
   assert.equal(body.agent_api.validate_project, "https://deploy.example/api/validate");
@@ -127,9 +127,9 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.equal(body.agent_api.project_secrets_template, "https://deploy.example/api/projects/{projectName}/secrets");
   assert.equal(body.mcp.endpoint, "https://deploy.example/mcp");
   assert.equal(body.mcp.transport, "streamable_http");
-  assert.equal(body.mcp.auth.authorization_metadata_url, "https://auth.example/.well-known/oauth-authorization-server");
+  assert.equal(body.mcp.auth.authorization_metadata_url, "https://deploy.example/.well-known/oauth-authorization-server");
   assert.equal(body.mcp.auth.protected_resource_metadata_url, "https://deploy.example/.well-known/oauth-protected-resource/mcp");
-  assert.equal(body.mcp.auth.dynamic_client_registration_endpoint, "https://auth.example/oauth/register");
+  assert.equal(body.mcp.auth.dynamic_client_registration_endpoint, "https://deploy.example/oauth/register");
   assert.deepEqual(body.mcp.tools, [
     "get_runtime_manifest",
     "test_connection",
@@ -166,7 +166,7 @@ test("friendly base-path hosting works under /kale", async () => {
   };
   assert.equal(metadata.issuer, "https://auth.ailab.gc.cuny.edu");
   assert.equal(metadata.authorization_endpoint, "https://ailab.gc.cuny.edu/kale/api/oauth/authorize");
-  assert.equal(metadata.token_endpoint, "https://auth.ailab.gc.cuny.edu/oauth/token");
+  assert.equal(metadata.token_endpoint, "https://ailab.gc.cuny.edu/kale/oauth/token");
 });
 
 test("public connection health explains the MCP auth handoff", async () => {
@@ -387,7 +387,7 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   const prmResponse = await fetchApp("GET", "/.well-known/oauth-protected-resource/mcp", env);
   assert.equal(prmResponse.status, 200);
   const prm = await prmResponse.json() as { authorization_servers: string[]; resource: string };
-  assert.deepEqual(prm.authorization_servers, ["https://auth.example"]);
+  assert.deepEqual(prm.authorization_servers, ["https://deploy.example"]);
   assert.equal(prm.resource, "https://deploy.example/mcp");
 
   for (const aliasPath of [
@@ -411,8 +411,8 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   };
   assert.equal(metadata.issuer, "https://auth.example");
   assert.equal(metadata.authorization_endpoint, "https://deploy.example/api/oauth/authorize");
-  assert.equal(metadata.token_endpoint, "https://auth.example/oauth/token");
-  assert.equal(metadata.registration_endpoint, "https://auth.example/oauth/register");
+  assert.equal(metadata.token_endpoint, "https://deploy.example/oauth/token");
+  assert.equal(metadata.registration_endpoint, "https://deploy.example/oauth/register");
 
   for (const aliasPath of [
     "/.well-known/oauth-authorization-server/mcp",

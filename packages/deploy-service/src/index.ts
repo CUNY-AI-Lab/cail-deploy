@@ -3047,7 +3047,7 @@ function resolveMcpOauthBaseUrl(env: Env, requestUrl: string): string {
 function buildOauthProtectedResourceMetadata(serviceBaseUrl: string, oauthBaseUrl: string) {
   return {
     resource: `${serviceBaseUrl}/mcp`,
-    authorization_servers: [oauthBaseUrl],
+    authorization_servers: [serviceBaseUrl],
     scopes_supported: [MCP_REQUIRED_SCOPE],
     resource_name: "CAIL Deploy MCP",
     resource_documentation: serviceBaseUrl
@@ -3058,8 +3058,8 @@ function buildOauthAuthorizationServerMetadata(oauthBaseUrl: string, serviceBase
   return {
     issuer: oauthBaseUrl,
     authorization_endpoint: `${serviceBaseUrl}/api/oauth/authorize`,
-    token_endpoint: `${oauthBaseUrl}/oauth/token`,
-    registration_endpoint: `${oauthBaseUrl}/oauth/register`,
+    token_endpoint: `${serviceBaseUrl}/oauth/token`,
+    registration_endpoint: `${serviceBaseUrl}/oauth/register`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code"],
     token_endpoint_auth_methods_supported: ["none"],
@@ -3388,7 +3388,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
   const publicRuntimeUrl = resolvePublicRuntimeManifestUrl(env, serviceBaseUrl);
   const reservedProjectNames = Array.from(resolveReservedProjectNames(env, serviceBaseUrl)).sort();
   const oauthBaseUrl = resolveMcpOauthBaseUrl(env, serviceBaseUrl);
-  const oauthAuthorizationMetadataUrl = `${oauthBaseUrl}/.well-known/oauth-authorization-server`;
+  const oauthAuthorizationMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-authorization-server`;
   const oauthProtectedResourceMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`;
   return {
     name: "cail-runtime",
@@ -3517,7 +3517,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
         scheme: "oauth2.1",
         authorization_metadata_url: oauthAuthorizationMetadataUrl,
         protected_resource_metadata_url: oauthProtectedResourceMetadataUrl,
-        dynamic_client_registration_endpoint: `${oauthBaseUrl}/oauth/register`,
+        dynamic_client_registration_endpoint: `${serviceBaseUrl}/oauth/register`,
         browser_login_url: `${serviceBaseUrl}/api/oauth/authorize`
       },
       tools: [
@@ -3566,9 +3566,9 @@ function createDeployServiceMcpServer(
     getRepositoryLifecycle: async (repository, projectName) =>
       (await buildRepositoryLifecycleState(env, requestUrl, repository, projectName)).payload,
     queueValidation: async (input) => queueValidationJob(env, requestUrl, input),
-    getProjectStatus: async (projectName) => buildProjectStatusResponse(env, projectName),
+    getProjectStatus: async (projectName) => buildProjectStatusResponse(env, projectName, { includeSensitive: true }),
     summarizeProjectStatus: summarizeProjectStatusPayload,
-    getBuildJobStatus: async (jobId) => buildBuildJobStatusResponse(env, jobId),
+    getBuildJobStatus: async (jobId) => buildBuildJobStatusResponse(env, jobId, { includeSensitive: true }),
     summarizeBuildJobStatus: summarizeBuildJobStatusPayload,
     listProjectSecrets: async (projectName) => {
       const authorization = await authorizeProjectSecretsAccess(
@@ -3663,9 +3663,10 @@ function summarizeBuildJobStatusPayload(payload: Record<string, unknown>): strin
   const jobId = typeof payload.jobId === "string" ? payload.jobId : "build job";
   const status = typeof payload.status === "string" ? payload.status : "unknown";
   const errorMessage = typeof payload.error_message === "string" ? payload.error_message : undefined;
+  const hasDetail = typeof payload.error_detail === "string" && payload.error_detail.length > 0;
 
   if (errorMessage) {
-    return `${jobId} is ${status}: ${errorMessage}`;
+    return `${jobId} is ${status}: ${errorMessage}${hasDetail ? " Build output is included in the error_detail field." : ""}`;
   }
 
   return `${jobId} is currently ${status}.`;

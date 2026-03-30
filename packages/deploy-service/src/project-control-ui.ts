@@ -294,6 +294,8 @@ export function renderProjectControlPanelPage(input: {
   deploymentUrl?: string;
   buildLogUrl?: string;
   errorMessage?: string;
+  errorDetail?: string;
+  errorKind?: string;
   updatedAt: string;
   repoUrl: string;
   setupUrl: string;
@@ -313,6 +315,8 @@ export function renderProjectControlPanelPage(input: {
     deploymentUrl,
     buildLogUrl,
     errorMessage,
+    errorDetail,
+    errorKind,
     updatedAt,
     repoUrl,
     setupUrl,
@@ -725,6 +729,43 @@ export function renderProjectControlPanelPage(input: {
         padding: 9px 20px;
       }
 
+      .build-log-detail {
+        margin-top: 12px;
+        border: 1px solid var(--status-border, var(--border));
+        border-radius: 8px;
+        background: var(--bg);
+      }
+      .build-log-detail summary {
+        cursor: pointer;
+        padding: 10px 14px;
+        font-size: 0.88rem;
+        color: var(--muted);
+        user-select: none;
+      }
+      .build-log-detail summary:hover {
+        color: var(--ink);
+      }
+      .build-log-detail[open] summary {
+        border-bottom: 1px solid var(--border);
+      }
+      .build-log-intro {
+        padding: 10px 14px 0;
+        font-size: 0.88rem;
+        color: var(--muted);
+      }
+      .build-log-detail pre {
+        margin: 0;
+        padding: 12px 14px;
+        max-height: 400px;
+        overflow: auto;
+        font-family: var(--font-technical, ui-monospace, SFMono-Regular, Menlo, monospace);
+        font-size: 0.82rem;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: var(--ink);
+      }
+
       @media (min-width: 640px) {
         .field-grid {
           grid-template-columns: 1fr 1fr;
@@ -751,6 +792,16 @@ export function renderProjectControlPanelPage(input: {
         </div>
         ${flash ? `<div class="flash-msg ${toneClass}"><p>${escapeHtml(flash.message)}</p></div>` : ""}
         ${errorMessage ? `<div class="flash-msg notice notice-warning"><p><strong>Latest issue:</strong> ${escapeHtml(errorMessage)}</p></div>` : ""}
+        ${errorDetail ? `<details class="build-log-detail"${isFailed ? " open" : ""}>
+          <summary>Build output</summary>
+          <p class="build-log-intro">${escapeHtml(
+            errorKind === "needs_adaptation"
+              ? "This project needs changes before it can deploy:"
+              : errorKind === "unsupported"
+                ? "This project type is not supported:"
+                : "The build produced this output:")}</p>
+          <pre><code>${escapeHtml(errorDetail)}</code></pre>
+        </details>` : ""}
         <div class="deploy-panel">
           <div class="deploy-url">
             <span class="deploy-url-label">Live at</span>
