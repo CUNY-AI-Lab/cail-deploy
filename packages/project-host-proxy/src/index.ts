@@ -194,6 +194,7 @@ function rewriteRequestForInternalGateway(request: Request, env: Env, projectNam
   }
   headers.set("x-forwarded-host", requestUrl.host);
   headers.set("x-forwarded-proto", requestUrl.protocol.replace(/:$/, ""));
+  headers.set("x-cail-public-routing-mode", "host");
 
   return new Request(internalBaseUrl.toString(), {
     body: request.body,

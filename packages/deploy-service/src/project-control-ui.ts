@@ -11,6 +11,12 @@ export type ProjectControlSecretListItem = {
   updatedAt: string;
 };
 
+export type ProjectControlDomainListItem = {
+  domainLabel: string;
+  url: string;
+  updatedAt: string;
+};
+
 export function renderGitHubUserAuthSuccessPage(input: {
   serviceBaseUrl: string;
   githubLogin: string;
@@ -297,6 +303,11 @@ export function renderProjectControlPanelPage(input: {
   updatedAt: string;
   repoUrl: string;
   setupUrl: string;
+  domains: {
+    primaryDomainLabel: string;
+    primaryUrl: string;
+    redirects: ProjectControlDomainListItem[];
+  };
   secrets: {
     count: number;
     secrets: ProjectControlSecretListItem[];
@@ -316,6 +327,7 @@ export function renderProjectControlPanelPage(input: {
     updatedAt,
     repoUrl,
     setupUrl,
+    domains,
     secrets,
     formToken,
     flash
@@ -364,6 +376,11 @@ export function renderProjectControlPanelPage(input: {
         margin-top: 20px;
         animation: fadeUp 0.4s ease both;
         animation-delay: 0.08s;
+      }
+      .domains-panel {
+        margin-top: 20px;
+        animation: fadeUp 0.4s ease both;
+        animation-delay: 0.04s;
       }
 
       .header-row {
@@ -534,6 +551,71 @@ export function renderProjectControlPanelPage(input: {
         font-size: 0.88rem;
         color: var(--muted);
       }
+      .domain-primary-card {
+        margin-top: 16px;
+        padding: 18px 20px;
+        border-radius: 14px;
+        background: #fafbfd;
+        border: 1px solid var(--border);
+      }
+      .domain-primary-label {
+        margin: 0;
+        font-size: 0.76rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      .domain-primary-url {
+        margin: 8px 0 0;
+      }
+      .domain-primary-url a {
+        font-family: var(--font-technical);
+        font-size: 1.02rem;
+        font-weight: 500;
+        color: var(--accent);
+        text-decoration: none;
+        word-break: break-all;
+      }
+      .domain-primary-url a:hover {
+        text-decoration: underline;
+      }
+      .domain-list {
+        list-style: none;
+        margin: 16px 0 0;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .domain-item {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 16px;
+        background: white;
+      }
+      .domain-item + .domain-item {
+        border-top: 1px solid var(--border);
+      }
+      .domain-item p {
+        margin: 0;
+      }
+      .domain-name {
+        font-family: var(--font-technical);
+        font-size: 0.9rem;
+        font-weight: 500;
+        color: var(--ink);
+      }
+      .domain-url {
+        margin-top: 2px;
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+      .domain-url a {
+        color: inherit;
+      }
       .secret-list {
         list-style: none;
         margin: 16px 0 0;
@@ -693,6 +775,62 @@ export function renderProjectControlPanelPage(input: {
             ${buildLogUrl ? `<span class="deploy-meta-dot"></span><span class="deploy-meta-item"><a href="${escapeHtml(buildLogUrl)}">Build log</a></span>` : ""}
           </div>
         </div>
+      </section>
+
+      <section class="card domains-panel">
+        <div class="section-header">
+          <h2>Domains</h2>
+          <span class="count-badge">${1 + domains.redirects.length}</span>
+        </div>
+        <p class="section-desc">Choose the main Kale URL for this project and keep older URLs redirecting there.</p>
+        <div class="domain-primary-card">
+          <p class="domain-primary-label">Primary Kale URL</p>
+          <p class="domain-primary-url"><a href="${escapeHtml(domains.primaryUrl)}">${escapeHtml(domains.primaryUrl)}</a></p>
+        </div>
+        ${domains.redirects.length > 0
+          ? `<ul class="domain-list">
+              ${domains.redirects.map((domain) => `
+                <li class="domain-item">
+                  <div>
+                    <p><code class="domain-name">${escapeHtml(domain.domainLabel)}</code></p>
+                    <p class="domain-url"><a href="${escapeHtml(domain.url)}">${escapeHtml(domain.url)}</a> &middot; redirects to the primary URL</p>
+                  </div>
+                  <form class="inline-form" method="post" action="${escapeHtml(`${controlBaseUrl}/projects/${encodeURIComponent(projectName)}/control/domains/${encodeURIComponent(domain.domainLabel)}/delete`)}">
+                    <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
+                    <button class="btn-delete" type="submit">Delete</button>
+                  </form>
+                </li>
+              `).join("")}
+            </ul>`
+          : `<div class="notice" style="margin-top: 16px;"><p>No redirecting Kale URLs yet.</p></div>`}
+        <form class="secret-form" method="post" action="${escapeHtml(`${controlBaseUrl}/projects/${encodeURIComponent(projectName)}/control/domains/primary`)}">
+          <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
+          <p class="secret-form-title">Change the primary URL label</p>
+          <div class="field-grid">
+            <div class="field-group">
+              <label for="primary-domain-label">Label</label>
+              <input id="primary-domain-label" name="domainLabel" value="${escapeHtml(domains.primaryDomainLabel)}" required autocomplete="off" spellcheck="false" />
+              <p class="field-help">Lowercase, numbers, hyphens. The previous label will redirect here.</p>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="button" type="submit">Save primary URL</button>
+          </div>
+        </form>
+        <form class="secret-form" method="post" action="${escapeHtml(`${controlBaseUrl}/projects/${encodeURIComponent(projectName)}/control/domains/redirects`)}">
+          <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
+          <p class="secret-form-title">Add a redirecting Kale URL</p>
+          <div class="field-grid">
+            <div class="field-group">
+              <label for="redirect-domain-label">Label</label>
+              <input id="redirect-domain-label" name="domainLabel" placeholder="old-project-name" required autocomplete="off" spellcheck="false" />
+              <p class="field-help">Visitors on this URL will be sent to the primary Kale URL.</p>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="button" type="submit">Add redirect</button>
+          </div>
+        </form>
       </section>
 
       <section class="card secrets-panel">

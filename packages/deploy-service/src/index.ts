@@ -27,7 +27,8 @@ import {
   renderGitHubRegisterPage,
   renderManifestErrorPage,
   renderManifestSuccessPage,
-  renderOauthAuthorizationErrorPage
+  renderOauthAuthorizationErrorPage,
+  renderOauthLoopbackContinuePage
 } from "./repository-onboarding-ui";
 import {
   createGitHubInstallResponse,
@@ -41,9 +42,19 @@ import {
 import {
   createProjectAdminEntryResponse,
   createProjectControlPanelResponse,
+  createProjectControlPrimaryDomainSetResponse,
+  createProjectControlRedirectAddResponse,
+  createProjectControlRedirectDeleteResponse,
   createProjectControlSecretDeleteResponse,
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
+import {
+  addProjectRedirectDomainLabel,
+  buildProjectDomainsPayload,
+  ensurePrimaryProjectDomainLabel,
+  removeProjectRedirectDomainLabel,
+  setProjectPrimaryDomainLabel
+} from "./project-domains";
 import {
   buildProjectSecretBindings,
   buildProjectSecretsListPayload,
@@ -73,6 +84,7 @@ import {
   getLatestBuildJobForProject,
   getLatestProjectForRepository,
   getPreferredProjectNameForRepository,
+  getProjectDomain,
   getProject,
   listExpiredRetainedFailedDeployments,
   listProjects,
@@ -409,12 +421,28 @@ deployServiceApp.get("/api/oauth/authorize", async (c) => {
     const redirect = new URL(normalizedRedirectUri);
     redirect.searchParams.set("code", code);
     redirect.searchParams.set("state", state);
+    if (isLoopbackRedirectUri(redirect)) {
+      return c.html(renderOauthLoopbackContinuePage({
+        callbackUrl: redirect.toString(),
+        appName: "your agent"
+      }));
+    }
     return Response.redirect(redirect.toString(), 302);
   } catch (error) {
     const httpError = asHttpError(error);
     return c.html(renderOauthAuthorizationErrorPage(httpError.message), httpError.status);
   }
 });
+
+function isLoopbackRedirectUri(url: URL): boolean {
+  const hostname = url.hostname.toLowerCase();
+  return url.protocol === "http:" && (
+    hostname === "127.0.0.1" ||
+    hostname === "localhost" ||
+    hostname === "[::1]" ||
+    hostname === "::1"
+  );
+}
 
 deployServiceApp.post("/oauth/token", async (c) => {
   try {
@@ -1475,7 +1503,60 @@ deployServiceApp.get("/projects/:projectName/control", async (c) => {
       authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
     buildProjectStatusResponse,
     buildProjectSecretsListPayload,
+    buildProjectDomainsPayload,
     resolveMcpOauthSecret
+  });
+});
+
+deployServiceApp.post("/projects/:projectName/control/domains/primary", async (c) => {
+  return createProjectControlPrimaryDomainSetResponse({
+    env: c.env,
+    request: c.req.raw,
+    projectName: c.req.param("projectName"),
+    requireCloudflareAccessIdentity,
+    resolveServiceBaseUrl,
+    resolveMcpOauthSecret,
+    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
+      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
+    normalizeDomainLabel: (value) =>
+      normalizeRequestedProjectName(value, resolveReservedProjectNames(c.env, resolveServiceBaseUrl(c.env, c.req.raw.url))),
+    setPrimaryProjectDomainLabel: async (env, authorization, domainLabel) =>
+      setProjectPrimaryDomainLabel(env, authorization.project, domainLabel)
+  });
+});
+
+deployServiceApp.post("/projects/:projectName/control/domains/redirects", async (c) => {
+  return createProjectControlRedirectAddResponse({
+    env: c.env,
+    request: c.req.raw,
+    projectName: c.req.param("projectName"),
+    requireCloudflareAccessIdentity,
+    resolveServiceBaseUrl,
+    resolveMcpOauthSecret,
+    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
+      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
+    normalizeDomainLabel: (value) =>
+      normalizeRequestedProjectName(value, resolveReservedProjectNames(c.env, resolveServiceBaseUrl(c.env, c.req.raw.url))),
+    addProjectRedirectDomainLabel: async (env, authorization, domainLabel) =>
+      addProjectRedirectDomainLabel(env, authorization.project, domainLabel)
+  });
+});
+
+deployServiceApp.post("/projects/:projectName/control/domains/:domainLabel/delete", async (c) => {
+  return createProjectControlRedirectDeleteResponse({
+    env: c.env,
+    request: c.req.raw,
+    projectName: c.req.param("projectName"),
+    domainLabel: c.req.param("domainLabel"),
+    requireCloudflareAccessIdentity,
+    resolveServiceBaseUrl,
+    resolveMcpOauthSecret,
+    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
+      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
+    normalizeDomainLabel: (value) =>
+      normalizeRequestedProjectName(value, resolveReservedProjectNames(c.env, resolveServiceBaseUrl(c.env, c.req.raw.url))),
+    removeProjectRedirectDomainLabel: async (env, authorization, domainLabel) =>
+      removeProjectRedirectDomainLabel(env, authorization.project, domainLabel)
   });
 });
 
@@ -2143,9 +2224,15 @@ async function deployArtifact(
   const cloudflareApiToken = resolveRequiredCloudflareApiToken(env);
 
   assertAllowedProjectName(metadata.projectName, env, env.DEPLOY_SERVICE_BASE_URL);
-  const deploymentUrl = buildProjectDeploymentUrl(env, metadata.projectName);
   const repositoryFullName = formatRepositoryFullName(metadata.ownerLogin, metadata.githubRepo);
   const now = new Date().toISOString();
+  const primaryDomainLabel = await ensurePrimaryProjectDomainLabel(
+    env,
+    metadata.projectName,
+    repositoryFullName,
+    now
+  );
+  const deploymentUrl = buildProjectDeploymentUrl(env, primaryDomainLabel);
   const policy = await ensureProjectPolicy(env.CONTROL_PLANE_DB, repositoryFullName, metadata.projectName, now);
   assertDeploymentPolicy(metadata, policy);
   const projectClaim = await getProjectClaim(env.CONTROL_PLANE_DB, metadata.projectName, repositoryFullName);
@@ -3027,10 +3114,10 @@ function buildOauthProtectedResourceMetadata(serviceBaseUrl: string, oauthBaseUr
   };
 }
 
-function buildOauthAuthorizationServerMetadata(oauthBaseUrl: string, serviceDocumentationUrl: string) {
+function buildOauthAuthorizationServerMetadata(oauthBaseUrl: string, serviceBaseUrl: string) {
   return {
     issuer: oauthBaseUrl,
-    authorization_endpoint: `${oauthBaseUrl}/api/oauth/authorize`,
+    authorization_endpoint: `${serviceBaseUrl}/api/oauth/authorize`,
     token_endpoint: `${oauthBaseUrl}/oauth/token`,
     registration_endpoint: `${oauthBaseUrl}/oauth/register`,
     response_types_supported: ["code"],
@@ -3038,7 +3125,7 @@ function buildOauthAuthorizationServerMetadata(oauthBaseUrl: string, serviceDocu
     token_endpoint_auth_methods_supported: ["none"],
     code_challenge_methods_supported: ["S256"],
     scopes_supported: [MCP_REQUIRED_SCOPE],
-    service_documentation: serviceDocumentationUrl
+    service_documentation: serviceBaseUrl
   };
 }
 
@@ -3117,7 +3204,7 @@ function buildConnectionHealthPayload(env: Env, serviceBaseUrl: string, identity
     mcpEndpoint: `${serviceBaseUrl}/mcp`,
     oauthProtectedResourceMetadata: `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`,
     oauthAuthorizationMetadata: `${oauthBaseUrl}/.well-known/oauth-authorization-server`,
-    authorizationUrl: `${oauthBaseUrl}/api/oauth/authorize`,
+    authorizationUrl: `${serviceBaseUrl}/api/oauth/authorize`,
     githubAppName: appName,
     githubAppInstallUrl: appSlug ? githubAppInstallUrl(appSlug) : undefined,
     authenticated,
@@ -3491,7 +3578,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
         authorization_metadata_url: oauthAuthorizationMetadataUrl,
         protected_resource_metadata_url: oauthProtectedResourceMetadataUrl,
         dynamic_client_registration_endpoint: `${oauthBaseUrl}/oauth/register`,
-        browser_login_url: `${oauthBaseUrl}/api/oauth/authorize`
+        browser_login_url: `${serviceBaseUrl}/api/oauth/authorize`
       },
       tools: [
         "get_runtime_manifest",
@@ -4164,12 +4251,15 @@ async function getProjectClaim(
   claimedRepositoryFullName?: string;
   conflict: boolean;
 }> {
-  const [project, latestJob] = await Promise.all([
+  const [project, latestJob, domain] = await Promise.all([
     getProject(db, projectName),
-    getLatestBuildJobForProject(db, projectName)
+    getLatestBuildJobForProject(db, projectName),
+    getProjectDomain(db, projectName)
   ]);
   const claimedRepositoryFullName = project
     ? formatRepositoryFullName(project.ownerLogin, project.githubRepo)
+    : domain
+      ? domain.githubRepo
     : latestJob
       ? formatRepositoryFullName(latestJob.repository.ownerLogin, latestJob.repository.name)
       : undefined;

@@ -85,11 +85,11 @@ type ProjectAdminAuthDependencies<Env extends ProjectAdminAuthEnv> = {
 };
 
 export function buildGitHubUserSecretsConnectUrl(
-  oauthBaseUrl: string,
+  browserBaseUrl: string,
   projectName: string,
   options?: { repositoryFullName?: string; returnTo?: string }
 ): string {
-  const url = new URL(`${oauthBaseUrl}/api/github/user-auth/start`);
+  const url = new URL(`${browserBaseUrl}/api/github/user-auth/start`);
   url.searchParams.set("projectName", projectName);
   if (options?.repositoryFullName) {
     url.searchParams.set("repositoryFullName", options.repositoryFullName);
@@ -248,9 +248,8 @@ export async function authorizeProjectSecretsAccess<Env extends ProjectAdminAuth
   dependencies: ProjectAdminAuthDependencies<Env>
 ): Promise<ProjectSecretsAuthorization> {
   const serviceBaseUrl = dependencies.resolveServiceBaseUrl(env, requestUrl);
-  const oauthBaseUrl = dependencies.resolveMcpOauthBaseUrl(env, requestUrl);
   const connection = dependencies.buildConnectionHealthPayload(env, serviceBaseUrl, identity);
-  const connectGitHubUserUrl = buildGitHubUserSecretsConnectUrl(oauthBaseUrl, projectName);
+  const connectGitHubUserUrl = buildGitHubUserSecretsConnectUrl(serviceBaseUrl, projectName);
   let authenticatedIdentity: AuthenticatedAgentRequestIdentity;
 
   try {

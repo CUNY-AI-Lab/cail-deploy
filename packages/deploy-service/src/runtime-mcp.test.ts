@@ -165,7 +165,7 @@ test("friendly base-path hosting works under /kale", async () => {
     token_endpoint: string;
   };
   assert.equal(metadata.issuer, "https://auth.ailab.gc.cuny.edu");
-  assert.equal(metadata.authorization_endpoint, "https://auth.ailab.gc.cuny.edu/api/oauth/authorize");
+  assert.equal(metadata.authorization_endpoint, "https://ailab.gc.cuny.edu/kale/api/oauth/authorize");
   assert.equal(metadata.token_endpoint, "https://auth.ailab.gc.cuny.edu/oauth/token");
 });
 
@@ -193,7 +193,7 @@ test("public connection health explains the MCP auth handoff", async () => {
   assert.equal(body.mcpEndpoint, "https://deploy.example/mcp");
   assert.equal(body.connectionHealthUrl, "https://deploy.example/.well-known/kale-connection.json");
   assert.equal(body.oauthAuthorizationMetadata, "https://auth.example/.well-known/oauth-authorization-server");
-  assert.equal(body.authorizationUrl, "https://auth.example/api/oauth/authorize");
+  assert.equal(body.authorizationUrl, "https://deploy.example/api/oauth/authorize");
   assert.equal(body.deploymentTrigger, "github_push_to_default_branch");
   assert.equal(body.localFolderUploadSupported, false);
 });
@@ -410,7 +410,7 @@ test("oauth metadata, registration, authorization, and token exchange work for r
     registration_endpoint: string;
   };
   assert.equal(metadata.issuer, "https://auth.example");
-  assert.equal(metadata.authorization_endpoint, "https://auth.example/api/oauth/authorize");
+  assert.equal(metadata.authorization_endpoint, "https://deploy.example/api/oauth/authorize");
   assert.equal(metadata.token_endpoint, "https://auth.example/oauth/token");
   assert.equal(metadata.registration_endpoint, "https://auth.example/oauth/register");
 
@@ -450,8 +450,13 @@ test("oauth metadata, registration, authorization, and token exchange work for r
       "cf-access-authenticated-user-email": "person@cuny.edu"
     }
   );
-  assert.equal(authorizeResponse.status, 302);
-  const redirect = new URL(authorizeResponse.headers.get("location") ?? "");
+  assert.equal(authorizeResponse.status, 200);
+  const authorizeHtml = await authorizeResponse.text();
+  assert.match(authorizeHtml, /Return to your agent/);
+  assert.match(authorizeHtml, /Handing off to your local agent/);
+  const callbackMatch = authorizeHtml.match(/const callbackUrl = "([^"]+)";/);
+  assert.ok(callbackMatch);
+  const redirect = new URL(JSON.parse(`"${callbackMatch?.[1] ?? ""}"`));
   const code = redirect.searchParams.get("code");
   assert.ok(code);
   assert.equal(redirect.searchParams.get("state"), "test-state");
@@ -585,6 +590,6 @@ test("mcp project secret tools return a clear GitHub connect handoff when repo-a
   assert.equal(result.result.structuredContent?.nextAction, "connect_github_user");
   assert.match(
     result.result.structuredContent?.connectGitHubUserUrl ?? "",
-    /^https:\/\/auth\.example\/api\/github\/user-auth\/start\?/
+    /^https:\/\/deploy\.example\/api\/github\/user-auth\/start\?/
   );
 });

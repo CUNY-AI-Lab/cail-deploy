@@ -229,7 +229,7 @@ export function buildGuidedSetupUrl(
 
 export function renderOauthAuthorizationErrorPage(message: string): string {
   return `<!doctype html>
-<html lang="en">
+  <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -247,7 +247,91 @@ export function renderOauthAuthorizationErrorPage(message: string): string {
       </section>
     </main>
   </body>
-</html>`;
+  </html>`;
+}
+
+export function renderOauthLoopbackContinuePage(input: {
+  callbackUrl: string;
+  appName?: string;
+}): string {
+  const appName = input.appName ?? "your agent";
+  const callbackUrlJson = serializeJsonForHtml(input.callbackUrl);
+
+  return `<!doctype html>
+  <html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Return To ${escapeHtml(appName)}</title>
+    ${faviconLink()}
+    ${baseStyles(`
+      .helper-steps {
+        margin-top: 16px;
+      }
+      .helper-steps li + li {
+        margin-top: 8px;
+      }
+      .callback-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 24px;
+      }
+      .callback-status {
+        margin-top: 18px;
+        font-weight: 600;
+        color: var(--accent);
+      }
+      .callback-frame {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+        border: 0;
+      }
+    `)}
+  </head>
+  <body>
+    <main>
+      <div class="logo">${logoHtml("52px")}</div>
+      <section class="card">
+        <h1>Return to ${escapeHtml(appName)}</h1>
+        <p>Kale Deploy has finished the browser sign-in step. This page is now handing the result back to your local agent so it can finish logging in.</p>
+        <div class="notice">
+          <p>You should not need to do anything else here. If your agent is still waiting after a moment, use the button below and then return to the terminal.</p>
+        </div>
+        <ol class="helper-steps">
+          <li>Wait a moment for your local agent to receive the login result.</li>
+          <li>Return to the terminal and look for a success message.</li>
+          <li>If it is still waiting, use <strong>Finish in ${escapeHtml(appName)}</strong> once.</li>
+        </ol>
+        <div class="callback-actions">
+          <a class="button" id="finish-link" href="${escapeHtml(input.callbackUrl)}">Finish in ${escapeHtml(appName)}</a>
+          <a class="button secondary" href="javascript:window.close()">Close this tab</a>
+        </div>
+        <p class="callback-status" id="callback-status">Handing off to your local agent…</p>
+      </section>
+    </main>
+    <script>
+      const callbackUrl = ${callbackUrlJson};
+      const statusEl = document.getElementById("callback-status");
+      const iframe = document.createElement("iframe");
+      iframe.className = "callback-frame";
+      iframe.src = callbackUrl;
+      iframe.onload = () => {
+        statusEl.textContent = "Your agent should be able to continue now. You can return to the terminal.";
+      };
+      iframe.onerror = () => {
+        statusEl.textContent = "If your agent is still waiting, use the button above and then return to the terminal.";
+      };
+      document.body.appendChild(iframe);
+      window.setTimeout(() => {
+        statusEl.textContent = "Return to the terminal. If your agent is still waiting, use the button above once.";
+      }, 1500);
+    </script>
+  </body>
+  </html>`;
 }
 
 export function renderManifestSuccessPage(input: {

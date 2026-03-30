@@ -247,6 +247,37 @@ test("project registration treats same-owner different repositories as a conflic
   assert.equal(body.nextAction, "choose_different_project_name");
 });
 
+test("project registration treats redirect labels as claimed names too", async () => {
+  const { env, db } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+
+  db.putProjectDomain({
+    domain_label: "archive",
+    project_name: "archive-project",
+    github_repo: "otherperson/archive",
+    is_primary: 0,
+    created_at: "2026-03-26T22:40:54.747Z",
+    updated_at: "2026-03-26T22:41:04.957Z"
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/archive",
+    projectName: "archive"
+  });
+  assert.equal(response.status, 409);
+
+  const body = await response.json() as {
+    existingRepositoryFullName: string;
+    nextAction: string;
+  };
+
+  assert.equal(body.existingRepositoryFullName, "otherperson/archive");
+  assert.equal(body.nextAction, "choose_different_project_name");
+});
+
 test("project registration avoids reserved platform hostnames", async () => {
   const { env } = createTestContext({
     GITHUB_APP_ID: undefined,

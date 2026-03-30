@@ -28,8 +28,8 @@
   },
   "vars": {
     "CLOUDFLARE_ACCOUNT_ID": "452c33847cf5cb1e46f391fca32fd1b5",
-    "CLOUDFLARE_ACCESS_TEAM_DOMAIN": "https://ailab-452.cloudflareaccess.com",
-    "CLOUDFLARE_ACCESS_AUD": "8400834949e15a0383b90a51dece46024c0afdc158ec561f63783aa463ead033",
+    "CLOUDFLARE_ACCESS_TEAM_DOMAIN": "https://cunyailab.cloudflareaccess.com",
+    "CLOUDFLARE_ACCESS_AUD": "e28988aff41ae1d61ad3c87c1aef623a1c37e2af277c5721e8b4e4f34f59bf99",
     "CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS": "cuny.edu",
     "MCP_OAUTH_BASE_URL": "https://cail-deploy-service.ailab-452.workers.dev",
     "MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS": "3600",

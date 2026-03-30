@@ -329,6 +329,7 @@ export class FakeD1Database {
   private readonly buildJobs = new Map<string, BuildJobRecord>();
   private readonly githubUserAuth = new Map<string, Record<string, unknown>>();
   private readonly projectSecrets = new Map<string, Record<string, unknown>>();
+  private readonly projectDomains = new Map<string, Record<string, unknown>>();
   private readonly usedOauthGrants = new Set<string>();
 
   withSession(): this {
@@ -374,6 +375,17 @@ export class FakeD1Database {
     updated_at: string;
   }): void {
     this.projectSecrets.set(`${row.github_repo}:${row.secret_name}`, row);
+  }
+
+  putProjectDomain(row: {
+    domain_label: string;
+    project_name: string;
+    github_repo: string;
+    is_primary: number;
+    created_at: string;
+    updated_at: string;
+  }): void {
+    this.projectDomains.set(row.domain_label, row);
   }
 
   upsertProjectFromParams(params: unknown[]): void {
@@ -444,6 +456,18 @@ export class FakeD1Database {
     });
   }
 
+  upsertProjectDomainFromParams(params: unknown[]): void {
+    const existing = this.projectDomains.get(String(params[0]));
+    this.putProjectDomain({
+      domain_label: String(params[0]),
+      project_name: String(params[1]),
+      github_repo: String(params[2]),
+      is_primary: Number(params[3]),
+      created_at: existing?.created_at ? String(existing.created_at) : String(params[4]),
+      updated_at: String(params[5])
+    });
+  }
+
   deleteGitHubUserAuthByGitHubUserId(githubUserId: number): void {
     for (const [accessSubject, row] of this.githubUserAuth.entries()) {
       if (Number(row.github_user_id) === githubUserId) {
@@ -454,6 +478,54 @@ export class FakeD1Database {
 
   deleteProjectSecret(githubRepo: string, secretName: string): void {
     this.projectSecrets.delete(`${githubRepo}:${secretName}`);
+  }
+
+  deleteProjectDomain(domainLabel: string): void {
+    this.projectDomains.delete(domainLabel);
+  }
+
+  selectProjectDomain(domainLabel: string): Record<string, unknown> | null {
+    return this.projectDomains.get(domainLabel) ?? null;
+  }
+
+  selectPrimaryProjectDomain(projectName: string): Record<string, unknown> | null {
+    return Array.from(this.projectDomains.values()).find((domain) =>
+      domain.project_name === projectName && Number(domain.is_primary) === 1
+    ) ?? null;
+  }
+
+  listProjectDomains(projectName: string): Record<string, unknown>[] {
+    return Array.from(this.projectDomains.values())
+      .filter((domain) => domain.project_name === projectName)
+      .sort((left, right) => {
+        const primaryDiff = Number(right.is_primary) - Number(left.is_primary);
+        if (primaryDiff !== 0) {
+          return primaryDiff;
+        }
+        return String(left.domain_label).localeCompare(String(right.domain_label));
+      });
+  }
+
+  updateProjectDeploymentUrl(projectName: string, deploymentUrl: string, updatedAt: string): void {
+    const project = this.projects.get(projectName);
+    if (project) {
+      this.projects.set(projectName, {
+        ...project,
+        deploymentUrl,
+        updatedAt
+      });
+    }
+  }
+
+  updateBuildJobDeploymentUrl(projectName: string, deploymentUrl: string): void {
+    for (const [jobId, job] of this.buildJobs.entries()) {
+      if (job.projectName === projectName && job.deploymentUrl) {
+        this.buildJobs.set(jobId, {
+          ...job,
+          deploymentUrl
+        });
+      }
+    }
   }
 
   listProjects(): Record<string, unknown>[] {
@@ -625,6 +697,14 @@ class FakePreparedStatement {
       return this.db.selectGitHubUserAuth(String(this.params[0])) as T | null;
     }
 
+    if (normalized.includes("from project_domains") && normalized.includes("where domain_label = ?")) {
+      return this.db.selectProjectDomain(String(this.params[0])) as T | null;
+    }
+
+    if (normalized.includes("from project_domains") && normalized.includes("where project_name = ?") && normalized.includes("and is_primary = 1")) {
+      return this.db.selectPrimaryProjectDomain(String(this.params[0])) as T | null;
+    }
+
     if (normalized.includes("select count(*) as count from build_jobs")
       && normalized.includes("json_extract(repository_json, '$.fullname') = ?")
       && normalized.includes("status in ('queued', 'in_progress', 'deploying')")) {
@@ -664,6 +744,10 @@ class FakePreparedStatement {
       return { results: this.db.listProjectSecrets(String(this.params[0])) as T[] };
     }
 
+    if (normalized.includes("from project_domains") && normalized.includes("where project_name = ?")) {
+      return { results: this.db.listProjectDomains(String(this.params[0])) as T[] };
+    }
+
     return { results: [] };
   }
 
@@ -686,12 +770,28 @@ class FakePreparedStatement {
       this.db.upsertProjectSecretFromParams(this.params);
     }
 
+    if (normalized.includes("insert into project_domains")) {
+      this.db.upsertProjectDomainFromParams(this.params);
+    }
+
     if (normalized.includes("delete from github_user_auth") && normalized.includes("where github_user_id = ?")) {
       this.db.deleteGitHubUserAuthByGitHubUserId(Number(this.params[0]));
     }
 
     if (normalized.includes("delete from project_secrets") && normalized.includes("where github_repo = ?") && normalized.includes("and secret_name = ?")) {
       this.db.deleteProjectSecret(String(this.params[0]), String(this.params[1]));
+    }
+
+    if (normalized.includes("delete from project_domains") && normalized.includes("where domain_label = ?")) {
+      this.db.deleteProjectDomain(String(this.params[0]));
+    }
+
+    if (normalized.includes("update projects") && normalized.includes("set deployment_url = ?, updated_at = ?") && normalized.includes("where project_name = ?")) {
+      this.db.updateProjectDeploymentUrl(String(this.params[2]), String(this.params[0]), String(this.params[1]));
+    }
+
+    if (normalized.includes("update build_jobs") && normalized.includes("set deployment_url = ?") && normalized.includes("where project_name = ?")) {
+      this.db.updateBuildJobDeploymentUrl(String(this.params[1]), String(this.params[0]));
     }
 
     return {};

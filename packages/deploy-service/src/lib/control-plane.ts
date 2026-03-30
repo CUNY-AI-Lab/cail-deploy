@@ -58,6 +58,15 @@ export type ProjectSecretMetadata = {
   updatedAt: string;
 };
 
+export type ProjectDomainRecord = {
+  domainLabel: string;
+  projectName: string;
+  githubRepo: string;
+  isPrimary: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export const DEFAULT_PROJECT_POLICY: ProjectPolicySettings = Object.freeze({
   aiEnabled: false,
   vectorizeEnabled: false,
@@ -167,6 +176,15 @@ type ProjectSecretRow = {
   iv: string;
   github_user_id: number;
   github_login: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type ProjectDomainRow = {
+  domain_label: string;
+  project_name: string;
+  github_repo: string;
+  is_primary: number;
   created_at: string;
   updated_at: string;
 };
@@ -301,6 +319,133 @@ export async function getPreferredProjectNameForRepository(
   ]);
 
   return policy?.projectName ?? project?.projectName;
+}
+
+export async function getProjectDomain(
+  db: D1Database,
+  domainLabel: string
+): Promise<ProjectDomainRecord | null> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT
+      domain_label,
+      project_name,
+      github_repo,
+      is_primary,
+      created_at,
+      updated_at
+    FROM project_domains
+    WHERE domain_label = ?
+  `).bind(domainLabel).first<ProjectDomainRow>();
+
+  return row ? toProjectDomainRecord(row) : null;
+}
+
+export async function getPrimaryProjectDomainForProject(
+  db: D1Database,
+  projectName: string
+): Promise<ProjectDomainRecord | null> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT
+      domain_label,
+      project_name,
+      github_repo,
+      is_primary,
+      created_at,
+      updated_at
+    FROM project_domains
+    WHERE project_name = ?
+      AND is_primary = 1
+    LIMIT 1
+  `).bind(projectName).first<ProjectDomainRow>();
+
+  return row ? toProjectDomainRecord(row) : null;
+}
+
+export async function listProjectDomainsForProject(
+  db: D1Database,
+  projectName: string
+): Promise<ProjectDomainRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      domain_label,
+      project_name,
+      github_repo,
+      is_primary,
+      created_at,
+      updated_at
+    FROM project_domains
+    WHERE project_name = ?
+    ORDER BY is_primary DESC, domain_label ASC
+  `).bind(projectName).all<ProjectDomainRow>();
+
+  return result.results.map(toProjectDomainRecord);
+}
+
+export async function putProjectDomain(
+  db: D1Database,
+  record: ProjectDomainRecord
+): Promise<void> {
+  await db.prepare(`
+    INSERT INTO project_domains (
+      domain_label,
+      project_name,
+      github_repo,
+      is_primary,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(domain_label) DO UPDATE SET
+      project_name = excluded.project_name,
+      github_repo = excluded.github_repo,
+      is_primary = excluded.is_primary,
+      updated_at = excluded.updated_at
+  `).bind(
+    record.domainLabel,
+    record.projectName,
+    record.githubRepo,
+    record.isPrimary ? 1 : 0,
+    record.createdAt,
+    record.updatedAt
+  ).run();
+}
+
+export async function deleteProjectDomain(
+  db: D1Database,
+  domainLabel: string
+): Promise<void> {
+  await db.prepare(`
+    DELETE FROM project_domains
+    WHERE domain_label = ?
+  `).bind(domainLabel).run();
+}
+
+export async function updateProjectDeploymentUrl(
+  db: D1Database,
+  projectName: string,
+  deploymentUrl: string,
+  updatedAt: string
+): Promise<void> {
+  await db.prepare(`
+    UPDATE projects
+    SET deployment_url = ?, updated_at = ?
+    WHERE project_name = ?
+  `).bind(deploymentUrl, updatedAt, projectName).run();
+
+  await db.prepare(`
+    UPDATE build_jobs
+    SET deployment_url = ?
+    WHERE project_name = ?
+      AND deployment_url IS NOT NULL
+  `).bind(deploymentUrl, projectName).run();
+
+  await db.prepare(`
+    UPDATE deployments
+    SET deployment_url = ?
+    WHERE project_name = ?
+  `).bind(deploymentUrl, projectName).run();
 }
 
 export async function putGitHubUserAuth(
@@ -976,6 +1121,17 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     cacheNamespaceId: row.cache_namespace_id ?? undefined,
     hasAssets: row.has_assets === 1,
     latestDeploymentId: row.latest_deployment_id ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function toProjectDomainRecord(row: ProjectDomainRow): ProjectDomainRecord {
+  return {
+    domainLabel: row.domain_label,
+    projectName: row.project_name,
+    githubRepo: row.github_repo,
+    isPrimary: row.is_primary === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

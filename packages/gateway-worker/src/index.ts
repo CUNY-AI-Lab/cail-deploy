@@ -31,6 +31,20 @@ type ProjectRow = {
   updated_at: string;
 };
 
+type ProjectDomainRouteRow = {
+  domain_label: string;
+  project_name: string;
+  is_primary: number;
+  primary_domain_label: string | null;
+};
+
+type ProjectRouteRecord = {
+  project: ProjectRecord;
+  requestedLabel: string;
+  primaryLabel: string;
+  isPrimary: boolean;
+};
+
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/healthz", (c) => c.json({ ok: true }));
@@ -48,34 +62,41 @@ type ProjectRoutingMode = "host" | "path";
 async function handleProjectRequest(
   request: Request,
   env: Env,
-  projectName: string,
+  requestedLabel: string,
   mode: ProjectRoutingMode
 ): Promise<Response> {
-  const redirect = maybeRedirectProjectRoot(request, projectName, mode);
+  const visibleMode = resolveVisibleProjectRoutingMode(request, mode);
+  const route = await resolveProjectRoute(env.CONTROL_PLANE_DB, requestedLabel);
+  const redirect = maybeRedirectProjectRequest(request, env, route, mode, visibleMode);
   if (redirect) {
     return redirect;
   }
 
-  const record = await getProjectRecord(env.CONTROL_PLANE_DB, projectName);
-  if (!record) {
-    return new Response(renderMissingProjectPage(projectName, env.INSTALL_URL), {
+  if (!route) {
+    return new Response(renderMissingProjectPage(requestedLabel, env.INSTALL_URL), {
       headers: { "content-type": "text/html; charset=utf-8" },
       status: 404
     });
   }
 
   try {
-    const userWorker = env.DISPATCHER.get(projectName, {}, {
+    const userWorker = env.DISPATCHER.get(route.project.projectName, {}, {
       limits: {
         ...(parseInteger(env.PROJECT_CPU_LIMIT_MS) ? { cpuMs: parseInteger(env.PROJECT_CPU_LIMIT_MS) } : {}),
         ...(parseInteger(env.PROJECT_SUBREQUEST_LIMIT) ? { subRequests: parseInteger(env.PROJECT_SUBREQUEST_LIMIT) } : {})
       }
     });
-    const forwardedRequest = rewriteRequestForProject(request, projectName, mode);
+    const forwardedRequest = rewriteRequestForProject(
+      request,
+      route.project.projectName,
+      route.requestedLabel,
+      mode,
+      visibleMode
+    );
     const response = await userWorker.fetch(forwardedRequest);
-    return rewriteProjectResponse(response, request, projectName, mode);
+    return rewriteProjectResponse(response, request, route.requestedLabel, visibleMode);
   } catch {
-    return new Response(renderErrorPage(record), {
+    return new Response(renderErrorPage(route.project), {
       headers: { "content-type": "text/html; charset=utf-8" },
       status: 502
     });
@@ -102,6 +123,40 @@ async function getProjectRecord(db: D1Database, projectName: string): Promise<Pr
   return row ? toProjectRecord(row) : null;
 }
 
+async function resolveProjectRoute(
+  db: D1Database,
+  requestedLabel: string
+): Promise<ProjectRouteRecord | null> {
+  const session = db.withSession("first-primary");
+  const domain = await session.prepare(`
+    SELECT
+      domain_label,
+      project_name,
+      is_primary,
+      (
+        SELECT primary_domain.domain_label
+        FROM project_domains primary_domain
+        WHERE primary_domain.project_name = project_domains.project_name
+          AND primary_domain.is_primary = 1
+        LIMIT 1
+      ) AS primary_domain_label
+    FROM project_domains
+    WHERE domain_label = ?
+  `).bind(requestedLabel).first<ProjectDomainRouteRow>();
+
+  const project = await getProjectRecord(db, domain?.project_name ?? requestedLabel);
+  if (!project) {
+    return null;
+  }
+
+  return {
+    project,
+    requestedLabel,
+    primaryLabel: domain?.primary_domain_label ?? project.projectName,
+    isPrimary: domain ? domain.is_primary === 1 : requestedLabel === project.projectName
+  };
+}
+
 function toProjectRecord(row: ProjectRow): ProjectRecord {
   return {
     projectName: row.project_name,
@@ -114,9 +169,15 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
   };
 }
 
-function rewriteRequestForProject(request: Request, projectName: string, mode: ProjectRoutingMode): Request {
+function rewriteRequestForProject(
+  request: Request,
+  projectName: string,
+  requestedLabel: string,
+  mode: ProjectRoutingMode,
+  visibleMode: ProjectRoutingMode
+): Request {
   const incomingUrl = new URL(request.url);
-  const prefix = projectPathPrefix(projectName);
+  const prefix = projectPathPrefix(requestedLabel);
   if (mode === "path") {
     const nextPath = incomingUrl.pathname === prefix ? "/" : incomingUrl.pathname.slice(prefix.length) || "/";
     incomingUrl.pathname = nextPath;
@@ -125,11 +186,12 @@ function rewriteRequestForProject(request: Request, projectName: string, mode: P
   const rewrittenRequest = new Request(incomingUrl.toString(), request);
   const headers = new Headers(rewrittenRequest.headers);
   headers.set("x-cail-project-name", projectName);
-  headers.set("x-cail-public-origin", resolvePublicOrigin(request, projectName, mode));
-  if (mode === "path") {
+  headers.set("x-cail-public-origin", resolvePublicOrigin(request, requestedLabel, visibleMode));
+  if (visibleMode === "path") {
     headers.set("x-forwarded-prefix", prefix);
     headers.set("x-cail-base-path", `${prefix}/`);
   } else {
+    headers.delete("x-forwarded-prefix");
     headers.set("x-cail-base-path", "/");
   }
 
@@ -139,16 +201,16 @@ function rewriteRequestForProject(request: Request, projectName: string, mode: P
 function rewriteProjectResponse(
   response: Response,
   request: Request,
-  projectName: string,
-  mode: ProjectRoutingMode
+  requestedLabel: string,
+  visibleMode: ProjectRoutingMode
 ): Response {
-  if (mode === "host") {
+  if (visibleMode === "host") {
     return response;
   }
 
   const headers = new Headers(response.headers);
-  headers.set("x-cail-base-path", `${projectPathPrefix(projectName)}/`);
-  rewriteLocationHeader(headers, request, projectName);
+  headers.set("x-cail-base-path", `${projectPathPrefix(requestedLabel)}/`);
+  rewriteLocationHeader(headers, request, requestedLabel);
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -156,14 +218,14 @@ function rewriteProjectResponse(
   });
 }
 
-function rewriteLocationHeader(headers: Headers, request: Request, projectName: string): void {
+function rewriteLocationHeader(headers: Headers, request: Request, requestedLabel: string): void {
   const location = headers.get("location");
   if (!location) {
     return;
   }
 
   const currentUrl = new URL(request.url);
-  const prefix = projectPathPrefix(projectName);
+  const prefix = projectPathPrefix(requestedLabel);
   if (location.startsWith("/") && !location.startsWith("//") && !location.startsWith(prefix)) {
     headers.set("location", `${prefix}${location}`);
     return;
@@ -188,12 +250,22 @@ function rewriteLocationHeader(headers: Headers, request: Request, projectName: 
   headers.set("location", locationUrl.toString());
 }
 
-function maybeRedirectProjectRoot(
+function maybeRedirectProjectRequest(
   request: Request,
-  projectName: string,
-  mode: ProjectRoutingMode
+  env: Env,
+  route: ProjectRouteRecord | null,
+  mode: ProjectRoutingMode,
+  visibleMode: ProjectRoutingMode
 ): Response | undefined {
-  if (mode !== "path") {
+  if (!route) {
+    return undefined;
+  }
+
+  if (!route.isPrimary) {
+    return buildProjectLabelRedirect(request, env, route, mode, visibleMode);
+  }
+
+  if (visibleMode !== "path") {
     return undefined;
   }
 
@@ -202,7 +274,7 @@ function maybeRedirectProjectRoot(
   }
 
   const incomingUrl = new URL(request.url);
-  if (incomingUrl.pathname !== `/${projectName}`) {
+  if (incomingUrl.pathname !== `/${route.requestedLabel}`) {
     return undefined;
   }
 
@@ -214,9 +286,15 @@ function projectPathPrefix(projectName: string): string {
   return `/${projectName}`;
 }
 
-function resolvePublicOrigin(request: Request, projectName: string, mode: ProjectRoutingMode): string {
+function resolvePublicOrigin(request: Request, requestedLabel: string, mode: ProjectRoutingMode): string {
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  if (mode === "host" && forwardedHost && forwardedProto) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+
   const url = new URL(request.url);
-  return mode === "host" ? `${url.protocol}//${url.host}` : `${url.protocol}//${url.host}${projectPathPrefix(projectName)}`;
+  return mode === "host" ? `${url.protocol}//${url.host}` : `${url.protocol}//${url.host}${projectPathPrefix(requestedLabel)}`;
 }
 
 function resolveProjectNameFromHost(request: Request, projectHostSuffix?: string): string | undefined {
@@ -241,6 +319,56 @@ function parseInteger(value: string | undefined): number | undefined {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function resolveVisibleProjectRoutingMode(
+  request: Request,
+  mode: ProjectRoutingMode
+): ProjectRoutingMode {
+  return request.headers.get("x-cail-public-routing-mode") === "host" ? "host" : mode;
+}
+
+function buildProjectLabelRedirect(
+  request: Request,
+  env: Env,
+  route: ProjectRouteRecord,
+  mode: ProjectRoutingMode,
+  visibleMode: ProjectRoutingMode
+): Response {
+  const incomingUrl = new URL(request.url);
+
+  if (visibleMode === "host") {
+    const protocol = request.headers.get("x-forwarded-proto") ?? incomingUrl.protocol.replace(/:$/u, "");
+    const suffix = env.PROJECT_HOST_SUFFIX?.trim().replace(/^\.+|\.+$/gu, "");
+    const targetUrl = new URL(incomingUrl.toString());
+    if (mode === "path") {
+      const prefix = projectPathPrefix(route.requestedLabel);
+      const nextPath = incomingUrl.pathname === prefix ? "/" : incomingUrl.pathname.slice(prefix.length) || "/";
+      targetUrl.pathname = nextPath;
+    }
+    if (suffix) {
+      targetUrl.protocol = `${protocol}:`;
+      targetUrl.host = `${route.primaryLabel}.${suffix}`;
+    } else {
+      targetUrl.pathname = `${projectPathPrefix(route.primaryLabel)}${targetUrl.pathname === "/" ? "" : targetUrl.pathname}`;
+    }
+    return Response.redirect(targetUrl.toString(), 308);
+  }
+
+  if (mode === "path") {
+    const prefix = projectPathPrefix(route.requestedLabel);
+    const nextPath = incomingUrl.pathname === prefix ? "/" : incomingUrl.pathname.slice(prefix.length) || "/";
+    incomingUrl.pathname = nextPath === "/"
+      ? `${projectPathPrefix(route.primaryLabel)}/`
+      : `${projectPathPrefix(route.primaryLabel)}${nextPath}`;
+  } else {
+    const suffix = env.PROJECT_HOST_SUFFIX?.trim().replace(/^\.+|\.+$/gu, "");
+    if (suffix) {
+      incomingUrl.host = `${route.primaryLabel}.${suffix}`;
+    }
+  }
+
+  return Response.redirect(incomingUrl.toString(), 308);
 }
 
 
