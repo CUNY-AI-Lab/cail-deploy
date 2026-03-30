@@ -17,7 +17,7 @@ import { HttpError, asHttpError } from "./http-error";
 import type { ProjectSecretsAccessContext } from "./project-secrets";
 
 export type AuthenticatedAgentRequestIdentity = {
-  type: "cloudflare_access" | "mcp_oauth";
+  type: "cloudflare_access" | "mcp_oauth" | "mcp_pat";
   subject: string;
   email: string;
 };

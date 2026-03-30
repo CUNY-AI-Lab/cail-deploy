@@ -137,6 +137,22 @@ Do not skip the local preview step. The user should see their app working before
 4. Call `register_project` to determine the canonical project slug and install state.
 5. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`. That GitHub approval is a browser handoff.
 
+**If MCP OAuth fails (Claude Code):** Claude Code has a known issue where the OAuth browser window never opens. If the Kale MCP server shows "Needs authentication" or "Failed to connect" and no browser window appeared:
+
+1. Tell the user: "The automatic login didn't work. Let me help you connect manually."
+2. Direct them to visit: `https://cuny.qzz.io/kale/connect`
+3. They sign in with their CUNY email and click **Generate token**.
+4. They copy the token and paste it into the chat.
+5. Once the user pastes the token, configure the MCP server with it:
+   ```
+   claude mcp remove cail -s user
+   claude mcp add -t http -H "Authorization: Bearer <the-token>" -s user cail https://cuny.qzz.io/kale/mcp
+   ```
+6. Verify the connection by checking `claude mcp get cail` — it should show connected.
+7. Continue to Phase 4.
+
+This workaround is only needed for Claude Code. Codex and Gemini CLI handle the OAuth browser flow automatically.
+
 ### Phase 4: Validate and deploy
 
 1. Optionally call `validate_project` for a build-only check before going live. This builds from the GitHub ref without deploying.

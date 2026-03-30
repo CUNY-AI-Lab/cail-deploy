@@ -512,6 +512,89 @@ deployServiceApp.post("/oauth/token", async (c) => {
   }
 });
 
+// ── MCP token bridge (Claude Code fallback) ─────────────────────────
+// Behind Cloudflare Access. Lets the user generate a personal MCP token
+// that they can paste into their agent when the OAuth browser flow is broken.
+
+deployServiceApp.get("/connect", async (c) => {
+  try {
+    const identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
+    const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+
+    const existing = await c.env.CONTROL_PLANE_DB.prepare(
+      "SELECT created_at, expires_at FROM mcp_tokens WHERE email = ? AND revoked_at IS NULL AND datetime(expires_at) > datetime('now') ORDER BY created_at DESC LIMIT 1"
+    ).bind(identity.email).first<{ created_at: string; expires_at: string }>();
+
+    return c.html(renderConnectPage({
+      serviceBaseUrl,
+      email: identity.email,
+      hasActiveToken: !!existing,
+      activeTokenCreatedAt: existing?.created_at,
+      activeTokenExpiresAt: existing?.expires_at
+    }));
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderConnectPage({ error: httpError.message }), httpError.status);
+  }
+});
+
+deployServiceApp.post("/connect/generate", async (c) => {
+  try {
+    const identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
+
+    // Revoke any existing tokens for this user.
+    await c.env.CONTROL_PLANE_DB.prepare(
+      "UPDATE mcp_tokens SET revoked_at = datetime('now') WHERE email = ? AND revoked_at IS NULL"
+    ).bind(identity.email).run();
+
+    // Generate a new token: kale_pat_ + 48 random bytes (base64url).
+    const randomBytes = new Uint8Array(48);
+    crypto.getRandomValues(randomBytes);
+    const tokenSuffix = btoa(String.fromCharCode(...randomBytes))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+    const token = `kale_pat_${tokenSuffix}`;
+
+    const hash = await hashPatToken(token);
+    const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().replace("Z", "").split(".")[0];
+
+    await c.env.CONTROL_PLANE_DB.prepare(
+      "INSERT INTO mcp_tokens (token_hash, email, subject, label, expires_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(hash, identity.email, identity.subject, "Generated from /connect", expiresAt).run();
+
+    const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+    return c.html(renderConnectPage({
+      serviceBaseUrl,
+      email: identity.email,
+      generatedToken: token,
+      hasActiveToken: true,
+      activeTokenExpiresAt: expiresAt
+    }));
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderConnectPage({ error: httpError.message }), httpError.status);
+  }
+});
+
+deployServiceApp.post("/connect/revoke", async (c) => {
+  try {
+    const identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
+    await c.env.CONTROL_PLANE_DB.prepare(
+      "UPDATE mcp_tokens SET revoked_at = datetime('now') WHERE email = ? AND revoked_at IS NULL"
+    ).bind(identity.email).run();
+
+    const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+    return c.html(renderConnectPage({
+      serviceBaseUrl,
+      email: identity.email,
+      hasActiveToken: false,
+      revokedMessage: "Token revoked. You can generate a new one."
+    }));
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderConnectPage({ error: httpError.message }), httpError.status);
+  }
+});
+
 deployServiceApp.get("/", async (c) => {
   const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
   const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
@@ -2980,12 +3063,16 @@ async function requireAgentRequestIdentity(request: Request, env: Env): Promise<
 }
 
 async function requireMcpRequestIdentity(request: Request, env: Env): Promise<AuthenticatedAgentRequestIdentity> {
-  const secret = resolveMcpOauthSecret(env);
   const bearerToken = readBearerToken(request);
   if (!bearerToken) {
     throw new HttpError(401, "Missing Bearer token.");
   }
 
+  if (bearerToken.startsWith("kale_pat_")) {
+    return verifyMcpPatToken(bearerToken, env);
+  }
+
+  const secret = resolveMcpOauthSecret(env);
   const payload = await verifyMcpAccessToken({
     token: bearerToken,
     secret,
@@ -2997,6 +3084,35 @@ async function requireMcpRequestIdentity(request: Request, env: Env): Promise<Au
     email: payload.email,
     subject: payload.subject
   };
+}
+
+async function verifyMcpPatToken(token: string, env: Env): Promise<AuthenticatedAgentRequestIdentity> {
+  const hash = await hashPatToken(token);
+  const row = await env.CONTROL_PLANE_DB.prepare(
+    "SELECT email, subject, expires_at, revoked_at FROM mcp_tokens WHERE token_hash = ?"
+  ).bind(hash).first<{ email: string; subject: string; expires_at: string; revoked_at: string | null }>();
+
+  if (!row) {
+    throw new HttpError(401, "Invalid token.");
+  }
+  if (row.revoked_at) {
+    throw new HttpError(401, "Token has been revoked.");
+  }
+  if (new Date(row.expires_at + "Z") < new Date()) {
+    throw new HttpError(401, "Token has expired.");
+  }
+
+  return {
+    type: "mcp_pat",
+    email: row.email,
+    subject: row.subject
+  };
+}
+
+async function hashPatToken(token: string): Promise<string> {
+  const data = new TextEncoder().encode(token);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function requireCloudflareAccessIdentity(request: Request, env: Env): Promise<CloudflareAccessRequestIdentity> {
@@ -3042,6 +3158,83 @@ function resolveMcpOauthSecret(env: Env): string {
 
 function resolveMcpOauthBaseUrl(env: Env, requestUrl: string): string {
   return resolveConfiguredEnvValue(env.MCP_OAUTH_BASE_URL)?.replace(/\/$/, "") ?? resolveServiceBaseUrl(env, requestUrl);
+}
+
+function renderConnectPage(input: {
+  serviceBaseUrl?: string;
+  email?: string;
+  hasActiveToken?: boolean;
+  activeTokenCreatedAt?: string;
+  activeTokenExpiresAt?: string;
+  generatedToken?: string;
+  revokedMessage?: string;
+  error?: string;
+}): string {
+  const { serviceBaseUrl, email, hasActiveToken, activeTokenCreatedAt, activeTokenExpiresAt, generatedToken, revokedMessage, error } = input;
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect your agent — Kale Deploy</title>
+${faviconLink()}
+${baseStyles(`
+  .connect-card { max-width: 560px; margin: 40px auto; background: var(--panel); border-radius: var(--radius-card); box-shadow: var(--shadow-card); padding: 32px; }
+  .connect-card h1 { font-size: 1.25rem; margin: 0 0 8px; }
+  .connect-card p { color: var(--muted); font-size: 0.92rem; line-height: 1.5; margin: 0 0 16px; }
+  .token-box { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-code); padding: 12px 14px; font-family: var(--font-mono); font-size: 0.82rem; word-break: break-all; line-height: 1.4; margin: 12px 0; position: relative; }
+  .copy-btn { position: absolute; top: 8px; right: 8px; padding: 4px 10px; font-size: 0.78rem; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); cursor: pointer; color: var(--muted); }
+  .copy-btn:hover { background: var(--code-bg); color: var(--ink); }
+  .action-btn { display: inline-block; padding: 10px 24px; font-size: 0.92rem; font-weight: 600; border: none; border-radius: var(--radius-button); cursor: pointer; text-decoration: none; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-danger { background: transparent; color: var(--error); border: 1px solid var(--error); font-size: 0.82rem; padding: 6px 14px; }
+  .btn-danger:hover { background: #fef2f2; }
+  .step { display: flex; gap: 12px; margin: 12px 0; }
+  .step-num { flex-shrink: 0; width: 28px; height: 28px; background: var(--accent); color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.82rem; font-weight: 700; }
+  .step-text { font-size: 0.88rem; line-height: 1.5; color: var(--ink); padding-top: 3px; }
+  .step-text code { background: var(--code-bg); padding: 2px 6px; border-radius: 3px; font-family: var(--font-mono); font-size: 0.82rem; }
+  .notice { background: var(--notice-bg); border-radius: var(--radius-notice); padding: 12px 16px; font-size: 0.88rem; margin: 16px 0; }
+  .notice-success { background: #f0fdf4; border: 1px solid #bbf7d0; }
+  .notice-warning { background: #fffbeb; border: 1px solid #fde68a; }
+  .token-status { font-size: 0.82rem; color: var(--muted); margin: 8px 0; }
+  .actions { display: flex; gap: 12px; align-items: center; margin-top: 20px; }
+`)}
+</head><body>
+<div class="connect-card">
+  ${logoHtml("36px")}
+  <h1>Connect your agent</h1>
+  ${error ? `<div class="notice notice-warning">${escapeHtml(error)}</div>` : ""}
+  ${revokedMessage ? `<div class="notice notice-success">${escapeHtml(revokedMessage)}</div>` : ""}
+  ${!email ? `<p>Sign in with your CUNY email to generate a connection token.</p>` : generatedToken ? `
+    <p>Here is your token. Copy it and paste it into your agent chat.</p>
+    <div class="token-box">
+      <button class="copy-btn" onclick="navigator.clipboard.writeText(this.parentElement.querySelector('.token-value').textContent).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy', 1500); })">Copy</button>
+      <span class="token-value">${escapeHtml(generatedToken)}</span>
+    </div>
+    <div class="notice notice-success">
+      <strong>Next:</strong> Paste this token into your agent chat. Your agent will use it to connect to Kale Deploy.
+    </div>
+    <p class="token-status">This token expires in 90 days. You can revoke it or generate a new one at any time from this page.</p>
+    <div class="actions">
+      <form method="POST" action="${serviceBaseUrl}/connect/revoke"><button type="submit" class="action-btn btn-danger">Revoke token</button></form>
+    </div>
+  ` : `
+    <p>Signed in as <strong>${escapeHtml(email)}</strong></p>
+    ${hasActiveToken ? `
+      <div class="notice">You have an active token (created ${escapeHtml(activeTokenCreatedAt ?? "")}, expires ${escapeHtml(activeTokenExpiresAt ?? "")}). Generating a new one will replace it.</div>
+    ` : `
+      <p>Generate a token so your AI agent can connect to Kale Deploy on your behalf.</p>
+    `}
+    <div class="step"><span class="step-num">1</span><span class="step-text">Click <strong>Generate token</strong> below</span></div>
+    <div class="step"><span class="step-num">2</span><span class="step-text">Copy the token</span></div>
+    <div class="step"><span class="step-num">3</span><span class="step-text">Paste it into your agent chat</span></div>
+    <div class="actions">
+      <form method="POST" action="${serviceBaseUrl}/connect/generate"><button type="submit" class="action-btn btn-primary">${hasActiveToken ? "Replace token" : "Generate token"}</button></form>
+      ${hasActiveToken ? `<form method="POST" action="${serviceBaseUrl}/connect/revoke"><button type="submit" class="action-btn btn-danger">Revoke</button></form>` : ""}
+    </div>
+  `}
+</div>
+</body></html>`;
 }
 
 function buildOauthProtectedResourceMetadata(serviceBaseUrl: string, oauthBaseUrl: string) {
