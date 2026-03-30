@@ -114,11 +114,13 @@ Implemented now:
 - no daily validate/deploy cap by default, but support for per-repository override caps
 - project-isolated `DB`, `FILES`, and `CACHE` provisioning
 - approval-only policy for advanced bindings such as AI, Vectorize, and Rooms
+- Kale-managed primary URLs and redirects under `*.cuny.qzz.io`
 
 Still not finished:
 
 - fully polished onboarding with no human GitHub approval step
-- a richer admin surface for domains, redirects, and per-project caps
+- full external custom-domain support beyond Kale-managed labels
+- a richer admin surface for per-project caps
 - institution-wide support polish beyond the current pilot shape
 
 ## Guides
@@ -134,6 +136,7 @@ Still not finished:
 - Cloudflare Access auth: [docs/cloudflare-access-auth.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/cloudflare-access-auth.md)
 - GitHub App setup: [docs/github-app-setup.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/github-app-setup.md)
 - Friendly URL rollout: [docs/friendly-url-rollout.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/friendly-url-rollout.md)
+- Future custom domains plan: [docs/custom-domains-plan.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/custom-domains-plan.md)
 - Build runner hosting: [docs/build-runner-hosting.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/build-runner-hosting.md)
 - Build runner contract: [docs/build-runner-contract.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/build-runner-contract.md)
 
