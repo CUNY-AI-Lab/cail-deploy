@@ -42,18 +42,11 @@ import {
 import {
   createProjectAdminEntryResponse,
   createProjectControlPanelResponse,
-  createProjectControlPrimaryDomainSetResponse,
-  createProjectControlRedirectAddResponse,
-  createProjectControlRedirectDeleteResponse,
   createProjectControlSecretDeleteResponse,
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
 import {
-  addProjectRedirectDomainLabel,
-  buildProjectDomainsPayload,
-  ensurePrimaryProjectDomainLabel,
-  removeProjectRedirectDomainLabel,
-  setProjectPrimaryDomainLabel
+  ensurePrimaryProjectDomainLabel
 } from "./project-domains";
 import {
   buildProjectSecretBindings,
@@ -1503,60 +1496,7 @@ deployServiceApp.get("/projects/:projectName/control", async (c) => {
       authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
     buildProjectStatusResponse,
     buildProjectSecretsListPayload,
-    buildProjectDomainsPayload,
     resolveMcpOauthSecret
-  });
-});
-
-deployServiceApp.post("/projects/:projectName/control/domains/primary", async (c) => {
-  return createProjectControlPrimaryDomainSetResponse({
-    env: c.env,
-    request: c.req.raw,
-    projectName: c.req.param("projectName"),
-    requireCloudflareAccessIdentity,
-    resolveServiceBaseUrl,
-    resolveMcpOauthSecret,
-    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
-      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
-    normalizeDomainLabel: (value) =>
-      normalizeRequestedProjectName(value, resolveReservedProjectNames(c.env, resolveServiceBaseUrl(c.env, c.req.raw.url))),
-    setPrimaryProjectDomainLabel: async (env, authorization, domainLabel) =>
-      setProjectPrimaryDomainLabel(env, authorization.project, domainLabel)
-  });
-});
-
-deployServiceApp.post("/projects/:projectName/control/domains/redirects", async (c) => {
-  return createProjectControlRedirectAddResponse({
-    env: c.env,
-    request: c.req.raw,
-    projectName: c.req.param("projectName"),
-    requireCloudflareAccessIdentity,
-    resolveServiceBaseUrl,
-    resolveMcpOauthSecret,
-    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
-      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
-    normalizeDomainLabel: (value) =>
-      normalizeRequestedProjectName(value, resolveReservedProjectNames(c.env, resolveServiceBaseUrl(c.env, c.req.raw.url))),
-    addProjectRedirectDomainLabel: async (env, authorization, domainLabel) =>
-      addProjectRedirectDomainLabel(env, authorization.project, domainLabel)
-  });
-});
-
-deployServiceApp.post("/projects/:projectName/control/domains/:domainLabel/delete", async (c) => {
-  return createProjectControlRedirectDeleteResponse({
-    env: c.env,
-    request: c.req.raw,
-    projectName: c.req.param("projectName"),
-    domainLabel: c.req.param("domainLabel"),
-    requireCloudflareAccessIdentity,
-    resolveServiceBaseUrl,
-    resolveMcpOauthSecret,
-    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
-      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
-    normalizeDomainLabel: (value) =>
-      normalizeRequestedProjectName(value, resolveReservedProjectNames(c.env, resolveServiceBaseUrl(c.env, c.req.raw.url))),
-    removeProjectRedirectDomainLabel: async (env, authorization, domainLabel) =>
-      removeProjectRedirectDomainLabel(env, authorization.project, domainLabel)
   });
 });
 

@@ -8,7 +8,6 @@ Kale Deploy now has first-pass **Kale-managed URL labels** and redirects under `
 
 - a stable internal project identity that is no longer tied to the public hostname
 - redirect and canonical-host logic in the gateway
-- a Domains section in project settings
 
 What it does **not** do yet is the thing users actually care about:
 
@@ -19,6 +18,8 @@ That future feature is what this document describes.
 ## Goal
 
 Let a project admin attach a user-owned hostname to a Kale Deploy project, verify control of that hostname, activate it safely, and optionally make it the canonical public URL.
+
+The current Kale-label groundwork is intentionally not being treated as a finished user-facing domains feature. The next time domains appear in project settings, they should mean real custom domains.
 
 ## Non-goals for the first pass
 

@@ -114,12 +114,12 @@ Implemented now:
 - no daily validate/deploy cap by default, but support for per-repository override caps
 - project-isolated `DB`, `FILES`, and `CACHE` provisioning
 - approval-only policy for advanced bindings such as AI, Vectorize, and Rooms
-- Kale-managed primary URLs and redirects under `*.cuny.qzz.io`
+- internal groundwork for future custom-domain routing
 
 Still not finished:
 
 - fully polished onboarding with no human GitHub approval step
-- full external custom-domain support beyond Kale-managed labels
+- full external custom-domain support
 - a richer admin surface for per-project caps
 - institution-wide support polish beyond the current pilot shape
 

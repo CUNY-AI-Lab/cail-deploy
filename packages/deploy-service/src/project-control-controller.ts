@@ -15,7 +15,6 @@ import {
   renderProjectControlPanelPage,
 } from "./project-control-ui";
 import { buildGuidedSetupUrl } from "./repository-onboarding-ui";
-import type { ProjectDomainMutationPayload, ProjectDomainsPayload } from "./project-domains";
 import type {
   ProjectSecretMutationPayload,
   ProjectSecretsAccessContext,
@@ -123,10 +122,6 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
     project: ProjectSecretsAccessContext["project"],
     githubLogin: string
   ) => Promise<ProjectSecretsListPayload>;
-  buildProjectDomainsPayload: (
-    env: TEnv,
-    project: ProjectSecretsAccessContext["project"]
-  ) => Promise<ProjectDomainsPayload>;
   resolveMcpOauthSecret: (env: TEnv) => string;
 }): Promise<Response> {
   const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
@@ -162,10 +157,9 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
       }), 403);
     }
 
-    const [statusResult, secretsPayload, domainsPayload, formToken] = await Promise.all([
+    const [statusResult, secretsPayload, formToken] = await Promise.all([
       input.buildProjectStatusResponse(input.env, input.projectName, { includeSensitive: true }),
       input.buildProjectSecretsListPayload(input.env, authorization.project, authorization.githubLogin),
-      input.buildProjectDomainsPayload(input.env, authorization.project),
       createProjectControlFormToken({
         secret: input.resolveMcpOauthSecret(input.env),
         issuer: serviceBaseUrl,
@@ -190,7 +184,6 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
         authorization.project.githubRepo,
         authorization.project.projectName
       ),
-      domains: domainsPayload,
       secrets: {
         count: secretsPayload.count,
         secrets: secretsPayload.secrets
@@ -274,100 +267,6 @@ export async function createProjectControlSecretDeleteResponse<TEnv>(input: {
   });
 }
 
-export async function createProjectControlPrimaryDomainSetResponse<TEnv>(input: {
-  env: TEnv;
-  request: Request;
-  projectName: string;
-  requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
-  resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
-  resolveMcpOauthSecret: (env: TEnv) => string;
-  authorizeProjectSecretsAccess: (
-    env: TEnv,
-    requestUrl: string,
-    identity: AuthenticatedAgentRequestIdentity,
-    projectName: string
-  ) => Promise<ProjectSecretsAuthorization>;
-  normalizeDomainLabel: (value: string) => string;
-  setPrimaryProjectDomainLabel: (
-    env: TEnv,
-    authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
-    domainLabel: string
-  ) => Promise<ProjectDomainMutationPayload>;
-}): Promise<Response> {
-  return createProjectControlMutationResponse({
-    ...input,
-    mutate: async ({ env, authorization, form }) =>
-      input.setPrimaryProjectDomainLabel(
-        env,
-        authorization,
-        input.normalizeDomainLabel(getRequiredProjectControlFormField(form, "domainLabel"))
-      )
-  });
-}
-
-export async function createProjectControlRedirectAddResponse<TEnv>(input: {
-  env: TEnv;
-  request: Request;
-  projectName: string;
-  requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
-  resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
-  resolveMcpOauthSecret: (env: TEnv) => string;
-  authorizeProjectSecretsAccess: (
-    env: TEnv,
-    requestUrl: string,
-    identity: AuthenticatedAgentRequestIdentity,
-    projectName: string
-  ) => Promise<ProjectSecretsAuthorization>;
-  normalizeDomainLabel: (value: string) => string;
-  addProjectRedirectDomainLabel: (
-    env: TEnv,
-    authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
-    domainLabel: string
-  ) => Promise<ProjectDomainMutationPayload>;
-}): Promise<Response> {
-  return createProjectControlMutationResponse({
-    ...input,
-    mutate: async ({ env, authorization, form }) =>
-      input.addProjectRedirectDomainLabel(
-        env,
-        authorization,
-        input.normalizeDomainLabel(getRequiredProjectControlFormField(form, "domainLabel"))
-      )
-  });
-}
-
-export async function createProjectControlRedirectDeleteResponse<TEnv>(input: {
-  env: TEnv;
-  request: Request;
-  projectName: string;
-  domainLabel: string;
-  requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
-  resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
-  resolveMcpOauthSecret: (env: TEnv) => string;
-  authorizeProjectSecretsAccess: (
-    env: TEnv,
-    requestUrl: string,
-    identity: AuthenticatedAgentRequestIdentity,
-    projectName: string
-  ) => Promise<ProjectSecretsAuthorization>;
-  normalizeDomainLabel: (value: string) => string;
-  removeProjectRedirectDomainLabel: (
-    env: TEnv,
-    authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
-    domainLabel: string
-  ) => Promise<ProjectDomainMutationPayload>;
-}): Promise<Response> {
-  return createProjectControlMutationResponse({
-    ...input,
-    mutate: async ({ env, authorization }) =>
-      input.removeProjectRedirectDomainLabel(
-        env,
-        authorization,
-        input.normalizeDomainLabel(input.domainLabel)
-      )
-  });
-}
-
 async function createProjectControlMutationResponse<TEnv>(input: {
   env: TEnv;
   request: Request;
@@ -386,7 +285,7 @@ async function createProjectControlMutationResponse<TEnv>(input: {
     request: Request;
     authorization: Extract<ProjectSecretsAuthorization, { ok: true }>;
     form: FormData;
-  }) => Promise<ProjectSecretMutationPayload | ProjectDomainMutationPayload>;
+  }) => Promise<ProjectSecretMutationPayload>;
 }): Promise<Response> {
   const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
   let identity: AuthenticatedAgentRequestIdentity;
