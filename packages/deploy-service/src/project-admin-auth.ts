@@ -14,6 +14,7 @@ import {
 } from "./lib/github";
 import { decryptStoredText, encryptStoredText } from "./lib/sealed-data";
 import { HttpError, asHttpError } from "./http-error";
+import { buildProjectControlPanelUrl } from "./project-control-ui";
 import type { ProjectSecretsAccessContext } from "./project-secrets";
 
 export type AuthenticatedAgentRequestIdentity = {
@@ -249,7 +250,9 @@ export async function authorizeProjectSecretsAccess<Env extends ProjectAdminAuth
 ): Promise<ProjectSecretsAuthorization> {
   const serviceBaseUrl = dependencies.resolveServiceBaseUrl(env, requestUrl);
   const connection = dependencies.buildConnectionHealthPayload(env, serviceBaseUrl, identity);
-  const connectGitHubUserUrl = buildGitHubUserSecretsConnectUrl(serviceBaseUrl, projectName);
+  const connectGitHubUserUrl = buildGitHubUserSecretsConnectUrl(serviceBaseUrl, projectName, {
+    returnTo: buildProjectControlPanelUrl(serviceBaseUrl, projectName)
+  });
   let authenticatedIdentity: AuthenticatedAgentRequestIdentity;
 
   try {
