@@ -1,7 +1,7 @@
 # Kale Deploy Plugin
 
-This plugin bundles the Kale Deploy skills, the `kale-init` command, and the
-remote Kale MCP server.
+This plugin bundles the Kale Deploy skills, the `kale-init` and `kale-connect`
+commands, and the remote Kale MCP server.
 
 It is intended to work as a shared plugin bundle for:
 
@@ -15,6 +15,10 @@ The bundled MCP server lives at:
 Authentication uses OAuth through Cloudflare Access on first connection.
 
 ## Recommended connection path
+
+For readiness-only setup in an existing environment, use the bundled
+`kale-connect` guidance. That path is meant to get Kale connected and verified
+without scaffolding a new app yet.
 
 For Codex, the most reliable setup path today is the direct remote MCP
 connection, because it makes the OAuth/browser handshake visible and easy to

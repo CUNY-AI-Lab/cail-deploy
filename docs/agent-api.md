@@ -405,7 +405,7 @@ Important values:
 
 Today, the strongest loop is:
 
-1. acquire the `kale-deploy` skill or plugin first when the harness supports that surface
+1. install the `kale-deploy` add-on once in the agent
 2. scaffold with `kale-init` or create a Worker-compatible repo
 3. create the GitHub repo with `gh repo create` or another GitHub client
 4. connect the harness to `POST /mcp`

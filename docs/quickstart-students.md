@@ -14,38 +14,37 @@ If you are starting from scratch:
 
 1. Open [https://cuny.qzz.io/kale](https://cuny.qzz.io/kale)
 2. Choose Claude Code, Codex, or Gemini CLI
-3. Copy the setup prompt for that agent
-4. Paste it into the agent
-5. Then paste the build prompt and describe what you want to make
+3. Install Kale once in that agent
+4. Then use the build prompt on the page and describe what you want to make
 
-Your agent should handle the setup step first, then continue with the project.
+Your agent should pick up Kale after install, handle the connection step, and then continue with the project.
 
 If you already have a GitHub repo, skip to “If you already have a repo” below.
 
 ## Step by step
 
-### 1. Connect your agent
+### 1. Install Kale once in your agent
 
 Open the Kale homepage:
 
 - [https://cuny.qzz.io/kale](https://cuny.qzz.io/kale)
 
-Choose your agent and copy the setup prompt:
+Choose your agent and run the install instruction shown on the page:
 
 - Claude Code
 - Codex
 - Gemini CLI
 
-Paste that prompt into the agent.
+Paste that install instruction into the app you use.
 
-The goal is for the agent to connect Kale Deploy for you, rather than asking you to type setup commands by hand.
+The install step is meant to be global for that agent, not just for one folder.
 
-The current website setup prompts tell supported agents how to install the `kale-deploy` skill or plugin first, then tell them to use that installed skill or plugin for the rest of Kale setup and verify Kale tools.
+The website lists short install instructions for the Kale add-on in each agent. After the add-on is installed, use the build prompt on the page and let the agent handle the rest.
 
 Current Claude note:
 
 - Claude Code works most reliably through the token path right now.
-- If you use Claude, the website prompt tells Claude how to install `kale-deploy` in local scope, then tells it to use the plugin's own Kale guidance for the rest of setup.
+- The homepage starts Claude with the in-app `/plugin` install commands for `kale-deploy`.
 - In practice, that plugin guidance usually leads Claude to send you to [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), do the token handoff, and then verify that Kale tools are really available.
 - If you use Kale from more than one computer, reuse the same Claude token on both machines for now. Generating a new one at `/connect` currently revokes the previous active token.
 - Do not use Claude's interactive `/mcp` screen for Kale right now.

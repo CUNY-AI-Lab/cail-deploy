@@ -22,6 +22,7 @@ The lower-level Cloudflare Workers still exist behind that front door:
 - `packages/build-contract`: shared types used by the deploy service and the runner.
 - `platform`: assistant-neutral runtime contract in Markdown and JSON.
 - `plugins/kale-deploy`: shared Codex and Claude Code plugin bundle plus the `kale-init` assistant workflow.
+- `gemini-extension.json` plus `skills/kale-deploy`: Gemini extension install surface for the same Kale guidance.
 
 ## Architecture
 
@@ -101,7 +102,7 @@ The MCP surface is a thin adapter over the deploy-service control plane, not a s
 
 Current harness note:
 
-- The public setup prompts now tell supported harnesses to acquire the `kale-deploy` skill or plugin first, then connect Kale.
+- The public setup page now shows short per-agent install commands for the `kale-deploy` add-on, then a plain-language build prompt.
 - Codex can usually use the standard MCP OAuth flow directly.
 - Claude Code is more reliable today through the `/connect` token bridge plus `claude mcp add --transport http --header "Authorization: Bearer ..."` rather than the interactive `/mcp` screen.
 

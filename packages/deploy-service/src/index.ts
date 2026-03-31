@@ -46,7 +46,7 @@ import {
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
 import {
-  buildHarnessSetupPrompts
+  buildHarnessInstallInstructions
 } from "./harness-onboarding";
 import {
   ensurePrimaryProjectDomainLabel
@@ -626,9 +626,9 @@ deployServiceApp.get("/", async (c) => {
   const liveProjectCount = liveProjects.length;
   const marketingName = "Kale Deploy";
   const marketingSource = "From the CUNY AI Lab";
-  const buildPrompt = `Build me a small web app and deploy it with ${marketingName}. If ${marketingName} is not connected yet, connect it first. Then register the project, handle any GitHub setup steps, and deploy it so I can see it live.`;
+  const buildPrompt = `Build me a small web app with ${marketingName} and put it online so I can see it live.`;
 
-  const agents = buildHarnessSetupPrompts("skill-first", {
+  const agents = buildHarnessInstallInstructions({
     marketingName,
     serviceBaseUrl,
     mcpEndpoint
@@ -943,8 +943,8 @@ deployServiceApp.get("/", async (c) => {
 
       <section class="get-started">
         <div class="agent-blocks">
-          <p class="section-label">1. Connect your agent</p>
-          <p class="build-hint">Pick the agent you use. Copy the prompt below and paste it in. Your browser may open once to sign you in.</p>
+          <p class="section-label">1. Install Kale once</p>
+          <p class="build-hint">Paste the install command into the agent you use once. Then tell it what you want to build.</p>
           ${agents.map((agent) => `
           <div class="agent-block">
             <div class="agent-header">
@@ -952,8 +952,8 @@ deployServiceApp.get("/", async (c) => {
               <span class="agent-name">${escapeHtml(agent.name)}</span>
             </div>
             <p class="agent-hint">Paste into ${escapeHtml(agent.name)}:</p>
-            <div class="prompt-block" data-prompt="${escapeHtml(agent.prompt)}">
-              ${escapeHtml(agent.prompt)}
+            <div class="prompt-block" data-prompt="${escapeHtml(agent.instruction)}">
+              ${escapeHtml(agent.instruction)}
               <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>
             </div>
           </div>
@@ -964,7 +964,7 @@ deployServiceApp.get("/", async (c) => {
           <p class="section-label">2. Tell it what to build</p>
           <div class="build-block">
             <div class="build-header">Try this, or describe your own idea</div>
-            <p class="build-hint">Your agent will write the code, set up the repo, and put it online for you.</p>
+            <p class="build-hint">Describe your idea in plain language. Your agent can handle the setup and put it online.</p>
             <div class="prompt-block" data-prompt="${escapeHtml(buildPrompt)}" id="build-prompt">
               ${escapeHtml(buildPrompt)}
               <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>

@@ -56,7 +56,7 @@ The intended auth model is now:
 
 Current harness note:
 
-- The public setup prompts now tell supported harnesses to acquire the `kale-deploy` skill or plugin first, then connect Kale.
+- The public setup page now shows short per-agent install commands for the `kale-deploy` add-on, then a plain-language build prompt.
 - Codex can usually stay on the direct MCP OAuth path
 - Claude Code is currently more reliable through `GET /connect`, where the user generates a Kale token and the harness re-adds `/mcp` with `Authorization: Bearer kale_pat_*`
 

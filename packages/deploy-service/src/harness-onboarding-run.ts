@@ -99,11 +99,18 @@ type PromptOverrideFile = {
   gemini?: string;
 };
 
+type ClaudeInitState = {
+  plugins: string[];
+  skills: string[];
+  slashCommands: string[];
+};
+
 const DEFAULT_SERVICE_BASE_URL = "https://cuny.qzz.io/kale";
 const KALE_PLUGIN_PACKAGE = "kale-deploy@cuny-ai-lab";
 const LEGACY_PLUGIN_PACKAGE = "cail-deploy@cuny-ai-lab";
 const KALE_SERVER_NAMES = ["kale", "cail"] as const;
-const KALE_SKILL_NAMES = ["kale-deploy", "cail-deploy"] as const;
+const KALE_PLUGIN_NAMES = ["kale-deploy", "cail-deploy"] as const;
+const KALE_SKILL_NAMES = ["kale-deploy", "kale-connect", "cail-deploy"] as const;
 
 const HELP_TEXT = `Internal harness onboarding lab for Kale Deploy.
 
@@ -112,7 +119,7 @@ Usage:
 
 Options:
   --harness <ids>         Comma-separated subset of: claude,codex,gemini
-  --prompt-profile <id>   Prompt profile: current or skill-first. Default: skill-first
+  --prompt-profile <id>   Prompt profile: current or skill-first. Default: current
   --out-dir <path>        Output directory. Default: tmp/harness-onboarding/<timestamp>
   --service-base-url <u>  Kale front door. Default: https://cuny.qzz.io/kale
   --timeout-ms <n>        Per-harness timeout in milliseconds. Default: 120000
@@ -167,7 +174,7 @@ function parseArgs(argv: string[]): CliOptions | undefined {
   const options: CliOptions = {
     outDir: path.join("tmp", "harness-onboarding", timestamp),
     harnesses: [...HARNESS_IDS],
-    promptProfile: "skill-first",
+    promptProfile: "current",
     serviceBaseUrl: DEFAULT_SERVICE_BASE_URL,
     timeoutMs: 120_000
   };
@@ -301,8 +308,8 @@ async function runHarness(input: {
     await fs.writeFile(postflightPath, JSON.stringify(postflight, null, 2));
 
     const observed = summarizeObservedState(input.harnessId, runResult, postflight);
-    const outcome = classifyOutcome(runResult, observed, input.promptProfile);
-    const summary = summarizeOutcome(input.prompt.name, outcome, observed, input.promptProfile);
+    const outcome = classifyOutcome(runResult, observed);
+    const summary = summarizeOutcome(input.prompt.name, outcome, observed);
 
     return {
       harnessId: input.harnessId,
@@ -369,9 +376,11 @@ async function prepareHarness(input: {
       path.join(currentHome(), ".codex", "auth.json"),
       path.join(homeDir, ".codex", "auth.json")
     );
+    await seedCodexKaleSkills(homeDir);
     const env = isolatedEnv(homeDir);
     const notes = [
       authSeeded ? "Seeded ~/.codex/auth.json into isolated home." : "Missing ~/.codex/auth.json; Codex may not be able to run.",
+      "Preinstalled the Kale Deploy Codex skills into the isolated home before the run.",
       kalePatToken
         ? "Found a live Kale PAT for automated full-process Codex testing."
         : "No live Kale PAT was available, so Codex full-process testing may stop at the browser or token handoff."
@@ -422,12 +431,15 @@ async function prepareHarness(input: {
       }, null, 2));
       copied.push("settings.json (synthetic oauth-personal default)");
     }
+    await seedGeminiKaleSkills(workspaceDir);
+    await ensureGeminiProjectMcpConfig(workspaceDir);
     const env = isolatedEnv(homeDir);
     const authSeeded = copied.some((entry) => entry.startsWith("oauth_creds.json") || entry.startsWith("google_accounts.json"));
     const notes = [
       copied.length > 0
         ? `Seeded isolated Gemini home with: ${copied.join(", ")}.`
         : "No Gemini auth files were available to seed into the isolated home.",
+      "Preinstalled the Kale Deploy Gemini skills and ensured project .gemini/settings.json declares the Kale MCP server before the run.",
       kalePatToken
         ? "Found a live Kale PAT for automated full-process Gemini testing."
         : "No live Kale PAT was available, so Gemini full-process testing may stop at the browser or token handoff."
@@ -487,15 +499,14 @@ async function prepareHarness(input: {
   notes.push("Removed existing Claude Kale MCP entries from local and user scopes before the run.");
 
   for (const pluginPackage of [KALE_PLUGIN_PACKAGE, LEGACY_PLUGIN_PACKAGE]) {
-    await runCommand({
-      command: "claude",
-      args: ["plugins", "uninstall", pluginPackage],
-      cwd: workspaceDir,
-      env: process.env,
-      timeoutMs: 30_000
-    });
+    await uninstallClaudePluginEverywhere(workspaceDir, process.env, pluginPackage);
   }
   notes.push("Uninstalled existing Claude Kale plugin packages before the run.");
+
+  await installClaudeKalePlugin(workspaceDir, process.env);
+  notes.push("Preinstalled the Kale Deploy Claude plugin before the run.");
+  await ensureClaudeKalePluginReady(workspaceDir, process.env);
+  notes.push("Verified that the Kale Deploy Claude plugin loads in a headless Claude session before the run.");
 
   return {
     harnessId: input.harnessId,
@@ -593,12 +604,21 @@ async function collectPostflight(harnessId: HarnessId, prepared: PreparedHarness
     env: prepared.env,
     timeoutMs: 30_000
   });
+  const extensionsList = await runCommand({
+    command: "gemini",
+    args: ["extensions", "list"],
+    cwd: prepared.workspaceDir,
+    env: prepared.env,
+    timeoutMs: 30_000
+  });
   const candidateSkillPaths = KALE_SKILL_NAMES.flatMap((skillName) => [
     path.join(prepared.workspaceDir, ".gemini", "skills", skillName, "SKILL.md"),
-    path.join(prepared.homeDir ?? currentHome(), ".gemini", "skills", skillName, "SKILL.md")
+    path.join(prepared.homeDir ?? currentHome(), ".gemini", "skills", skillName, "SKILL.md"),
+    path.join(prepared.homeDir ?? currentHome(), ".gemini", "extensions", skillName, "skills", "kale-deploy", "SKILL.md")
   ]);
   return {
     mcpList: flattenOutput(mcpList),
+    extensionsList: flattenOutput(extensionsList),
     skillPath: await firstExistingPath(candidateSkillPaths) ?? ""
   };
 }
@@ -616,10 +636,14 @@ function summarizeObservedState(
     || /(kale|cail)\s+https:\/\/cuny\.qzz\.io\/kale\/mcp/.test(postflightText)
     || /(kale|cail):\s+https:\/\/cuny\.qzz\.io\/kale\/mcp/.test(postflightText);
   const kaleServerDisconnected = /(^|\n)\s*[✗x]\s*(kale|cail):.*disconnected/im.test(postflightText)
-    || /(kale|cail).*disconnected/.test(postflightText);
+    || /(kale|cail).*disconnected/.test(postflightText)
+    || /(kale|cail).*failed to connect/.test(postflightText)
+    || /(kale|cail).*requires authentication/.test(postflightText)
+    || /(kale|cail).*not logged in/.test(postflightText)
+    || /\bauth\s+oauth\b/.test(postflightText);
   const skillAcquired = harnessId === "claude"
     ? /(kale-deploy|cail-deploy)@cuny-ai-lab/.test(postflightText)
-    : Boolean(postflight.skillPath);
+    : Boolean(postflight.skillPath) || /(kale-deploy|cail-deploy)/.test(postflightText);
   const skillObserved = skillAcquired
     || assistantText.includes("kale-deploy")
     || rawText.includes("kale-deploy")
@@ -647,16 +671,9 @@ function summarizeObservedState(
 
 function classifyOutcome(
   runResult: SpawnResult,
-  observed: HarnessResult["observed"],
-  promptProfile: HarnessPromptProfile
+  observed: HarnessResult["observed"]
 ): string {
   const text = `${runResult.stdout}\n${runResult.stderr}`;
-  if (promptProfile === "skill-first" && !observed.skillAcquired) {
-    return "skill_missing";
-  }
-  if (promptProfile === "skill-first" && !observed.skillObserved) {
-    return "skill_not_observed";
-  }
   if (observed.mcpConfigured && observed.mentionedVerification) {
     return "configured_and_verified";
   }
@@ -681,19 +698,9 @@ function classifyOutcome(
 function summarizeOutcome(
   harnessName: string,
   outcome: string,
-  observed: HarnessResult["observed"],
-  promptProfile: HarnessPromptProfile
+  observed: HarnessResult["observed"]
 ): string {
-  if (outcome === "skill_missing") {
-    return `${harnessName} did not acquire the required kale-deploy skill or plugin from the tested app flow.`;
-  }
-  if (outcome === "skill_not_observed") {
-    return `${harnessName} acquired kale-deploy artifacts ambiguously, but the run did not clearly show the skill-first flow being used.`;
-  }
   if (outcome === "configured_and_verified") {
-    if (promptProfile === "skill-first") {
-      return `${harnessName} acquired the required kale-deploy skill or plugin, then configured Kale and verified the required Kale tools.`;
-    }
     return `${harnessName} configured Kale and verified the required Kale tools.`;
   }
   if (outcome === "configured_but_not_verified") {
@@ -721,8 +728,8 @@ function summarizeOutcome(
   if (!observed.pluginInstalled) {
     details.push("no kale plugin observed");
   }
-  if (promptProfile === "skill-first" && !observed.skillAcquired) {
-    details.push("required kale-deploy skill or plugin missing");
+  if (!observed.skillAcquired) {
+    details.push("no installed kale add-on observed");
   }
   return `${harnessName} failed the onboarding test (${details.join(", ") || "no observable progress"}).`;
 }
@@ -1016,7 +1023,7 @@ async function runGeminiPromptFlow(input: {
 }): Promise<SpawnResult> {
   const turns: NonNullable<SpawnResult["turns"]> = [];
   const redactSecrets = input.prepared.kalePatToken ? [input.prepared.kalePatToken] : [];
-  const initialTurn = await runGeminiJsonTurn({
+  const initialTurn = await runGeminiStreamTurn({
     label: "initial",
     cwd: input.prepared.workspaceDir,
     env: input.prepared.env,
@@ -1045,7 +1052,7 @@ async function runGeminiPromptFlow(input: {
   const wantsHandoff = askedForKaleHandoff(`${initialTurn.assistantOutput ?? ""}\n${initialTurn.stdout}\n${initialTurn.stderr}`);
 
   if (!verificationAlreadyObserved && input.prepared.kalePatToken && (wantsHandoff || !initialConnected)) {
-    const tokenTurn = await runGeminiJsonTurn({
+    const tokenTurn = await runGeminiStreamTurn({
       label: "token",
       cwd: input.prepared.workspaceDir,
       env: withKalePatEnv(input.prepared.env, input.prepared.kalePatToken),
@@ -1065,7 +1072,7 @@ async function runGeminiPromptFlow(input: {
 
   const shouldVerify = verificationAlreadyObserved || initialConnected || turns.some((turn) => turn.label === "token");
   if (!verificationAlreadyObserved && shouldVerify) {
-    const verificationTurn = await runGeminiJsonTurn({
+    const verificationTurn = await runGeminiStreamTurn({
       label: "verify",
       cwd: input.prepared.workspaceDir,
       env: withKalePatEnv(input.prepared.env, input.prepared.kalePatToken),
@@ -1097,7 +1104,7 @@ async function runGeminiPromptFlow(input: {
   };
 }
 
-async function runGeminiJsonTurn(input: {
+async function runGeminiStreamTurn(input: {
   label: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -1114,7 +1121,7 @@ async function runGeminiJsonTurn(input: {
       input.prompt,
       ...(input.resumeSessionId ? ["--resume", input.resumeSessionId] : []),
       "-o",
-      "json",
+      "stream-json",
       "--yolo"
     ],
     cwd: input.cwd,
@@ -1123,12 +1130,12 @@ async function runGeminiJsonTurn(input: {
   });
   const stdout = redactSecretValues(result.stdout, input.redactSecrets);
   const stderr = redactSecretValues(result.stderr, input.redactSecrets);
-  await fs.writeFile(path.join(input.logDir, `${input.label}.json`), stdout);
+  await fs.writeFile(path.join(input.logDir, `${input.label}.jsonl`), stdout);
   if (stderr.trim()) {
     await fs.writeFile(path.join(input.logDir, `${input.label}.stderr.txt`), stderr);
   }
 
-  const parsed = parseGeminiJsonResult(stdout);
+  const parsed = parseGeminiStreamJsonResult(stdout);
   return {
     label: input.label,
     sessionId: parsed.sessionId,
@@ -1141,29 +1148,36 @@ async function runGeminiJsonTurn(input: {
   };
 }
 
-function parseGeminiJsonResult(stdout: string): { sessionId?: string; resultText: string; toolCalls: string[] } {
-  const jsonStart = stdout.indexOf("{");
-  if (jsonStart < 0) {
-    return {
-      resultText: "",
-      toolCalls: []
-    };
+function parseGeminiStreamJsonResult(stdout: string): { sessionId?: string; resultText: string; toolCalls: string[] } {
+  const assistantMessages: string[] = [];
+  const toolCalls = new Set<string>();
+  let sessionId: string | undefined;
+
+  for (const line of stdout.split("\n").map((value) => value.trim()).filter(Boolean)) {
+    try {
+      const event = JSON.parse(line) as {
+        type?: string;
+        session_id?: string;
+        role?: string;
+        content?: string;
+        tool_name?: string;
+      };
+      sessionId = event.session_id ?? sessionId;
+      if (event.type === "message" && event.role === "assistant" && typeof event.content === "string" && event.content.trim()) {
+        assistantMessages.push(event.content.trim());
+      }
+      if (event.type === "tool_use" && typeof event.tool_name === "string") {
+        toolCalls.add(event.tool_name);
+      }
+    } catch {
+      continue;
+    }
   }
 
-  const parsed = JSON.parse(stdout.slice(jsonStart).trim()) as {
-    session_id?: string;
-    response?: string;
-    stats?: {
-      tools?: {
-        byName?: Record<string, unknown>;
-      };
-    };
-  };
-
   return {
-    sessionId: parsed.session_id,
-    resultText: parsed.response ?? "",
-    toolCalls: Object.keys(parsed.stats?.tools?.byName ?? {})
+    sessionId,
+    resultText: assistantMessages.join("\n"),
+    toolCalls: Array.from(toolCalls)
   };
 }
 
@@ -1239,7 +1253,7 @@ async function runClaudePromptFlow(input: {
   timeoutMs: number;
 }): Promise<SpawnResult> {
   const turns: NonNullable<SpawnResult["turns"]> = [];
-  const initialTurn = await runClaudeJsonTurn({
+  const initialTurn = await runClaudeStreamTurn({
     label: "initial",
     cwd: input.prepared.workspaceDir,
     env: input.prepared.env,
@@ -1255,7 +1269,7 @@ async function runClaudePromptFlow(input: {
   let finalTurn = initialTurn;
 
   if (askedForKaleToken(initialTurn.assistantOutput ?? initialTurn.stdout) && input.prepared.kalePatToken && initialTurn.sessionId) {
-    const tokenTurn = await runClaudeJsonTurn({
+    const tokenTurn = await runClaudeStreamTurn({
       label: "token",
       cwd: input.prepared.workspaceDir,
       env: input.prepared.env,
@@ -1301,7 +1315,7 @@ async function runClaudePromptFlow(input: {
   };
 }
 
-async function runClaudeJsonTurn(input: {
+async function runClaudeStreamTurn(input: {
   label: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -1316,21 +1330,26 @@ async function runClaudeJsonTurn(input: {
     args: [
       "-p",
       ...(input.resumeSessionId ? ["--resume", input.resumeSessionId] : []),
+      "--verbose",
+      "--include-partial-messages",
       "--output-format",
-      "json",
+      "stream-json",
       "--permission-mode",
-      "bypassPermissions"
+      "bypassPermissions",
+      input.prompt
     ],
     cwd: input.cwd,
     env: input.env,
-    timeoutMs: input.timeoutMs,
-    stdinText: input.prompt
+    timeoutMs: input.timeoutMs
   });
   const stdout = redactSecretValues(result.stdout, input.redactSecrets);
   const stderr = redactSecretValues(result.stderr, input.redactSecrets);
-  await fs.writeFile(path.join(input.logDir, `${input.label}.json`), stdout);
+  await fs.writeFile(path.join(input.logDir, `${input.label}.jsonl`), stdout);
+  if (stderr.trim()) {
+    await fs.writeFile(path.join(input.logDir, `${input.label}.stderr.txt`), stderr);
+  }
 
-  const parsed = parseClaudeJsonResult(stdout);
+  const parsed = parseClaudeStreamJsonResult(stdout);
   return {
     label: input.label,
     sessionId: parsed.sessionId,
@@ -1349,71 +1368,68 @@ async function runClaudeVerificationTurn(input: {
   timeoutMs: number;
   redactSecrets?: string[];
 }): Promise<NonNullable<SpawnResult["turns"]>[number]> {
-  const result = await runCommand({
-    command: "claude",
-    args: [
-      "-p",
-      "--verbose",
-      "--output-format",
-      "stream-json",
-      "--permission-mode",
-      "bypassPermissions"
-    ],
+  return runClaudeStreamTurn({
+    label: "verify",
     cwd: input.cwd,
     env: input.env,
+    logDir: input.logDir,
     timeoutMs: input.timeoutMs,
-    stdinText: buildClaudeVerificationPrompt()
+    prompt: buildClaudeVerificationPrompt(),
+    redactSecrets: input.redactSecrets
   });
-  const stdout = redactSecretValues(result.stdout, input.redactSecrets);
-  const stderr = redactSecretValues(result.stderr, input.redactSecrets);
-  await fs.writeFile(path.join(input.logDir, "verify.jsonl"), stdout);
-
-  const parsed = parseClaudeStreamJsonResult(stdout);
-  return {
-    label: "verify",
-    sessionId: parsed.sessionId,
-    stdout,
-    stderr,
-    assistantOutput: parsed.resultText,
-    observedToolCalls: parsed.toolCalls,
-    exitCode: result.exitCode,
-    timedOut: result.timedOut
-  };
 }
 
-function parseClaudeJsonResult(stdout: string): { sessionId?: string; resultText: string } {
-  const parsed = JSON.parse(stdout.trim()) as { session_id?: string; result?: string };
-  return {
-    sessionId: parsed.session_id,
-    resultText: parsed.result ?? ""
-  };
-}
-
-function parseClaudeStreamJsonResult(stdout: string): { sessionId?: string; resultText: string; toolCalls: string[] } {
+function parseClaudeStreamJsonResult(stdout: string): {
+  sessionId?: string;
+  resultText: string;
+  toolCalls: string[];
+  initState?: ClaudeInitState;
+} {
   const toolCalls = new Set<string>();
   let sessionId: string | undefined;
-  let resultText = "";
+  const assistantTextParts: string[] = [];
+  let finalResultText = "";
+  let initState: ClaudeInitState | undefined;
 
   for (const line of stdout.split("\n").map((value) => value.trim()).filter(Boolean)) {
     try {
       const event = JSON.parse(line) as {
         type?: string;
+        subtype?: string;
         session_id?: string;
         result?: string;
+        plugins?: Array<{
+          name?: string;
+        }>;
+        skills?: string[];
+        slash_commands?: string[];
         message?: {
           content?: Array<{
             type?: string;
             name?: string;
+            text?: string;
           }>;
         };
       };
       sessionId = event.session_id ?? sessionId;
-      if (event.type === "result" && typeof event.result === "string") {
-        resultText = event.result;
+      if (event.type === "system" && event.subtype === "init") {
+        initState = {
+          plugins: (event.plugins ?? []).map((plugin) => plugin.name ?? "").filter(Boolean),
+          skills: (event.skills ?? []).filter(Boolean),
+          slashCommands: (event.slash_commands ?? []).filter(Boolean)
+        };
       }
-      for (const content of event.message?.content ?? []) {
-        if (content.type === "tool_use" && content.name) {
-          toolCalls.add(content.name);
+      if (event.type === "result" && typeof event.result === "string") {
+        finalResultText = event.result;
+      }
+      if (event.type === "assistant") {
+        for (const content of event.message?.content ?? []) {
+          if (content.type === "tool_use" && content.name) {
+            toolCalls.add(content.name);
+          }
+          if (content.type === "text" && typeof content.text === "string" && content.text.trim()) {
+            assistantTextParts.push(content.text.trim());
+          }
         }
       }
     } catch {
@@ -1421,10 +1437,20 @@ function parseClaudeStreamJsonResult(stdout: string): { sessionId?: string; resu
     }
   }
 
+  const combinedTextParts = assistantTextParts.filter(Boolean);
+  const normalizedFinalResult = finalResultText.trim();
+  if (normalizedFinalResult) {
+    const joinedAssistantText = combinedTextParts.join("\n").trim();
+    if (joinedAssistantText !== normalizedFinalResult && !joinedAssistantText.endsWith(normalizedFinalResult)) {
+      combinedTextParts.push(normalizedFinalResult);
+    }
+  }
+
   return {
     sessionId,
-    resultText,
-    toolCalls: Array.from(toolCalls)
+    resultText: combinedTextParts.join("\n"),
+    toolCalls: Array.from(toolCalls),
+    initState
   };
 }
 
@@ -1470,17 +1496,158 @@ function isolatedEnv(homeDir: string): NodeJS.ProcessEnv {
   };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function seedCodexKaleSkills(homeDir: string): Promise<void> {
+  const sourceRoot = path.join(repoRoot(), "plugins", "kale-deploy", "skills");
+  const targetRoot = path.join(homeDir, ".codex", "skills");
+  await fs.mkdir(targetRoot, { recursive: true });
+  for (const skillName of await fs.readdir(sourceRoot)) {
+    const sourceDir = path.join(sourceRoot, skillName);
+    const targetDir = path.join(targetRoot, skillName);
+    await fs.rm(targetDir, { recursive: true, force: true });
+    await fs.cp(sourceDir, targetDir, { recursive: true, force: true });
+  }
+}
+
+async function seedGeminiKaleSkills(workspaceDir: string): Promise<void> {
+  const sourceRoot = path.join(repoRoot(), "plugins", "kale-deploy", "skills");
+  const targetRoot = path.join(workspaceDir, ".gemini", "skills");
+  await fs.mkdir(targetRoot, { recursive: true });
+  for (const skillName of await fs.readdir(sourceRoot)) {
+    const sourceDir = path.join(sourceRoot, skillName);
+    const targetDir = path.join(targetRoot, skillName);
+    await fs.rm(targetDir, { recursive: true, force: true });
+    await fs.cp(sourceDir, targetDir, { recursive: true, force: true });
+  }
+}
+
+async function ensureGeminiProjectMcpConfig(workspaceDir: string): Promise<void> {
+  const settingsDir = path.join(workspaceDir, ".gemini");
+  const settingsPath = path.join(settingsDir, "settings.json");
+  let parsed: Record<string, unknown> = {};
+  const raw = await readIfExists(settingsPath);
+  if (raw) {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  }
+
+  const existingServers = parsed.mcpServers && typeof parsed.mcpServers === "object"
+    ? { ...(parsed.mcpServers as Record<string, unknown>) }
+    : {};
+  existingServers.kale = {
+    url: "https://cuny.qzz.io/kale/mcp",
+    type: "http"
+  };
+
+  parsed.mcpServers = existingServers;
+  await fs.mkdir(settingsDir, { recursive: true });
+  await fs.writeFile(settingsPath, JSON.stringify(parsed, null, 2));
+}
+
+async function installClaudeKalePlugin(workspaceDir: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const marketplaceAdd = await runCommand({
+    command: "claude",
+    args: ["plugins", "marketplace", "add", repoRoot()],
+    cwd: workspaceDir,
+    env,
+    timeoutMs: 60_000
+  });
+  ensureCommandSucceeded(marketplaceAdd, "Claude Kale marketplace add");
+
+  const pluginInstall = await runCommand({
+    command: "claude",
+    args: ["plugins", "install", KALE_PLUGIN_PACKAGE],
+    cwd: workspaceDir,
+    env,
+    timeoutMs: 60_000
+  });
+  ensureCommandSucceeded(pluginInstall, "Claude Kale plugin install");
+}
+
+async function uninstallClaudePluginEverywhere(
+  workspaceDir: string,
+  env: NodeJS.ProcessEnv,
+  pluginPackage: string
+): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await runCommand({
+      command: "claude",
+      args: ["plugins", "uninstall", pluginPackage],
+      cwd: workspaceDir,
+      env,
+      timeoutMs: 30_000
+    });
+    const pluginList = await runCommand({
+      command: "claude",
+      args: ["plugins", "list"],
+      cwd: workspaceDir,
+      env,
+      timeoutMs: 30_000
+    });
+    if (!flattenOutput(pluginList).includes(pluginPackage)) {
+      return;
+    }
+  }
+}
+
+async function ensureClaudeKalePluginReady(workspaceDir: string, env: NodeJS.ProcessEnv): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const probe = await runCommand({
+      command: "claude",
+      args: [
+        "-p",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "--permission-mode",
+        "bypassPermissions",
+        "Reply with OK."
+      ],
+      cwd: workspaceDir,
+      env,
+      timeoutMs: 45_000
+    });
+    const parsed = parseClaudeStreamJsonResult(probe.stdout);
+    const slashCommands = parsed.initState?.slashCommands ?? [];
+    const skills = parsed.initState?.skills ?? [];
+    const pluginNames = parsed.initState?.plugins ?? [];
+    const pluginLoaded = pluginNames.some((value) => KALE_PLUGIN_NAMES.some((pluginName) => value === pluginName))
+      && (
+        slashCommands.some((value) => KALE_SKILL_NAMES.some((skillName) => value === `${skillName}:${skillName}`))
+        || skills.some((value) => KALE_SKILL_NAMES.some((skillName) => value === `${skillName}:${skillName}`))
+      );
+    if (pluginLoaded) {
+      return;
+    }
+    await sleep(1_500);
+  }
+
+  throw new Error("Claude Kale plugin installed, but the Kale plugin skill did not load into the headless session.");
+}
+
+function ensureCommandSucceeded(result: SpawnResult, label: string): void {
+  if (!result.timedOut && result.exitCode === 0) {
+    return;
+  }
+  throw new Error(`${label} failed.\n${flattenOutput(result)}`);
+}
+
 function hasVerificationEvidence(
   assistantText: string,
   observedToolCallsText: string,
   rawText: string
 ): boolean {
-  const testConnectionObserved = observedToolCallsText.includes("test_connection");
-  const registerProjectObserved = assistantText.includes("register_project")
-    || observedToolCallsText.includes("register_project")
-    || rawText.includes('"name":"register_project"')
-    || rawText.includes('"nextaction":"register_project"')
-    || rawText.includes('"next_action":"register_project"');
+  const combinedText = `${observedToolCallsText}\n${rawText}`;
+  const testConnectionObserved = /mcp__(kale|cail)__test_connection/.test(combinedText)
+    || combinedText.includes('"name":"test_connection"');
+  const registerProjectObserved = /mcp__(kale|cail)__register_project/.test(combinedText)
+    || combinedText.includes('"name":"register_project"')
+    || combinedText.includes('"nextaction":"register_project"')
+    || combinedText.includes('"next_action":"register_project"');
   const confirmsOutcome = assistantText.includes("confirmed")
     || assistantText.includes("available")
     || assistantText.includes("succeeded")
@@ -1594,6 +1761,10 @@ async function restoreBackup(entry: BackupEntry): Promise<void> {
 
 function currentHome(): string {
   return process.env.HOME ?? os.homedir();
+}
+
+function repoRoot(): string {
+  return path.resolve(process.cwd());
 }
 
 function renderSummaryMarkdown(results: HarnessResult[]): string {

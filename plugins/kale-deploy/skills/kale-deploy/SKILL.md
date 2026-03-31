@@ -7,6 +7,8 @@ description: Use when building or adapting a web application for the Kale Deploy
 
 Use this skill when the target runtime is Kale Deploy.
 
+If the user only wants to prepare the environment, connect Kale, or verify readiness before deciding what to build, use `kale-connect` instead of starting with scaffolding.
+
 ## What Kale Deploy is
 
 Kale Deploy is a GitHub-first deployment platform from the CUNY AI Lab.

@@ -6,13 +6,14 @@ It is not part of the public website flow.
 
 ## What It Uses
 
-The baseline scenario is the exact harness prompt text that the Kale landing page serves today.
+The public landing page and the harness both read from the same onboarding module, but they now use different parts of it:
 
-That prompt text now lives in:
+- the website uses the per-agent install instructions
+- the harness uses a smaller post-install bootstrap prompt
+
+That shared source lives in:
 
 - [harness-onboarding.ts](/Users/stephenzweibel/Apps/CAIL-deploy/packages/deploy-service/src/harness-onboarding.ts)
-
-The public page and the internal lab both read from that same source so they do not drift.
 
 ## Run It
 
@@ -42,14 +43,15 @@ Each harness gets:
 
 Prompt profiles:
 
-- `skill-first`: the current onboarding prompt text the Kale landing page serves today. It requires the harness to acquire the `kale-deploy` skill or plugin before MCP setup.
-- `current`: currently an alias of the live prompt text, kept for CLI compatibility while prompt experiments move to `--scenario-file`.
+- `current`: the current post-install Kale bootstrap prompt the lab uses after the add-on is already present
+- `skill-first`: currently a compatibility alias of `current`, kept so older lab commands still run
 
-In `skill-first` runs, plain MCP connection is not enough. The lab marks the run as a failure unless it can observe the required `kale-deploy` skill or plugin after the prompt runs.
+The lab now treats install as setup, not as the graded step. It preinstalls the local Kale add-on for the harness first, then grades the smaller post-install bootstrap flow: connect Kale, handle any browser or token handoff, and call a real Kale tool.
 
 For Claude, the lab can now run the whole onboarding loop when a live Kale PAT is available from the local Claude config or `KALE_TEST_PAT`:
 
 - start from a cleaned Claude environment
+- preinstall the local `kale-deploy` add-on for that harness
 - wait for Claude to ask for the token handoff
 - feed the token back into the same Claude session
 - start a fresh Claude verification session
@@ -58,8 +60,9 @@ For Claude, the lab can now run the whole onboarding loop when a live Kale PAT i
 ## Fresh-State Strategy
 
 - `codex`: isolated temp home seeded only with `~/.codex/auth.json`
-- `claude`: live-home backup, cleanup, run, and restore because Claude login is not portable into an isolated temp home in this environment
-- `gemini`: isolated temp home seeded with whatever Gemini auth files are present; if Gemini itself is not configured, the run is marked as a base harness auth failure rather than a Kale onboarding failure
+- `codex`: isolated temp home seeded only with `~/.codex/auth.json`, plus the local `kale-deploy` skill
+- `claude`: live-home backup, cleanup, local plugin install, run, and restore because Claude login is not portable into an isolated temp home in this environment
+- `gemini`: isolated temp home seeded with whatever Gemini auth files are present, plus the local `kale-deploy` guidance; if Gemini itself is not configured, the run is marked as a base harness auth failure rather than a Kale onboarding failure
 
 ## Alternate Directions
 

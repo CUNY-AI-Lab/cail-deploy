@@ -4,6 +4,13 @@ export const HARNESS_PROMPT_PROFILES = ["current", "skill-first"] as const;
 export type HarnessId = typeof HARNESS_IDS[number];
 export type HarnessPromptProfile = typeof HARNESS_PROMPT_PROFILES[number];
 
+export type HarnessInstallInstruction = {
+  id: HarnessId;
+  name: string;
+  letter: string;
+  instruction: string;
+};
+
 export type HarnessSetupPrompt = {
   id: HarnessId;
   name: string;
@@ -17,6 +24,10 @@ export type HarnessPromptContext = {
   mcpEndpoint: string;
 };
 
+export function buildHarnessInstallInstructions(input: HarnessPromptContext): HarnessInstallInstruction[] {
+  return buildLiveHarnessInstallInstructions(input);
+}
+
 export function buildHarnessSetupPrompts(
   profile: HarnessPromptProfile,
   input: HarnessPromptContext
@@ -28,18 +39,31 @@ export function buildHarnessSetupPrompts(
 }
 
 export function buildCurrentAppHarnessSetupPrompts(input: HarnessPromptContext): HarnessSetupPrompt[] {
-  return buildLiveHarnessSetupPrompts(input);
+  return buildInstalledHarnessSetupPrompts(input);
 }
 
 export function buildSkillFirstHarnessSetupPrompts(input: HarnessPromptContext): HarnessSetupPrompt[] {
-  return buildLiveHarnessSetupPrompts(input);
+  return buildInstalledHarnessSetupPrompts(input);
 }
 
-function buildLiveHarnessSetupPrompts(input: HarnessPromptContext): HarnessSetupPrompt[] {
+function buildLiveHarnessInstallInstructions(_: HarnessPromptContext): HarnessInstallInstruction[] {
+  const claudeInstallInstruction = `/plugin marketplace add CUNY-AI-Lab/CAIL-deploy\n/plugin install kale-deploy@cuny-ai-lab`;
+  const codexInstallInstruction = `$skill-installer install https://github.com/CUNY-AI-Lab/CAIL-deploy/tree/main/plugins/kale-deploy/skills/kale-deploy`;
+  const geminiInstallInstruction = `/extensions install https://github.com/CUNY-AI-Lab/CAIL-deploy`;
+
+  return [
+    { id: "claude", name: "Claude Code", instruction: claudeInstallInstruction, letter: "C" },
+    { id: "codex", name: "Codex", instruction: codexInstallInstruction, letter: "X" },
+    { id: "gemini", name: "Gemini CLI", instruction: geminiInstallInstruction, letter: "G" },
+  ];
+}
+
+function buildInstalledHarnessSetupPrompts(input: HarnessPromptContext): HarnessSetupPrompt[] {
+  const connectUrl = `${input.serviceBaseUrl.replace(/\/$/, "")}/connect`;
   const { marketingName } = input;
-  const claudeSetupPrompt = `Connect ${marketingName} in this Claude Code environment. If the CUNY AI Lab plugin marketplace is not already configured in local scope, run:\nclaude plugins marketplace add CUNY-AI-Lab/CAIL-deploy --scope local\nThen install the official plugin in local scope:\nclaude plugins install kale-deploy@cuny-ai-lab -s local\nConfirm that kale-deploy@cuny-ai-lab is installed and enabled. Then use the installed kale-deploy:kale-deploy plugin guidance for the rest of setup. Before saying ${marketingName} is ready, call test_connection and confirm register_project is available.`;
-  const codexSetupPrompt = `Connect ${marketingName} in this Codex environment. Use Codex's built-in skill-installer skill to install the official kale-deploy skill from CUNY-AI-Lab/CAIL-deploy at path plugins/kale-deploy/skills/kale-deploy. Then use the installed kale-deploy skill for the rest of setup. Before saying ${marketingName} is ready, call test_connection and confirm register_project is available.`;
-  const geminiSetupPrompt = `Connect ${marketingName} in this Gemini CLI environment. Run:\ngemini skills install https://github.com/CUNY-AI-Lab/CAIL-deploy --path plugins/kale-deploy/skills/kale-deploy --scope workspace --consent\nThen use the installed kale-deploy skill for the rest of setup. Before saying ${marketingName} is ready, call test_connection and confirm register_project is available.`;
+  const claudeSetupPrompt = `Prepare this Claude Code environment for future ${marketingName} work. The official \`kale-deploy\` plugin is already installed. Use the installed \`kale-deploy:kale-connect\` command or the plugin's \`kale-connect\` guidance to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. If Kale authentication is needed, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, call test_connection and confirm register_project is available.`;
+  const codexSetupPrompt = `Prepare this Codex environment for future ${marketingName} work. The official \`kale-deploy\` skills are already installed. Use the installed \`kale-connect\` skill to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. If Kale authentication is needed, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, call test_connection and confirm register_project is available.`;
+  const geminiSetupPrompt = `Prepare this Gemini CLI environment for future ${marketingName} work. The official \`kale-deploy\` skills are already installed, and the Kale MCP server is already declared at \`.gemini/settings.json\` in the current project. Use the installed \`kale-connect\` skill to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. If Kale authentication is needed, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, call test_connection and confirm register_project is available.`;
 
   return [
     { id: "claude", name: "Claude Code", prompt: claudeSetupPrompt, letter: "C" },
