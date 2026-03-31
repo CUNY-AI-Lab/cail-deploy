@@ -43,7 +43,7 @@ Each harness gets:
 Prompt profiles:
 
 - `skill-first`: the current onboarding prompt text the Kale landing page serves today. It requires the harness to acquire the `kale-deploy` skill or plugin before MCP setup.
-- `current`: the older pre-skill-first prompt variant, kept for comparison during rollout.
+- `current`: currently an alias of the live prompt text, kept for CLI compatibility while prompt experiments move to `--scenario-file`.
 
 In `skill-first` runs, plain MCP connection is not enough. The lab marks the run as a failure unless it can observe the required `kale-deploy` skill or plugin after the prompt runs.
 

@@ -40,12 +40,13 @@ Paste that prompt into the agent.
 
 The goal is for the agent to connect Kale Deploy for you, rather than asking you to type setup commands by hand.
 
-The current website setup prompts tell supported agents to acquire the `kale-deploy` skill or plugin first, then connect Kale and verify Kale tools.
+The current website setup prompts tell supported agents how to install the `kale-deploy` skill or plugin first, then tell them to use that installed skill or plugin for the rest of Kale setup and verify Kale tools.
 
 Current Claude note:
 
 - Claude Code works most reliably through the token path right now.
-- If you use Claude, the normal flow is that Claude installs `kale-deploy`, follows the bundled Kale guidance, asks you to open [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), generates a token handoff, and then verifies that Kale tools are really available.
+- If you use Claude, the website prompt tells Claude how to install `kale-deploy` in local scope, then tells it to use the plugin's own Kale guidance for the rest of setup.
+- In practice, that plugin guidance usually leads Claude to send you to [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), do the token handoff, and then verify that Kale tools are really available.
 - If you use Kale from more than one computer, reuse the same Claude token on both machines for now. Generating a new one at `/connect` currently revokes the previous active token.
 - Do not use Claude's interactive `/mcp` screen for Kale right now.
 

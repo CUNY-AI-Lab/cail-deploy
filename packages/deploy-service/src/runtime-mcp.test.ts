@@ -226,9 +226,13 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Codex/);
   assert.match(html, /Gemini CLI/);
   assert.match(html, /Connect your agent/);
+  assert.match(html, /claude plugins marketplace add CUNY-AI-Lab\/CAIL-deploy --scope local/);
   assert.match(html, /claude plugins install kale-deploy@cuny-ai-lab -s local/);
-  assert.match(html, /https:\/\/deploy\.example\/connect/);
-  assert.match(html, /codex mcp add kale --url https:\/\/[^\s"]+\/mcp/);
+  assert.match(html, /use the installed kale-deploy:kale-deploy plugin guidance/i);
+  assert.match(html, /skill-installer/i);
+  assert.match(html, /plugins\/kale-deploy\/skills\/kale-deploy/i);
+  assert.match(html, /use the installed kale-deploy skill for the rest of setup/i);
+  assert.match(html, /gemini skills install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy --path plugins\/kale-deploy\/skills\/kale-deploy --scope workspace --consent/i);
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app and deploy it with Kale Deploy/);
   assert.match(html, /smoke-test/);
