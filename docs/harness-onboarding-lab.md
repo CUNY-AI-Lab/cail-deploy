@@ -24,7 +24,7 @@ Useful options:
 
 ```bash
 npm run harness:onboarding -- --harness codex
-npm run harness:onboarding -- --prompt-profile skill-first
+npm run harness:onboarding -- --prompt-profile current
 npm run harness:onboarding -- --timeout-ms 180000
 npm run harness:onboarding -- --scenario-file /absolute/path/to/prompt-overrides.json
 ```
@@ -42,8 +42,8 @@ Each harness gets:
 
 Prompt profiles:
 
-- `current`: the exact onboarding prompt text the Kale landing page serves today
-- `skill-first`: a candidate app-flow variant that requires the harness to acquire the `cail-deploy` skill or plugin before MCP setup
+- `skill-first`: the current onboarding prompt text the Kale landing page serves today. It requires the harness to acquire the `cail-deploy` skill or plugin before MCP setup.
+- `current`: the older pre-skill-first prompt variant, kept for comparison during rollout.
 
 In `skill-first` runs, plain MCP connection is not enough. The lab marks the run as a failure unless it can observe the required `cail-deploy` skill or plugin after the prompt runs.
 

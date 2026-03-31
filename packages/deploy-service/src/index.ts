@@ -46,7 +46,7 @@ import {
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
 import {
-  buildCurrentAppHarnessSetupPrompts
+  buildHarnessSetupPrompts
 } from "./harness-onboarding";
 import {
   ensurePrimaryProjectDomainLabel
@@ -628,7 +628,7 @@ deployServiceApp.get("/", async (c) => {
   const marketingSource = "From the CUNY AI Lab";
   const buildPrompt = `Build me a small web app and deploy it with ${marketingName}. If ${marketingName} is not connected yet, connect it first. Then register the project, handle any GitHub setup steps, and deploy it so I can see it live.`;
 
-  const agents = buildCurrentAppHarnessSetupPrompts({
+  const agents = buildHarnessSetupPrompts("skill-first", {
     marketingName,
     serviceBaseUrl,
     mcpEndpoint

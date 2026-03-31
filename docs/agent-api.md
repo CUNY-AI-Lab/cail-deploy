@@ -405,15 +405,16 @@ Important values:
 
 Today, the strongest loop is:
 
-1. scaffold with `CAIL-init` or create a Worker-compatible repo
-2. create the GitHub repo with `gh repo create` or another GitHub client
-3. connect the harness to `POST /mcp`
-4. let the harness complete MCP OAuth through the browser, unless the harness is Claude Code and needs the `/connect` token bridge instead
-5. call `test_connection`
-6. call `register_project`
-7. if `installStatus` is `not_installed`, send the user to `guidedInstallUrl`
-8. call `validate_project` for a non-production branch, or push to the default branch for a real deployment
-9. poll `get_build_job_status` or `get_project_status` until the state is terminal
+1. acquire the `cail-deploy` skill or plugin first when the harness supports that surface
+2. scaffold with `CAIL-init` or create a Worker-compatible repo
+3. create the GitHub repo with `gh repo create` or another GitHub client
+4. connect the harness to `POST /mcp`
+5. let the harness complete MCP OAuth through the browser, unless the harness is Claude Code and needs the `/connect` token bridge instead
+6. call `test_connection`
+7. call `register_project`
+8. if `installStatus` is `not_installed`, send the user to `guidedInstallUrl`
+9. call `validate_project` for a non-production branch, or push to the default branch for a real deployment
+10. poll `get_build_job_status` or `get_project_status` until the state is terminal
 
 If the GitHub App is already installed for all repositories in the owner account, the agent can usually do the whole loop without pausing after repo creation.
 

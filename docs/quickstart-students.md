@@ -40,6 +40,8 @@ Paste that prompt into the agent.
 
 The goal is for the agent to connect Kale Deploy for you, rather than asking you to type setup commands by hand.
 
+The current website setup prompts tell supported agents to acquire the `cail-deploy` skill or plugin first, then connect Kale and verify Kale tools.
+
 Current Claude note:
 
 - Claude Code works most reliably through the token path right now.

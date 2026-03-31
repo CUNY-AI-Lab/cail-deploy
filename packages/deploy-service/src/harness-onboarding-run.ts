@@ -104,7 +104,7 @@ Usage:
 
 Options:
   --harness <ids>         Comma-separated subset of: claude,codex,gemini
-  --prompt-profile <id>   Prompt profile: current or skill-first. Default: current
+  --prompt-profile <id>   Prompt profile: current or skill-first. Default: skill-first
   --out-dir <path>        Output directory. Default: tmp/harness-onboarding/<timestamp>
   --service-base-url <u>  Kale front door. Default: https://cuny.qzz.io/kale
   --timeout-ms <n>        Per-harness timeout in milliseconds. Default: 120000
@@ -159,7 +159,7 @@ function parseArgs(argv: string[]): CliOptions | undefined {
   const options: CliOptions = {
     outDir: path.join("tmp", "harness-onboarding", timestamp),
     harnesses: [...HARNESS_IDS],
-    promptProfile: "current",
+    promptProfile: "skill-first",
     serviceBaseUrl: DEFAULT_SERVICE_BASE_URL,
     timeoutMs: 120_000
   };

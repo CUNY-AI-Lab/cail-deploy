@@ -101,6 +101,7 @@ The MCP surface is a thin adapter over the deploy-service control plane, not a s
 
 Current harness note:
 
+- The public setup prompts now tell supported harnesses to acquire the `cail-deploy` skill or plugin first, then connect Kale.
 - Codex can usually use the standard MCP OAuth flow directly.
 - Claude Code is more reliable today through the `/connect` token bridge plus `claude mcp add --transport http --header "Authorization: Bearer ..."` rather than the interactive `/mcp` screen.
 
