@@ -9,6 +9,7 @@ export type HarnessInstallInstruction = {
   name: string;
   letter: string;
   instruction: string;
+  hint: string;
 };
 
 export type HarnessSetupPrompt = {
@@ -52,9 +53,9 @@ function buildLiveHarnessInstallInstructions(input: HarnessPromptContext): Harne
   const geminiInstallInstruction = `/extensions install https://github.com/CUNY-AI-Lab/CAIL-deploy`;
 
   return [
-    { id: "claude", name: "Claude Code", instruction: claudeInstallInstruction, letter: "C" },
-    { id: "codex", name: "Codex", instruction: codexInstallInstruction, letter: "X" },
-    { id: "gemini", name: "Gemini CLI", instruction: geminiInstallInstruction, letter: "G" },
+    { id: "claude", name: "Claude Code", instruction: claudeInstallInstruction, letter: "C", hint: "Paste inside Claude Code" },
+    { id: "codex", name: "Codex", instruction: codexInstallInstruction, letter: "X", hint: "Run in your terminal" },
+    { id: "gemini", name: "Gemini CLI", instruction: geminiInstallInstruction, letter: "G", hint: "Paste inside Gemini CLI" },
   ];
 }
 

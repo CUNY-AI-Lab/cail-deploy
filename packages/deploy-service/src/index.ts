@@ -876,7 +876,16 @@ deployServiceApp.get("/", async (c) => {
         transition: border-color 0.2s;
       }
       .build-block:hover { border-color: var(--accent); }
-      .build-block .prompt-block { margin: 0; border-radius: 0; }
+      .build-block .prompt-block { margin: 0; border-radius: 0; padding: 7px 36px 7px 11px; }
+
+      /* ── Tab hint ── */
+      .tab-hint {
+        font-size: 0.7rem;
+        color: var(--muted);
+        padding: 4px 11px 6px;
+        margin: 0;
+        opacity: 0.8;
+      }
 
       /* ── Existing repo ── */
       .existing-section {
@@ -1017,7 +1026,7 @@ deployServiceApp.get("/", async (c) => {
           <div class="tab-bar" role="tablist">
             ${agents.map((agent, i) => `<button class="tab-btn${i === 0 ? " active" : ""}" data-idx="${i}" role="tab" aria-selected="${i === 0 ? "true" : "false"}"><span class="tab-ico">${escapeHtml(agent.letter)}</span>${escapeHtml(agent.name)}</button>`).join("")}
           </div>
-          ${agents.map((agent, i) => `<div class="tab-panel${i === 0 ? " active" : ""}" data-idx="${i}" role="tabpanel"><div class="prompt-block" data-prompt="${escapeHtml(agent.instruction)}">${escapeHtml(agent.instruction)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div></div>`).join("")}
+          ${agents.map((agent, i) => `<div class="tab-panel${i === 0 ? " active" : ""}" data-idx="${i}" role="tabpanel"><div class="prompt-block" data-prompt="${escapeHtml(agent.instruction)}">${escapeHtml(agent.instruction)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div><p class="tab-hint">${escapeHtml(agent.hint)}</p></div>`).join("")}
         </div>
       </section>
 
