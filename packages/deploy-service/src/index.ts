@@ -870,18 +870,13 @@ deployServiceApp.get("/", async (c) => {
       .build-block {
         background: var(--panel);
         border: 1px solid var(--border);
-        border-radius: 14px;
-        box-shadow: 0 2px 8px rgba(27, 42, 74, 0.04);
+        border-radius: 12px;
+        box-shadow: 0 1px 4px rgba(27, 42, 74, 0.05);
         overflow: hidden;
         transition: border-color 0.2s;
       }
       .build-block:hover { border-color: var(--accent); }
-      .build-hint {
-        font-size: 0.76rem;
-        color: var(--muted);
-        padding: 8px 10px 4px;
-        margin: 0;
-      }
+      .build-block .prompt-block { margin: 0; border-radius: 0; }
 
       /* ── Existing repo ── */
       .existing-section {
@@ -1033,7 +1028,6 @@ deployServiceApp.get("/", async (c) => {
           <p class="step-desc">Try this prompt to get started, or describe your own idea in plain language.</p>
         </div>
         <div class="build-block">
-          <p class="build-hint">Example — copy and paste into your agent:</p>
           <div class="prompt-block" data-prompt="${escapeHtml(buildPrompt)}" id="build-prompt">
             ${escapeHtml(buildPrompt)}
             <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>

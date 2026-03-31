@@ -46,9 +46,9 @@ export function buildSkillFirstHarnessSetupPrompts(input: HarnessPromptContext):
   return buildInstalledHarnessSetupPrompts(input);
 }
 
-function buildLiveHarnessInstallInstructions(_: HarnessPromptContext): HarnessInstallInstruction[] {
+function buildLiveHarnessInstallInstructions(input: HarnessPromptContext): HarnessInstallInstruction[] {
   const claudeInstallInstruction = `/plugin marketplace add CUNY-AI-Lab/CAIL-deploy\n/plugin install kale-deploy@cuny-ai-lab`;
-  const codexInstallInstruction = `$skill-installer install https://github.com/CUNY-AI-Lab/CAIL-deploy/tree/main/plugins/kale-deploy/skills/kale-deploy`;
+  const codexInstallInstruction = `codex mcp add kale-deploy --url ${input.mcpEndpoint}`;
   const geminiInstallInstruction = `/extensions install https://github.com/CUNY-AI-Lab/CAIL-deploy`;
 
   return [
