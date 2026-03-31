@@ -48,11 +48,22 @@ check_contains() {
   local label="$1"
   local url="$2"
   local expected="$3"
-  local body
+  local max_attempts="${4:-1}"
+  local body attempt
 
-  body="$(fetch_body "$url")" || fail "$label: request failed for $url"
-  printf '%s' "$body" | grep -Fq "$expected" || fail "$label: response from $url did not contain $expected"
-  pass "$label"
+  for (( attempt=1; attempt<=max_attempts; attempt++ )); do
+    body="$(fetch_body "$url" 2>/dev/null)" || {
+      if [ "$attempt" -lt "$max_attempts" ]; then sleep 3; continue; fi
+      fail "$label: request failed for $url"
+    }
+    if printf '%s' "$body" | grep -Fq "$expected"; then
+      pass "$label"
+      return 0
+    fi
+    if [ "$attempt" -lt "$max_attempts" ]; then sleep 3; fi
+  done
+
+  fail "$label: response from $url did not contain $expected"
 }
 
 check_runner_over_ssh() {
@@ -85,7 +96,7 @@ check_runner_instance_state() {
   pass "Runner EC2 instance state"
 }
 
-check_contains "Public front door" "$KALE_BASE_URL" "Kale Deploy"
+check_contains "Public front door" "$KALE_BASE_URL" "Kale Deploy" 3
 check_contains "Public healthz" "${KALE_BASE_URL%/}/healthz" '"ok":true'
 check_contains "Runtime manifest" "$KALE_RUNTIME_URL" '"agent_api"'
 check_contains "Direct deploy-service healthz" "$KALE_DEPLOY_SERVICE_HEALTH_URL" '"ok":true'

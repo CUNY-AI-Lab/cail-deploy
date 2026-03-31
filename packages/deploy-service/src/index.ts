@@ -873,10 +873,48 @@ deployServiceApp.get("/", async (c) => {
         border-radius: 12px;
         box-shadow: 0 1px 4px rgba(27, 42, 74, 0.05);
         overflow: hidden;
-        transition: border-color 0.2s;
+        transition: border-color 0.2s, box-shadow 0.2s;
       }
-      .build-block:hover { border-color: var(--accent); }
-      .build-block .prompt-block { margin: 0; border-radius: 0; padding: 7px 36px 7px 11px; }
+      .build-block:hover {
+        border-color: var(--accent);
+        box-shadow: 0 4px 16px rgba(59, 107, 204, 0.08);
+      }
+      .build-header {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 10px 12px 0;
+      }
+      .build-ico {
+        width: 24px;
+        height: 24px;
+        border-radius: 7px;
+        background: linear-gradient(135deg, var(--accent), var(--teal));
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .build-ico svg { width: 14px; height: 14px; }
+      .build-label {
+        font-weight: 700;
+        font-size: 0.82rem;
+        color: var(--ink);
+      }
+      .build-hint {
+        font-size: 0.7rem;
+        color: var(--muted);
+        padding: 4px 12px 0;
+        margin: 0;
+        opacity: 0.85;
+        line-height: 1.5;
+      }
+      .build-block .prompt-block {
+        margin: 6px 8px 8px;
+        border-radius: 8px;
+        padding: 7px 36px 7px 11px;
+      }
 
       /* ── Tab hint ── */
       .tab-hint {
@@ -1034,13 +1072,14 @@ deployServiceApp.get("/", async (c) => {
         <div class="step-header">
           <span class="step-badge">Step 2</span>
           <h2>Tell your agent what to build</h2>
-          <p class="step-desc">Try this prompt to get started, or describe your own idea in plain language.</p>
         </div>
         <div class="build-block">
-          <div class="prompt-block" data-prompt="${escapeHtml(buildPrompt)}" id="build-prompt">
-            ${escapeHtml(buildPrompt)}
-            <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>
+          <div class="build-header">
+            <span class="build-ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13 12 3"/><path d="M12 3v4"/><path d="M12 3H8"/></svg></span>
+            <span class="build-label">Starter prompt</span>
           </div>
+          <p class="build-hint">Copy this into your agent, or describe your own idea in plain language.</p>
+          <div class="prompt-block" data-prompt="${escapeHtml(buildPrompt)}" id="build-prompt">${escapeHtml(buildPrompt)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div>
         </div>
       </section>
 
