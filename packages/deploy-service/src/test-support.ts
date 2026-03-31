@@ -275,6 +275,32 @@ export async function issueTestMcpAccessToken(env: TestEnv, email: string): Prom
   return token;
 }
 
+export async function issueTestMcpPatToken(
+  db: FakeD1Database,
+  email: string,
+  options?: {
+    expiresAt?: string;
+    revokedAt?: string | null;
+    label?: string;
+  }
+): Promise<string> {
+  const random = new Uint8Array(18);
+  crypto.getRandomValues(random);
+  const token = `kale_pat_${base64url.encode(random)}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  const tokenHash = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  db.putMcpToken({
+    token_hash: tokenHash,
+    email,
+    subject: `user:${email}`,
+    label: options?.label ?? "Test token",
+    created_at: "2026-03-30T12:00:00",
+    expires_at: options?.expiresAt ?? "2030-01-01T00:00:00",
+    revoked_at: options?.revokedAt ?? null
+  });
+  return token;
+}
+
 export async function sealStoredValueForTest(env: TestEnv, plaintext: string): Promise<string> {
   const secret = env.CONTROL_PLANE_ENCRYPTION_KEY ?? "test-control-plane-encryption-key";
   return JSON.stringify(await encryptStoredText(secret, plaintext));
@@ -328,6 +354,7 @@ export class FakeD1Database {
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly buildJobs = new Map<string, BuildJobRecord>();
   private readonly githubUserAuth = new Map<string, Record<string, unknown>>();
+  private readonly mcpTokens = new Map<string, Record<string, unknown>>();
   private readonly projectSecrets = new Map<string, Record<string, unknown>>();
   private readonly projectDomains = new Map<string, Record<string, unknown>>();
   private readonly usedOauthGrants = new Set<string>();
@@ -361,6 +388,21 @@ export class FakeD1Database {
     updated_at: string;
   }): void {
     this.githubUserAuth.set(row.access_subject, row);
+  }
+
+  putMcpToken(row: {
+    token_hash: string;
+    email: string;
+    subject: string;
+    label: string;
+    created_at: string;
+    expires_at: string;
+    revoked_at?: string | null;
+  }): void {
+    this.mcpTokens.set(row.token_hash, {
+      ...row,
+      revoked_at: row.revoked_at ?? null
+    });
   }
 
   putProjectSecret(row: {
@@ -413,6 +455,20 @@ export class FakeD1Database {
 
   selectGitHubUserAuth(accessSubject: string): Record<string, unknown> | null {
     return this.githubUserAuth.get(accessSubject) ?? null;
+  }
+
+  selectMcpTokenByHash(tokenHash: string): Record<string, unknown> | null {
+    return this.mcpTokens.get(tokenHash) ?? null;
+  }
+
+  selectLatestActiveMcpTokenForEmail(email: string): Record<string, unknown> | null {
+    return Array.from(this.mcpTokens.values())
+      .filter((token) =>
+        token.email === email
+        && token.revoked_at === null
+        && new Date(`${String(token.expires_at)}Z`) > new Date()
+      )
+      .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))[0] ?? null;
   }
 
   selectProjectSecret(githubRepo: string, secretName: string): Record<string, unknown> | null {
@@ -472,6 +528,18 @@ export class FakeD1Database {
     for (const [accessSubject, row] of this.githubUserAuth.entries()) {
       if (Number(row.github_user_id) === githubUserId) {
         this.githubUserAuth.delete(accessSubject);
+      }
+    }
+  }
+
+  revokeActiveMcpTokensForEmail(email: string): void {
+    const revokedAt = "2026-03-30T12:30:00";
+    for (const [tokenHash, row] of this.mcpTokens.entries()) {
+      if (row.email === email && row.revoked_at === null) {
+        this.mcpTokens.set(tokenHash, {
+          ...row,
+          revoked_at: revokedAt
+        });
       }
     }
   }
@@ -697,6 +765,16 @@ class FakePreparedStatement {
       return this.db.selectGitHubUserAuth(String(this.params[0])) as T | null;
     }
 
+    if (normalized.includes("from mcp_tokens") && normalized.includes("where email = ?")
+      && normalized.includes("revoked_at is null") && normalized.includes("datetime(expires_at) > datetime('now')")
+      && normalized.includes("limit 1")) {
+      return this.db.selectLatestActiveMcpTokenForEmail(String(this.params[0])) as T | null;
+    }
+
+    if (normalized.includes("from mcp_tokens") && normalized.includes("where token_hash = ?")) {
+      return this.db.selectMcpTokenByHash(String(this.params[0])) as T | null;
+    }
+
     if (normalized.includes("from project_domains") && normalized.includes("where domain_label = ?")) {
       return this.db.selectProjectDomain(String(this.params[0])) as T | null;
     }
@@ -774,6 +852,18 @@ class FakePreparedStatement {
       this.db.upsertProjectDomainFromParams(this.params);
     }
 
+    if (normalized.includes("insert into mcp_tokens")) {
+      this.db.putMcpToken({
+        token_hash: String(this.params[0]),
+        email: String(this.params[1]),
+        subject: String(this.params[2]),
+        label: String(this.params[3]),
+        created_at: "2026-03-30T12:00:00",
+        expires_at: String(this.params[4]),
+        revoked_at: null
+      });
+    }
+
     if (normalized.includes("delete from github_user_auth") && normalized.includes("where github_user_id = ?")) {
       this.db.deleteGitHubUserAuthByGitHubUserId(Number(this.params[0]));
     }
@@ -792,6 +882,10 @@ class FakePreparedStatement {
 
     if (normalized.includes("update build_jobs") && normalized.includes("set deployment_url = ?") && normalized.includes("where project_name = ?")) {
       this.db.updateBuildJobDeploymentUrl(String(this.params[1]), String(this.params[0]));
+    }
+
+    if (normalized.includes("update mcp_tokens") && normalized.includes("set revoked_at = datetime('now')") && normalized.includes("where email = ?")) {
+      this.db.revokeActiveMcpTokensForEmail(String(this.params[0]));
     }
 
     return {};

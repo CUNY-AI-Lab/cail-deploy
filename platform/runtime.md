@@ -54,6 +54,11 @@ The intended auth model is now:
 - Cloudflare Access supplies the human identity there
 - the harness stores the MCP OAuth access token and then calls `/mcp`
 
+Current harness note:
+
+- Codex can usually stay on the direct MCP OAuth path
+- Claude Code is currently more reliable through `GET /connect`, where the user generates a Kale token and the harness re-adds `/mcp` with `Authorization: Bearer kale_pat_*`
+
 The JSON endpoints above still exist, but for agent harnesses the preferred path is now MCP first.
 
 If a repository still needs GitHub approval, the agent should stop and hand the user the returned `guidedInstallUrl`. That GitHub approval is still a browser handoff even when the rest of the loop is agent-driven.

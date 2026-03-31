@@ -40,6 +40,12 @@ Paste that prompt into the agent.
 
 The goal is for the agent to connect Kale Deploy for you, rather than asking you to type setup commands by hand.
 
+Current Claude note:
+
+- Claude Code works most reliably through the token path right now.
+- If you use Claude, the normal flow is that Claude asks you to open [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), generate a token, paste it back, removes any stale `cail` entries from local and user scope, and then runs `claude mcp add ... -s local --header "Authorization: Bearer ..."`.
+- Do not use Claude's interactive `/mcp` screen for Kale right now.
+
 ### 2. Ask the agent to build the app
 
 Use the build prompt from the homepage, or say something like:

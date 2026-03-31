@@ -282,6 +282,17 @@ export function renderOauthLoopbackContinuePage(input: {
         font-weight: 600;
         color: var(--accent);
       }
+      .callback-help {
+        margin-top: 14px;
+      }
+      .callback-help summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .callback-help p {
+        margin-bottom: 0;
+      }
       .callback-frame {
         position: absolute;
         width: 1px;
@@ -299,35 +310,55 @@ export function renderOauthLoopbackContinuePage(input: {
         <h1>Return to ${escapeHtml(appName)}</h1>
         <p>Kale Deploy has finished the browser sign-in step. This page is now handing the result back to your local agent so it can finish logging in.</p>
         <div class="notice">
-          <p>You should not need to do anything else here. If your agent is still waiting after a moment, use the button below and then return to the terminal.</p>
+          <p>You should not need to do anything else here. Once the handoff completes, you can close this tab and return to the terminal.</p>
         </div>
         <ol class="helper-steps">
           <li>Wait a moment for your local agent to receive the login result.</li>
-          <li>Return to the terminal and look for a success message.</li>
-          <li>If it is still waiting, use <strong>Finish in ${escapeHtml(appName)}</strong> once.</li>
+          <li>Close this tab and return to the terminal.</li>
+          <li>If your agent is still waiting, use <strong>Try handoff again</strong> once.</li>
         </ol>
         <div class="callback-actions">
-          <a class="button" id="finish-link" href="${escapeHtml(input.callbackUrl)}">Finish in ${escapeHtml(appName)}</a>
-          <a class="button secondary" href="javascript:window.close()">Close this tab</a>
+          <button class="button" type="button" id="close-tab-button">Close this tab</button>
+          <button class="button secondary" type="button" id="retry-handoff-button">Try handoff again</button>
         </div>
         <p class="callback-status" id="callback-status">Handing off to your local agent…</p>
+        <details class="callback-help">
+          <summary>Advanced troubleshooting</summary>
+          <p>If the agent still does not continue after you retry, the manual loopback URL is <code>${escapeHtml(input.callbackUrl)}</code>.</p>
+        </details>
       </section>
     </main>
     <script>
       const callbackUrl = ${callbackUrlJson};
       const statusEl = document.getElementById("callback-status");
-      const iframe = document.createElement("iframe");
-      iframe.className = "callback-frame";
-      iframe.src = callbackUrl;
-      iframe.onload = () => {
-        statusEl.textContent = "Your agent should be able to continue now. You can return to the terminal.";
-      };
-      iframe.onerror = () => {
-        statusEl.textContent = "If your agent is still waiting, use the button above and then return to the terminal.";
-      };
-      document.body.appendChild(iframe);
+      const closeButton = document.getElementById("close-tab-button");
+      const retryButton = document.getElementById("retry-handoff-button");
+      let iframe;
+      function beginHandoff() {
+        if (iframe) {
+          iframe.remove();
+        }
+        iframe = document.createElement("iframe");
+        iframe.className = "callback-frame";
+        iframe.src = callbackUrl;
+        iframe.onload = () => {
+          statusEl.textContent = "Your agent should be able to continue now. You can close this tab.";
+        };
+        iframe.onerror = () => {
+          statusEl.textContent = "If your agent is still waiting, try the handoff again once and then return to the terminal.";
+        };
+        document.body.appendChild(iframe);
+      }
+      closeButton?.addEventListener("click", () => {
+        window.close();
+      });
+      retryButton?.addEventListener("click", () => {
+        statusEl.textContent = "Trying the handoff again…";
+        beginHandoff();
+      });
+      beginHandoff();
       window.setTimeout(() => {
-        statusEl.textContent = "Return to the terminal. If your agent is still waiting, use the button above once.";
+        statusEl.textContent = "If nothing changes in the terminal, try the handoff again once or close this tab and return to the agent.";
       }, 1500);
     </script>
   </body>

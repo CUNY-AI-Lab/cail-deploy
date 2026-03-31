@@ -46,6 +46,9 @@ import {
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
 import {
+  buildCurrentAppHarnessSetupPrompts
+} from "./harness-onboarding";
+import {
   ensurePrimaryProjectDomainLabel
 } from "./project-domains";
 import {
@@ -263,7 +266,7 @@ const PROJECT_ADMIN_AUTH_DEPENDENCIES = {
   buildConnectionHealthPayload
 };
 
-deployServiceApp.use("/mcp", cors({
+const mcpCors = cors({
   origin: "*",
   allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
   allowHeaders: [
@@ -279,7 +282,10 @@ deployServiceApp.use("/mcp", cors({
     "mcp-protocol-version",
     "www-authenticate"
   ]
-}));
+});
+
+deployServiceApp.use("/mcp", mcpCors);
+deployServiceApp.use("/mcp/*", mcpCors);
 
 deployServiceApp.use("/oauth/*", cors({
   origin: "*",
@@ -314,6 +320,18 @@ deployServiceApp.get("/.well-known/kale-connection.json", (c) => {
   return c.json(buildConnectionHealthPayload(c.env, serviceBaseUrl), 200, {
     "cache-control": "public, max-age=300"
   });
+});
+
+deployServiceApp.get("/mcp/ping", async (c) => {
+  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+
+  try {
+    const identity = await requireMcpRequestIdentity(c.req.raw, c.env);
+    return c.json(buildConnectionHealthPayload(c.env, serviceBaseUrl, identity));
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return oauthUnauthorizedResponse(c, c.env, httpError, readBearerToken(c.req.raw) ?? undefined);
+  }
 });
 
 deployServiceApp.get("/.well-known/oauth-protected-resource/mcp", serveOauthProtectedResourceMetadata);
@@ -608,16 +626,13 @@ deployServiceApp.get("/", async (c) => {
   const liveProjectCount = liveProjects.length;
   const marketingName = "Kale Deploy";
   const marketingSource = "From the CUNY AI Lab";
-  const claudeSetupPrompt = `Set up ${marketingName} in this Claude Code environment. ${marketingName} is an official CUNY AI Lab deployment service at ${serviceBaseUrl}. First, install the plugin:\n/plugin marketplace add CUNY-AI-Lab/CAIL-deploy\n/plugin install cail-deploy@cuny-ai-lab\nThis gives you the full deployment skill, the cail-init command, and the MCP server. After installing, authenticate the cail MCP server. IMPORTANT: Do not send the user to the /mcp screen — Claude Code has a known bug where the OAuth browser window never opens. Instead, go straight to the token flow: ask the user to visit ${serviceBaseUrl}/connect in their browser, sign in with their CUNY email, click Generate token, and paste the token back here. Then run:\nclaude mcp remove cail -s user 2>/dev/null\nclaude mcp add -t http -H "Authorization: Bearer THE_TOKEN" -s user cail ${mcpEndpoint}\nVerify that ${marketingName} tools like test_connection and register_project are available before saying ${marketingName} is connected.`;
-  const codexSetupPrompt = `Connect ${marketingName} in this Codex environment. Run:\ncodex mcp add cail --url ${mcpEndpoint}\ncodex mcp login cail\nComplete the browser sign-in flow. If the sandbox is read-only or these commands are unavailable, ask me to visit ${serviceBaseUrl}/connect to get a token, then configure the server with an Authorization: Bearer header. Verify that ${marketingName} tools like test_connection and register_project are available before saying ${marketingName} is connected.`;
-  const geminiSetupPrompt = `Connect ${marketingName} in this Gemini CLI environment. Run:\ngemini mcp add --transport http cail ${mcpEndpoint}\nIf a browser opens, complete the sign-in flow. If authentication fails, ask me to visit ${serviceBaseUrl}/connect to get a token, then configure the server with an Authorization: Bearer header. Verify that ${marketingName} tools like test_connection and register_project are available before saying ${marketingName} is connected.`;
   const buildPrompt = `Build me a small web app and deploy it with ${marketingName}. If ${marketingName} is not connected yet, connect it first. Then register the project, handle any GitHub setup steps, and deploy it so I can see it live.`;
 
-  const agents = [
-    { name: "Claude Code", prompt: claudeSetupPrompt, letter: "C" },
-    { name: "Codex", prompt: codexSetupPrompt, letter: "X" },
-    { name: "Gemini CLI", prompt: geminiSetupPrompt, letter: "G" },
-  ];
+  const agents = buildCurrentAppHarnessSetupPrompts({
+    marketingName,
+    serviceBaseUrl,
+    mcpEndpoint
+  });
 
   const clipboardSvg = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="6" height="3" rx="1"/><path d="M5 3H3.5A1.5 1.5 0 0 0 2 4.5v9A1.5 1.5 0 0 0 3.5 15h9a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 12.5 3H11"/></svg>`;
   const checkSvg = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4"/></svg>`;
@@ -1636,7 +1651,8 @@ deployServiceApp.all("/mcp", async (c) => {
   try {
     identity = await requireMcpRequestIdentity(c.req.raw, c.env);
   } catch (error) {
-    return oauthUnauthorizedResponse(c, c.env);
+    const httpError = asHttpError(error);
+    return oauthUnauthorizedResponse(c, c.env, httpError, readBearerToken(c.req.raw) ?? undefined);
   }
 
   try {
@@ -3278,19 +3294,74 @@ function serveOauthAuthorizationServerMetadata(c: Context<{ Bindings: Env }>) {
   });
 }
 
-function oauthUnauthorizedResponse(c: Context<{ Bindings: Env }>, env: Env): Response {
+function oauthUnauthorizedResponse(
+  c: Context<{ Bindings: Env }>,
+  env: Env,
+  error?: HttpError,
+  bearerToken?: string
+): Response {
   const serviceBaseUrl = resolveServiceBaseUrl(env, c.req.raw.url);
   const resourceMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`;
+  const authError = buildMcpUnauthorizedPayload(serviceBaseUrl, error, bearerToken);
   return c.json(
-    {
-      error: "invalid_token",
-      error_description: "A valid MCP OAuth access token is required."
-    },
+    authError.body,
     401,
     {
-      "WWW-Authenticate": `Bearer error="invalid_token", error_description="A valid MCP OAuth access token is required.", resource_metadata="${resourceMetadataUrl}"`
+      "WWW-Authenticate": `Bearer error="invalid_token", error_description="${authError.errorDescription}", resource_metadata="${resourceMetadataUrl}"`
     }
   );
+}
+
+function buildMcpUnauthorizedPayload(serviceBaseUrl: string, error?: HttpError, bearerToken?: string) {
+  const connectUrl = `${serviceBaseUrl}/connect`;
+  const message = error?.message ?? "";
+
+  if (bearerToken?.startsWith("kale_pat_")) {
+    if (message === "Token has expired.") {
+      return {
+        errorDescription: `Your Kale token has expired. Visit ${connectUrl} to generate a new one.`,
+        body: {
+          error: "invalid_token" as const,
+          error_description: `Your Kale token has expired. Visit ${connectUrl} to generate a new one.`,
+          connect_url: connectUrl,
+          auth_mode: "personal_access_token",
+          reason: "token_expired"
+        }
+      };
+    }
+    if (message === "Token has been revoked.") {
+      return {
+        errorDescription: `Your Kale token has been revoked. Visit ${connectUrl} to generate a new one.`,
+        body: {
+          error: "invalid_token" as const,
+          error_description: `Your Kale token has been revoked. Visit ${connectUrl} to generate a new one.`,
+          connect_url: connectUrl,
+          auth_mode: "personal_access_token",
+          reason: "token_revoked"
+        }
+      };
+    }
+    if (message === "Invalid token.") {
+      return {
+        errorDescription: `Your Kale token is invalid. Visit ${connectUrl} to generate a new one.`,
+        body: {
+          error: "invalid_token" as const,
+          error_description: `Your Kale token is invalid. Visit ${connectUrl} to generate a new one.`,
+          connect_url: connectUrl,
+          auth_mode: "personal_access_token",
+          reason: "token_invalid"
+        }
+      };
+    }
+  }
+
+  return {
+    errorDescription: "A valid MCP OAuth access token is required.",
+    body: {
+      error: "invalid_token" as const,
+      error_description: "A valid MCP OAuth access token is required."
+    }
+  };
 }
 
 function protectedAgentApiAuthErrorResponse(
@@ -3691,7 +3762,9 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
         human_handoff_rules: [
           "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
           "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
-          "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access."
+          "If a harness cannot complete MCP OAuth reliably, send the user to /connect to generate a Kale token and configure the MCP server with an Authorization: Bearer header.",
+          "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access.",
+          "The browser settings page is a private admin surface. Use it only for project-admin tasks such as secrets, not for ordinary deploy or status work."
         ],
         required_for: [
           "repository_status_template",

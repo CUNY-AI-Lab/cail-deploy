@@ -10,7 +10,8 @@ import {
   fetchWorker,
   installAccessFetchMock,
   installGitHubFetchMock,
-  issueTestMcpAccessToken
+  issueTestMcpAccessToken,
+  issueTestMcpPatToken
 } from "./test-support";
 
 test("runtime manifest advertises the agent API without duplicate well-known keys", async () => {
@@ -114,7 +115,9 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.deepEqual(body.agent_api.auth.human_handoff_rules, [
     "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
     "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
-    "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access."
+    "If a harness cannot complete MCP OAuth reliably, send the user to /connect to generate a Kale token and configure the MCP server with an Authorization: Bearer header.",
+    "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access.",
+    "The browser settings page is a private admin surface. Use it only for project-admin tasks such as secrets, not for ordinary deploy or status work."
   ]);
   assert.deepEqual(body.agent_api.auth.required_for, [
     "repository_status_template",
@@ -223,7 +226,8 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Codex/);
   assert.match(html, /Gemini CLI/);
   assert.match(html, /Connect your agent/);
-  assert.match(html, /plugin install cail-deploy@cuny-ai-lab/);
+  assert.match(html, /claude mcp remove cail -s local/);
+  assert.match(html, /https:\/\/deploy\.example\/connect/);
   assert.match(html, /codex mcp add cail --url https:\/\/[^\s"]+\/mcp/);
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app and deploy it with Kale Deploy/);
@@ -258,6 +262,73 @@ test("mcp advertises OAuth metadata when unauthorized", async () => {
     error: "invalid_token",
     error_description: "A valid MCP OAuth access token is required."
   });
+});
+
+test("mcp returns an actionable PAT expiry error", async () => {
+  const { env, db } = createTestContext({
+    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
+  });
+  const expiredToken = await issueTestMcpPatToken(db, "person@cuny.edu", {
+    expiresAt: "2000-01-01T00:00:00"
+  });
+
+  const response = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+      params: {}
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${expiredToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+
+  assert.equal(response.status, 401);
+  assert.match(response.headers.get("www-authenticate") ?? "", /Your Kale token has expired/);
+  assert.deepEqual(await response.json(), {
+    error: "invalid_token",
+    error_description: "Your Kale token has expired. Visit https://deploy.example/connect to generate a new one.",
+    connect_url: "https://deploy.example/connect",
+    auth_mode: "personal_access_token",
+    reason: "token_expired"
+  });
+});
+
+test("mcp ping confirms authenticated connection state", async () => {
+  const { env } = createTestContext({
+    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
+  });
+  const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
+
+  const response = await fetchApp(
+    "GET",
+    "/mcp/ping",
+    env,
+    undefined,
+    {
+      authorization: `Bearer ${accessToken}`
+    }
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    ok: boolean;
+    authenticated: boolean;
+    identityType: string;
+    email: string;
+    summary: string;
+  };
+  assert.equal(body.ok, true);
+  assert.equal(body.authenticated, true);
+  assert.equal(body.identityType, "mcp_oauth");
+  assert.equal(body.email, "person@cuny.edu");
+  assert.match(body.summary, /connected and authenticated/i);
 });
 
 test("mcp handles preflight and returns tools when authorized with OAuth", async () => {

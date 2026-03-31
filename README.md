@@ -99,6 +99,11 @@ Kale Deploy exposes:
 
 The MCP surface is a thin adapter over the deploy-service control plane, not a separate backend.
 
+Current harness note:
+
+- Codex can usually use the standard MCP OAuth flow directly.
+- Claude Code is more reliable today through the `/connect` token bridge plus `claude mcp add --transport http --header "Authorization: Bearer ..."` rather than the interactive `/mcp` screen.
+
 ## Status and Scope
 
 Implemented now:
@@ -126,6 +131,7 @@ Still not finished:
 ## Guides
 
 - Student quickstart: [docs/quickstart-students.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/quickstart-students.md)
+- Claude quickstart: [docs/claude-quickstart.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/claude-quickstart.md)
 - Codex quickstart: [docs/codex-quickstart.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/codex-quickstart.md)
 - Support matrix: [docs/support-matrix.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/support-matrix.md)
 - Troubleshooting: [docs/troubleshooting.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/troubleshooting.md)

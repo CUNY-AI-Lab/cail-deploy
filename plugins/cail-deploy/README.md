@@ -16,12 +16,11 @@ Authentication uses OAuth through Cloudflare Access on first connection.
 
 ## Recommended connection path
 
-For both Claude Code and Codex, the most reliable setup path today is the
-direct remote MCP connection, because it makes the OAuth/browser handshake
-visible and easy to verify:
+For Codex, the most reliable setup path today is the direct remote MCP
+connection, because it makes the OAuth/browser handshake visible and easy to
+verify:
 
 ```bash
-claude mcp add --transport http cail https://cuny.qzz.io/kale/mcp
 codex mcp add cail --url https://cuny.qzz.io/kale/mcp
 ```
 
@@ -31,28 +30,24 @@ it for deployment.
 
 ## Claude Code
 
-This repo also acts as a Claude Code plugin marketplace.
+This repo also acts as a Claude Code plugin marketplace, but the tested Claude
+onboarding path right now is the token flow below, not plugin installation and
+not the interactive `/mcp` screen.
 
-From a shell, you can install the plugin from this local checkout with:
+Open:
 
-```bash
-claude plugins marketplace add /Users/stephenzweibel/Apps/CAIL-deploy
-claude plugins install cail-deploy@cuny-ai-lab
-```
+- `https://cuny.qzz.io/kale/connect`
 
-That plugin path is available, but the direct `claude mcp add --transport http`
-flow above is the recommended route when you want to confirm that OAuth and the
-remote Kale tools are working end to end.
-
-The tested Claude path is:
+Sign in with a CUNY email, click **Generate token**, and then run:
 
 ```bash
-claude mcp add --transport http cail https://cuny.qzz.io/kale/mcp
+claude mcp remove cail -s local 2>/dev/null
+claude mcp remove cail -s user 2>/dev/null
+claude mcp add --transport http --header "Authorization: Bearer THE_TOKEN" -s local cail https://cuny.qzz.io/kale/mcp
 ```
 
-Then, inside Claude Code, use the interactive `/mcp` screen to authenticate
-`cail`, finish the browser sign-in, and ask Claude to call `test_connection`
-before you rely on Kale for deployment.
+Replace `THE_TOKEN` with the generated token, then ask Claude to call
+`test_connection` before you rely on Kale for deployment.
 
 For secret management, use the Kale `projectName` slug rather than `owner/repo`.
 If you only know the repo, call `get_repository_status` first and use the

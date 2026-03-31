@@ -14,6 +14,8 @@ The intended shape is:
 
 This keeps the harness-facing auth model standard while still letting Cloudflare Access enforce institutional identity.
 
+There is also a pragmatic fallback token bridge at `/connect` for harnesses that fail the browser exchange in practice today. That fallback does not change the intended long-term MCP contract; it is there to keep current harness onboarding usable.
+
 ## What to protect
 
 Protect the browser-facing authorization endpoint with Cloudflare Access:

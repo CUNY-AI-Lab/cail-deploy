@@ -37,7 +37,9 @@ The preferred auth model is now:
 7. the harness exchanges the code at `POST /oauth/token`
 8. the harness stores the returned bearer token and continues normally
 
-This keeps the auth model MCP-native. The browser step is still required, but there is no pasted token bridge anymore.
+This keeps the auth model MCP-native for harnesses that complete MCP OAuth cleanly.
+
+There is also a current fallback token bridge at `https://cuny.qzz.io/kale/connect` for harnesses that do not complete the browser exchange reliably yet. In practice, Claude Code is the main current case.
 
 ## Remote MCP server
 
@@ -57,6 +59,7 @@ Auth:
 - dynamic client registration: `POST /oauth/register`
 - browser authorization endpoint: `GET /api/oauth/authorize`
 - token exchange: `POST /oauth/token`
+- current fallback token bridge for stubborn harnesses: `GET /connect`, then use `Authorization: Bearer kale_pat_*` on `/mcp`
 
 Current MCP tools:
 
@@ -405,7 +408,7 @@ Today, the strongest loop is:
 1. scaffold with `CAIL-init` or create a Worker-compatible repo
 2. create the GitHub repo with `gh repo create` or another GitHub client
 3. connect the harness to `POST /mcp`
-4. let the harness complete MCP OAuth through the browser
+4. let the harness complete MCP OAuth through the browser, unless the harness is Claude Code and needs the `/connect` token bridge instead
 5. call `test_connection`
 6. call `register_project`
 7. if `installStatus` is `not_installed`, send the user to `guidedInstallUrl`

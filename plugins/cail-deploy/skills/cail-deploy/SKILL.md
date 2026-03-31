@@ -137,7 +137,7 @@ Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. Th
 2. If the tools are available, skip to step 5.
 3. If the server is not yet configured, add it. The method depends on the agent:
    - **Codex**: The plugin's `.mcp.json` may already declare the server. If tools aren't available, run `codex mcp add cail --url https://cuny.qzz.io/kale/mcp` then `codex mcp login cail` and complete the browser sign-in. If the sandbox is read-only or `codex mcp` subcommands are unavailable in your build, fall back to the token-paste flow in step 4.
-   - **Claude Code**: Run `claude mcp add -t http -s user cail https://cuny.qzz.io/kale/mcp`. **Do not send the user to the `/mcp` screen** — Claude Code has a known bug where the OAuth browser window never opens. If auth fails, go straight to the token flow in step 4.
+   - **Claude Code**: **Do not send the user to the `/mcp` screen**. Claude Code is currently most reliable through the token-paste flow in step 4, with stale `cail` entries removed from both local and user scope before re-adding the server.
    - **Gemini CLI**: The server is declared in `.gemini/settings.json` in the repo. If it's not loaded, the user should restart Gemini CLI from the project directory.
    - **Other agents**: Point the agent's MCP configuration at `https://cuny.qzz.io/kale/mcp` (HTTP transport with OAuth).
 4. If authentication fails (e.g., the OAuth browser window never opens, or the server shows "Failed to connect"), use the **token-paste fallback**:
@@ -146,8 +146,9 @@ Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. Th
    c. They click **Generate token**, copy it, and paste it into the chat.
    d. Once the user pastes the token (starts with `kale_pat_`), configure the server with a static Bearer header. For Claude Code:
       ```
+      claude mcp remove cail -s local 2>/dev/null
       claude mcp remove cail -s user 2>/dev/null
-      claude mcp add -t http -H "Authorization: Bearer <the-token>" -s user cail https://cuny.qzz.io/kale/mcp
+      claude mcp add -t http -H "Authorization: Bearer <the-token>" -s local cail https://cuny.qzz.io/kale/mcp
       ```
       For other agents, set the `Authorization: Bearer <the-token>` header in the agent's MCP server config.
    e. The user may need to start a new conversation for the tools to appear.

@@ -9,6 +9,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "check": "npm run check --workspaces --if-present",
+    "harness:onboarding": "node --import tsx packages/deploy-service/src/harness-onboarding-run.ts",
     "test": "npm run test --workspaces --if-present",
     "ops:healthcheck": "bash scripts/ops/check-kale-health.sh",
     "ops:runner-cache-prune": "bash scripts/ops/prune-runner-cache.sh"
