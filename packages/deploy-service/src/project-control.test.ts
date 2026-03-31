@@ -242,7 +242,7 @@ test("project secrets API returns a GitHub connect handoff before repo-admin acc
   assert.equal(body.repositoryFullName, "unknown");
   assert.equal(
     body.connectGitHubUserUrl,
-    "https://deploy.example/api/github/user-auth/start?projectName=cail-assets-build-test"
+    "https://deploy.example/api/github/user-auth/start?projectName=cail-assets-build-test&returnTo=https%3A%2F%2Fdeploy.example%2Fapi%2Fprojects%2Fcail-assets-build-test%2Fsecrets"
   );
 });
 
@@ -276,7 +276,7 @@ test("project secrets API does not reveal whether an unknown slug exists", async
   assert.equal(body.repositoryFullName, "unknown");
   assert.equal(
     body.connectGitHubUserUrl,
-    "https://deploy.example/api/github/user-auth/start?projectName=does-not-exist"
+    "https://deploy.example/api/github/user-auth/start?projectName=does-not-exist&returnTo=https%3A%2F%2Fdeploy.example%2Fapi%2Fprojects%2Fdoes-not-exist%2Fsecrets"
   );
 });
 

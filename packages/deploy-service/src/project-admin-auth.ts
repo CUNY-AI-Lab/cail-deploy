@@ -249,7 +249,9 @@ export async function authorizeProjectSecretsAccess<Env extends ProjectAdminAuth
 ): Promise<ProjectSecretsAuthorization> {
   const serviceBaseUrl = dependencies.resolveServiceBaseUrl(env, requestUrl);
   const connection = dependencies.buildConnectionHealthPayload(env, serviceBaseUrl, identity);
-  const connectGitHubUserUrl = buildGitHubUserSecretsConnectUrl(serviceBaseUrl, projectName);
+  const connectGitHubUserUrl = buildGitHubUserSecretsConnectUrl(serviceBaseUrl, projectName, {
+    returnTo: requestUrl
+  });
   let authenticatedIdentity: AuthenticatedAgentRequestIdentity;
 
   try {
