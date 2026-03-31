@@ -645,9 +645,11 @@ deployServiceApp.get("/", async (c) => {
     <title>${escapeHtml(marketingName)}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,800&family=Outfit:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&display=swap" rel="stylesheet" />
     ${faviconLink()}
     ${baseStyles(`
+      :root { --font-body: "Outfit", system-ui, sans-serif; }
+
       @keyframes fadeUp {
         from { opacity: 0; transform: translateY(16px); }
         to { opacity: 1; transform: translateY(0); }
@@ -656,10 +658,10 @@ deployServiceApp.get("/", async (c) => {
       /* ── Hero ── */
       .hero {
         text-align: center;
-        padding: 3.5rem 0 2.5rem;
+        padding: 3.5rem 0 2.75rem;
         animation: fadeUp 0.5s ease-out;
       }
-      .hero .logo { margin: 0 auto 0.75rem; }
+      .hero .logo { margin: 0 auto 1rem; }
       .hero .source {
         display: inline-block;
         margin: 0 0 0.3rem;
@@ -680,84 +682,164 @@ deployServiceApp.get("/", async (c) => {
       }
       .hero .lead {
         max-width: 38ch;
-        margin: 0 auto;
+        margin: 0 auto 0.5rem;
         font-family: 'Source Serif 4', Georgia, serif;
         font-size: 1.15rem;
         color: var(--muted);
         line-height: 1.6;
       }
-
-      /* ── Section ── */
-      .get-started {
-        max-width: 560px;
-        margin: 0 auto;
-      }
-      .section-label {
-        font-size: 0.72rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
+      .hero .sub-lead {
+        max-width: 46ch;
+        margin: 0 auto 2rem;
+        font-size: 0.92rem;
         color: var(--muted);
-        margin: 0 0 14px;
+        line-height: 1.65;
       }
 
-      /* ── Agent blocks ── */
-      .agent-blocks {
-        display: grid;
-        gap: 12px;
-        margin-bottom: 2rem;
-        animation: fadeUp 0.5s ease-out 0.1s both;
-      }
-      .agent-block {
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        overflow: hidden;
-        box-shadow: 0 2px 12px rgba(27, 42, 74, 0.05);
-        transition: border-color 0.2s, box-shadow 0.2s;
-      }
-      .agent-block:hover {
-        border-color: var(--accent);
-        box-shadow: 0 4px 20px rgba(59, 107, 204, 0.1);
-      }
-      .agent-header {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 14px 16px 10px;
-      }
-      .agent-ico {
-        width: 28px;
-        height: 28px;
-        border-radius: 8px;
-        background: linear-gradient(135deg, var(--accent), var(--teal));
-        color: white;
+      /* ── How it works ── */
+      .how-it-works {
         display: flex;
         align-items: center;
         justify-content: center;
-        font-weight: 800;
-        font-size: 0.82rem;
-        flex-shrink: 0;
+        gap: 10px;
+        margin: 0 auto;
+        padding: 1rem 1.5rem;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        max-width: 460px;
+        box-shadow: 0 2px 8px rgba(27, 42, 74, 0.04);
+        flex-wrap: wrap;
       }
-      .agent-name {
-        font-weight: 700;
-        font-size: 0.92rem;
+      .how-step {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 0.8rem;
+        font-weight: 600;
         color: var(--ink);
       }
-      .agent-hint {
-        font-size: 0.78rem;
-        color: var(--muted);
-        padding: 0 16px 4px;
+      .how-num {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: white;
+        font-size: 0.68rem;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
       }
+      .how-arrow {
+        color: var(--border);
+        font-size: 1rem;
+      }
+
+      /* ── Step sections ── */
+      .step-section {
+        max-width: 560px;
+        margin: 2.25rem auto 0;
+        animation: fadeUp 0.5s ease-out 0.1s both;
+      }
+      .step-header { margin-bottom: 1rem; }
+      .step-badge {
+        display: inline-block;
+        padding: 3px 10px;
+        background: var(--notice-bg);
+        border: 1px solid rgba(59, 107, 204, 0.2);
+        border-radius: 999px;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 8px;
+      }
+      .step-section h2 {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: var(--ink);
+        margin: 0 0 5px;
+      }
+      .step-desc {
+        font-size: 0.86rem;
+        color: var(--muted);
+        margin: 0 0 14px;
+        line-height: 1.55;
+      }
+
+      /* ── Agent tabs ── */
+      .agent-tabs {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 1px 4px rgba(27, 42, 74, 0.05);
+      }
+      .tab-bar {
+        display: flex;
+        gap: 2px;
+        padding: 5px 5px 0;
+        background: var(--bg);
+        border-bottom: 1px solid var(--border);
+      }
+      .tab-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 11px 7px;
+        border: 1px solid transparent;
+        border-bottom: none;
+        background: transparent;
+        border-radius: 7px 7px 0 0;
+        font: inherit;
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: var(--muted);
+        cursor: pointer;
+        position: relative;
+        bottom: -1px;
+        transition: color 0.15s;
+      }
+      .tab-btn:hover { color: var(--ink); }
+      .tab-btn.active {
+        color: var(--ink);
+        background: var(--panel);
+        border-color: var(--border);
+        border-bottom-color: var(--panel);
+      }
+      .tab-ico {
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        background: linear-gradient(135deg, var(--accent), var(--teal));
+        color: white;
+        font-size: 0.62rem;
+        font-weight: 800;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .tab-panel { display: none; }
+      .tab-panel.active { display: block; }
+      .tab-panel .prompt-block {
+        margin: 0;
+        border-radius: 0;
+      }
+
+      /* ── Prompt blocks (shared) ── */
       .prompt-block {
         position: relative;
-        margin: 0 12px 12px;
+        margin: 0 8px 8px;
         background: var(--code-bg);
-        border-radius: 10px;
-        padding: 12px 44px 12px 14px;
+        border-radius: 8px;
+        padding: 9px 36px 9px 11px;
         font-family: var(--font-mono);
-        font-size: 0.8rem;
-        line-height: 1.55;
+        font-size: 0.78rem;
+        line-height: 1.45;
         color: var(--ink);
         white-space: pre-wrap;
         word-break: break-word;
@@ -767,12 +849,12 @@ deployServiceApp.get("/", async (c) => {
       .prompt-block:hover { background: #e4eaf2; }
       .copy-btn {
         position: absolute;
-        top: 8px;
-        right: 8px;
-        width: 30px;
-        height: 30px;
+        top: 7px;
+        right: 7px;
+        width: 26px;
+        height: 26px;
         border: none;
-        border-radius: 8px;
+        border-radius: 6px;
         background: transparent;
         color: var(--muted);
         cursor: pointer;
@@ -781,75 +863,47 @@ deployServiceApp.get("/", async (c) => {
         justify-content: center;
         transition: color 0.15s, background 0.15s;
       }
-      .copy-btn:hover {
-        background: var(--border);
-        color: var(--ink);
-      }
-      .copy-btn.copied {
-        color: var(--success);
-      }
+      .copy-btn:hover { background: var(--border); color: var(--ink); }
+      .copy-btn.copied { color: var(--success); }
 
-      /* ── Build prompt ── */
-      .build-section {
-        animation: fadeUp 0.5s ease-out 0.2s both;
-        margin-bottom: 2rem;
-      }
+      /* ── Build block ── */
       .build-block {
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 14px;
-        box-shadow: 0 2px 12px rgba(27, 42, 74, 0.05);
+        box-shadow: 0 2px 8px rgba(27, 42, 74, 0.04);
         overflow: hidden;
         transition: border-color 0.2s;
       }
       .build-block:hover { border-color: var(--accent); }
-      .build-header {
-        padding: 14px 16px 6px;
-        font-weight: 700;
-        font-size: 0.92rem;
-        color: var(--ink);
-      }
       .build-hint {
-        font-size: 0.78rem;
+        font-size: 0.76rem;
         color: var(--muted);
-        padding: 0 16px 4px;
+        padding: 8px 10px 4px;
+        margin: 0;
       }
 
       /* ── Existing repo ── */
-      .existing-repo {
+      .existing-section {
         max-width: 560px;
-        margin: 0 auto;
+        margin: 2.25rem auto 0;
+        padding-top: 1.75rem;
+        border-top: 1px solid var(--border);
         animation: fadeUp 0.5s ease-out 0.3s both;
       }
-      .existing-toggle {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        background: none;
-        border: none;
-        padding: 8px 0;
-        font: inherit;
-        font-size: 0.86rem;
-        font-weight: 600;
+      .existing-section h3 {
+        font-size: 0.92rem;
+        font-weight: 700;
+        color: var(--ink);
+        margin: 0 0 4px;
+      }
+      .existing-section > p {
+        font-size: 0.82rem;
         color: var(--muted);
-        cursor: pointer;
-        transition: color 0.15s;
+        margin: 0 0 12px;
+        line-height: 1.5;
       }
-      .existing-toggle:hover { color: var(--accent); }
-      .existing-toggle .arrow {
-        transition: transform 0.2s;
-        font-size: 0.65rem;
-      }
-      .existing-toggle.open .arrow { transform: rotate(90deg); }
-      .existing-body {
-        display: none;
-        padding: 10px 0 0;
-      }
-      .existing-body.open { display: block; }
-      .repo-form {
-        display: flex;
-        gap: 8px;
-      }
+      .repo-form { display: flex; gap: 8px; }
       .repo-form input {
         flex: 1;
         padding: 9px 14px;
@@ -857,7 +911,10 @@ deployServiceApp.get("/", async (c) => {
         border-radius: 10px;
         font: inherit;
         font-size: 0.88rem;
+        background: var(--panel);
+        color: var(--ink);
       }
+      .repo-form input::placeholder { color: var(--muted); opacity: 0.7; }
       .repo-form input:focus {
         outline: none;
         border-color: var(--accent);
@@ -879,16 +936,20 @@ deployServiceApp.get("/", async (c) => {
       .repo-form button:hover { background: var(--accent-hover); }
 
       /* ── Live projects ── */
-      .live-projects {
+      .live-section {
         max-width: 560px;
         margin: 2rem auto 0;
         animation: fadeUp 0.5s ease-out 0.4s both;
       }
-      .live-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
+      .live-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+        margin: 0 0 10px;
       }
+      .live-list { display: flex; flex-wrap: wrap; gap: 8px; }
       .live-chip {
         display: inline-flex;
         align-items: center;
@@ -912,6 +973,7 @@ deployServiceApp.get("/", async (c) => {
         height: 6px;
         border-radius: 50%;
         background: var(--success);
+        flex-shrink: 0;
       }
 
       /* ── Footer ── */
@@ -922,12 +984,13 @@ deployServiceApp.get("/", async (c) => {
         border-top: 1px solid var(--border);
         display: flex;
         justify-content: center;
-        gap: 18px;
-        font-size: 0.78rem;
+        gap: 20px;
+        font-size: 0.8rem;
       }
       .page-footer a {
         color: var(--muted);
         text-decoration: none;
+        transition: color 0.15s;
       }
       .page-footer a:hover { color: var(--accent); }
     `)}
@@ -938,56 +1001,58 @@ deployServiceApp.get("/", async (c) => {
         <div class="logo">${logoHtml("44px")}</div>
         <span class="source">${escapeHtml(marketingSource)}</span>
         <h1>${escapeHtml(marketingName)}</h1>
-        <p class="lead">Build a website with an AI coding agent. Deploy it in one step.</p>
-      </section>
-
-      <section class="get-started">
-        <div class="agent-blocks">
-          <p class="section-label">1. Install Kale once</p>
-          <p class="build-hint">Paste the install command into the agent you use once. Then tell it what you want to build.</p>
-          ${agents.map((agent) => `
-          <div class="agent-block">
-            <div class="agent-header">
-              <span class="agent-ico">${escapeHtml(agent.letter)}</span>
-              <span class="agent-name">${escapeHtml(agent.name)}</span>
-            </div>
-            <p class="agent-hint">Paste into ${escapeHtml(agent.name)}:</p>
-            <div class="prompt-block" data-prompt="${escapeHtml(agent.instruction)}">
-              ${escapeHtml(agent.instruction)}
-              <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>
-            </div>
-          </div>
-          `).join("")}
-        </div>
-
-        <div class="build-section">
-          <p class="section-label">2. Tell it what to build</p>
-          <div class="build-block">
-            <div class="build-header">Try this, or describe your own idea</div>
-            <p class="build-hint">Describe your idea in plain language. Your agent can handle the setup and put it online.</p>
-            <div class="prompt-block" data-prompt="${escapeHtml(buildPrompt)}" id="build-prompt">
-              ${escapeHtml(buildPrompt)}
-              <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>
-            </div>
-          </div>
+        <p class="lead">Build and deploy web apps with your AI coding agent.</p>
+        <p class="sub-lead">Kale gives your agent a deployment tool. Describe what you want to build — it writes the code and puts it online.</p>
+        <div class="how-it-works">
+          <div class="how-step"><span class="how-num">1</span>Install once</div>
+          <span class="how-arrow">&#8594;</span>
+          <div class="how-step"><span class="how-num">2</span>Describe your idea</div>
+          <span class="how-arrow">&#8594;</span>
+          <div class="how-step"><span class="how-num">3</span>Get a live URL</div>
         </div>
       </section>
 
-      <div class="existing-repo">
-        <button class="existing-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
-          <span class="arrow">&#9654;</span> Already have a GitHub repo?
-        </button>
-        <div class="existing-body">
-          <form class="repo-form" method="get" action="${escapeHtml(`${serviceBaseUrl}/github/setup`)}">
-            <input type="text" name="repositoryFullName" placeholder="owner/repo" aria-label="GitHub repository" />
-            <button type="submit">Check</button>
-          </form>
+      <section class="step-section">
+        <div class="step-header">
+          <span class="step-badge">Step 1</span>
+          <h2>Add Kale to your agent</h2>
+          <p class="step-desc">Paste this command into your AI agent once. After that, it can build and deploy apps for you.</p>
         </div>
-      </div>
+        <div class="agent-tabs">
+          <div class="tab-bar" role="tablist">
+            ${agents.map((agent, i) => `<button class="tab-btn${i === 0 ? " active" : ""}" data-idx="${i}" role="tab" aria-selected="${i === 0 ? "true" : "false"}"><span class="tab-ico">${escapeHtml(agent.letter)}</span>${escapeHtml(agent.name)}</button>`).join("")}
+          </div>
+          ${agents.map((agent, i) => `<div class="tab-panel${i === 0 ? " active" : ""}" data-idx="${i}" role="tabpanel"><div class="prompt-block" data-prompt="${escapeHtml(agent.instruction)}">${escapeHtml(agent.instruction)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div></div>`).join("")}
+        </div>
+      </section>
+
+      <section class="step-section" style="animation-delay:0.2s">
+        <div class="step-header">
+          <span class="step-badge">Step 2</span>
+          <h2>Tell your agent what to build</h2>
+          <p class="step-desc">Try this prompt to get started, or describe your own idea in plain language.</p>
+        </div>
+        <div class="build-block">
+          <p class="build-hint">Example — copy and paste into your agent:</p>
+          <div class="prompt-block" data-prompt="${escapeHtml(buildPrompt)}" id="build-prompt">
+            ${escapeHtml(buildPrompt)}
+            <button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="existing-section">
+        <h3>Already have a GitHub repo?</h3>
+        <p>Enter your repository name to connect it with ${escapeHtml(marketingName)}.</p>
+        <form class="repo-form" method="get" action="${escapeHtml(`${serviceBaseUrl}/github/setup`)}">
+          <input type="text" name="repositoryFullName" placeholder="owner/repo" aria-label="GitHub repository" />
+          <button type="submit">Connect</button>
+        </form>
+      </section>
 
       ${liveProjectCount > 0 ? `
-      <section class="live-projects">
-        <p class="section-label">Live projects</p>
+      <section class="live-section">
+        <p class="live-label">Live projects</p>
         <div class="live-list">${liveProjects.map((project) => `
           <a class="live-chip" href="${escapeHtml(project.deploymentUrl)}">
             <span class="live-dot"></span>
@@ -998,8 +1063,8 @@ deployServiceApp.get("/", async (c) => {
       ` : ""}
 
       <footer class="page-footer">
-        ${installUrl ? `<a href="${escapeHtml(installUrl)}">GitHub App</a>` : ""}
-        <a href="${escapeHtml(`${serviceBaseUrl}/projects/control`)}">Project admin</a>
+        ${installUrl ? `<a href="${escapeHtml(installUrl)}">Install GitHub App</a>` : ""}
+        <a href="${escapeHtml(`${serviceBaseUrl}/projects/control`)}">My Projects</a>
         <a href="${escapeHtml(repositoryUrl)}">GitHub</a>
       </footer>
     </main>
@@ -1028,6 +1093,22 @@ deployServiceApp.get("/", async (c) => {
         doCopy();
       });
       block.addEventListener('click', doCopy);
+    });
+
+    document.querySelectorAll('.tab-bar').forEach(tabBar => {
+      tabBar.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tabs = tabBar.closest('.agent-tabs');
+          const idx = btn.dataset.idx;
+          tabs.querySelectorAll('.tab-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.idx === idx);
+            b.setAttribute('aria-selected', b.dataset.idx === idx ? 'true' : 'false');
+          });
+          tabs.querySelectorAll('.tab-panel').forEach(p => {
+            p.classList.toggle('active', p.dataset.idx === idx);
+          });
+        });
+      });
     });
     </script>
   </body>
@@ -1644,6 +1725,9 @@ deployServiceApp.get("/api/build-jobs/:jobId/status", async (c) => {
 deployServiceApp.all("/mcp", async (c) => {
   if (c.req.method === "OPTIONS") {
     return c.body(null, 204);
+  }
+  if (c.req.method === "GET") {
+    return c.json({ error: "SSE streaming is not supported in stateless mode." }, 405);
   }
 
   let identity: AgentRequestIdentity;
