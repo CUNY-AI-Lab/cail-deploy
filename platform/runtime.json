@@ -1,16 +1,16 @@
 {
-  "name": "cail-runtime",
+  "name": "kale-runtime",
   "version": 1,
   "provider": "cloudflare",
   "deployment_model": "workers-for-platforms",
   "build_surface": "github",
-  "build_execution": "cail-owned-runner",
+  "build_execution": "kale-owned-runner",
   "build_queue": "cloudflare-queues",
   "control_plane_store": "d1",
   "artifact_archive": "r2",
   "public_base_url": "https://cuny.qzz.io",
   "install_base_url": "https://cuny.qzz.io/kale",
-  "well_known_runtime_url": "https://runtime.cuny.qzz.io/.well-known/cail-runtime.json",
+  "well_known_runtime_url": "https://runtime.cuny.qzz.io/.well-known/kale-runtime.json",
   "project_url_template": "https://<project-name>.cuny.qzz.io",
   "project_name_pattern": "^(?=.{1,63}$)[a-z0-9]+(?:-[a-z0-9]+)*$",
   "reserved_project_names": [
@@ -96,7 +96,7 @@
     ]
   },
   "agent_api": {
-    "runtime_manifest": "https://runtime.cuny.qzz.io/.well-known/cail-runtime.json",
+    "runtime_manifest": "https://runtime.cuny.qzz.io/.well-known/kale-runtime.json",
     "mcp_endpoint": "https://cuny.qzz.io/kale/mcp",
     "connection_health": "https://cuny.qzz.io/kale/.well-known/kale-connection.json",
     "oauth_authorization_metadata": "https://cuny.qzz.io/kale/.well-known/oauth-authorization-server",
@@ -115,7 +115,7 @@
         "headless_bootstrap_supported": false,
         "browser_session_required_for_authorization": true,
         "human_handoff_rules": [
-          "When the harness supports skills or plugins, acquire the cail-deploy skill or plugin before MCP setup.",
+          "When the harness supports skills or plugins, acquire the kale-deploy skill or plugin before MCP setup.",
           "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
           "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
           "If a harness cannot complete MCP OAuth reliably, send the user to /connect to generate a Kale token and configure the MCP server with an Authorization: Bearer header.",

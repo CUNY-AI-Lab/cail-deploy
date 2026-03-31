@@ -1,0 +1,9 @@
+{
+  "name": "kale-deploy",
+  "version": "0.1.0",
+  "description": "Kale Deploy plugin for building and shipping Kale-compatible web apps through the remote Kale MCP server.",
+  "author": {
+    "name": "CUNY AI Lab",
+    "email": "hello@ailab.gc.cuny.edu"
+  }
+}

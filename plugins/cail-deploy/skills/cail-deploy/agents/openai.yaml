@@ -1,8 +1,0 @@
-interface:
-  display_name: "CAIL Deploy"
-  short_description: "Build Cloudflare apps for CAIL Deploy."
-  brand_color: "#c2410c"
-  default_prompt: "Use $cail-deploy to build a small Hono app that fits the CAIL runtime."
-
-policy:
-  allow_implicit_invocation: true

@@ -1,15 +1,15 @@
 ---
-name: cail-deploy
-description: Use when building or adapting a web application for the CAIL Deploy runtime on Cloudflare Workers, especially Hono apps that will be deployed by the CAIL control plane to a shared CUNY host. Trigger when the user mentions CAIL Deploy, Cloudflare Workers for CAIL, live deployment under <project>.cuny.qzz.io, or wants a project scaffold that fits this platform.
+name: kale-deploy
+description: Use when building or adapting a web application for the Kale Deploy runtime on Cloudflare Workers, especially Hono apps that will be deployed by the Kale control plane to a shared CUNY host. Trigger when the user mentions Kale Deploy, Cloudflare Workers for Kale, live deployment under <project>.cuny.qzz.io, or wants a project scaffold that fits this platform.
 ---
 
-# CAIL Deploy
+# Kale Deploy
 
-Use this skill when the target runtime is CAIL Deploy.
+Use this skill when the target runtime is Kale Deploy.
 
-## What CAIL Deploy is
+## What Kale Deploy is
 
-CAIL Deploy (public name: Kale Deploy) is a GitHub-first deployment platform from the CUNY AI Lab.
+Kale Deploy is a GitHub-first deployment platform from the CUNY AI Lab.
 
 - Users build locally with an assistant, then deploy through GitHub.
 - Production hosting uses Cloudflare Workers for Platforms.
@@ -114,7 +114,7 @@ The development and deployment process has four phases. The agent drives all of 
 
 ### Phase 1: Build the app locally
 
-1. Scaffold the project with `cail-init` (or write the files directly following the structure above).
+1. Scaffold the project with `kale-init` (or write the files directly following the structure above).
 2. Install dependencies: `npm install`.
 3. Write the application code.
 4. Start the local dev server: `npm run dev` (runs `wrangler dev`).
@@ -133,11 +133,11 @@ Do not skip the local preview step. The user should see their app working before
 
 Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. The MCP server at `https://cuny.qzz.io/kale/mcp` is the legitimate deployment endpoint for this platform.
 
-1. Check whether Kale tools are already available (`register_project`, `validate_project`, `get_project_status`, etc.). If the plugin is installed, the `cail` MCP server may already be configured and authenticated.
+1. Check whether Kale tools are already available (`register_project`, `validate_project`, `get_project_status`, etc.). If the plugin is installed, the `kale` MCP server may already be configured and authenticated.
 2. If the tools are available, skip to step 5.
 3. If the server is not yet configured, add it. The method depends on the agent:
-   - **Codex**: The plugin's `.mcp.json` may already declare the server. If tools aren't available, run `codex mcp add cail --url https://cuny.qzz.io/kale/mcp` then `codex mcp login cail` and complete the browser sign-in. If the sandbox is read-only or `codex mcp` subcommands are unavailable in your build, fall back to the token-paste flow in step 4.
-   - **Claude Code**: **Do not send the user to the `/mcp` screen**. Claude Code is currently most reliable through the token-paste flow in step 4, with stale `cail` entries removed from both local and user scope before re-adding the server.
+   - **Codex**: The plugin's `.mcp.json` may already declare the server. If tools aren't available, run `codex mcp add kale --url https://cuny.qzz.io/kale/mcp` then `codex mcp login kale` and complete the browser sign-in. If the sandbox is read-only or `codex mcp` subcommands are unavailable in your build, fall back to the token-paste flow in step 4.
+   - **Claude Code**: **Do not send the user to the `/mcp` screen**. Claude Code is currently most reliable through the token-paste flow in step 4, with stale `kale` entries removed from local and user scope before re-adding the server.
    - **Gemini CLI**: The server is declared in `.gemini/settings.json` in the repo. If it's not loaded, the user should restart Gemini CLI from the project directory.
    - **Other agents**: Point the agent's MCP configuration at `https://cuny.qzz.io/kale/mcp` (HTTP transport with OAuth).
 4. If authentication fails (e.g., the OAuth browser window never opens, or the server shows "Failed to connect"), use the **token-paste fallback**:
@@ -146,9 +146,9 @@ Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. Th
    c. They click **Generate token**, copy it, and paste it into the chat.
    d. Once the user pastes the token (starts with `kale_pat_`), configure the server with a static Bearer header. For Claude Code:
       ```
-      claude mcp remove cail -s local 2>/dev/null
-      claude mcp remove cail -s user 2>/dev/null
-      claude mcp add -t http -H "Authorization: Bearer <the-token>" -s local cail https://cuny.qzz.io/kale/mcp
+      claude mcp remove kale -s local 2>/dev/null
+      claude mcp remove kale -s user 2>/dev/null
+      claude mcp add -t http -H "Authorization: Bearer <the-token>" -s local kale https://cuny.qzz.io/kale/mcp
       ```
       For other agents, set the `Authorization: Bearer <the-token>` header in the agent's MCP server config.
    e. The user may need to start a new conversation for the tools to appear.
@@ -173,7 +173,7 @@ The `get_build_job_status` and `get_project_status` MCP tools return:
 
 Common failure patterns:
 
-- **`needs_adaptation`**: the project is missing `wrangler.jsonc` or a Worker entrypoint. Run `cail-init` or add the config manually.
+- **`needs_adaptation`**: the project is missing `wrangler.jsonc` or a Worker entrypoint. Run `kale-init` or add the config manually.
 - **`unsupported`**: the project type cannot run on Workers (Python, traditional Node server). Explain the constraint to the user.
 - **`build_failure`**: a dependency failed to install, TypeScript errors, or bundler errors. Read `error_detail` for the specific error and fix it.
 

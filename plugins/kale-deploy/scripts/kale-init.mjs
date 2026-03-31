@@ -7,7 +7,7 @@ import process from "node:process";
 const [, , rawName] = process.argv;
 
 if (!rawName) {
-  console.error("Usage: cail-init <project-name>");
+  console.error("Usage: kale-init <project-name>");
   process.exit(1);
 }
 
@@ -78,7 +78,7 @@ function wranglerJsonc(name) {
 function agentsMd(name) {
   return `# ${name}
 
-This repository targets CAIL Deploy on Cloudflare Workers.
+This repository targets Kale Deploy on Cloudflare Workers.
 
 ## What to build
 
@@ -96,7 +96,7 @@ This repository targets CAIL Deploy on Cloudflare Workers.
 
 ## Deployment assumptions
 
-- Production bindings are attached by the CAIL Deploy service, not by this repository.
+- Production bindings are attached by the Kale Deploy service, not by this repository.
 - Keep \`wrangler.jsonc\` minimal and local-development-focused.
 - Run \`npm run check\` after structural changes.
 - Before asking Kale Deploy to validate or deploy, make sure this repo still has:
@@ -143,7 +143,7 @@ function claudeMd(name) {
 
 This repository uses \`AGENTS.md\` as the canonical project guidance.
 
-Read \`AGENTS.md\` before making changes. Keep the app compatible with CAIL Deploy on Cloudflare Workers.
+Read \`AGENTS.md\` before making changes. Keep the app compatible with Kale Deploy on Cloudflare Workers.
 `;
 }
 
@@ -165,7 +165,7 @@ app.get("/", (c) => c.html(\`<!doctype html>
 <html lang="en">
   <body style="font-family: ui-sans-serif, sans-serif; padding: 2rem;">
     <h1>${name}</h1>
-    <p>Your CAIL Deploy app is ready to build.</p>
+    <p>Your Kale Deploy app is ready to build.</p>
   </body>
 </html>\`));
 

@@ -7,7 +7,7 @@ This runbook is for the small team operating Kale Deploy during the pilot.
 Check these first when someone reports a problem:
 
 - public front door: `https://cuny.qzz.io/kale`
-- public runtime manifest: `https://runtime.cuny.qzz.io/.well-known/cail-runtime.json`
+- public runtime manifest: `https://runtime.cuny.qzz.io/.well-known/kale-runtime.json`
 - deploy-service health: `https://cuny.qzz.io/kale/healthz`
 - direct deploy-service health: `https://cail-deploy-service.ailab-452.workers.dev/healthz`
 - direct gateway health: `https://cail-gateway.ailab-452.workers.dev/healthz`
@@ -137,7 +137,7 @@ If the control plane looks unhealthy:
 1. Check `https://cuny.qzz.io/kale/healthz`.
 2. Check `https://cail-deploy-service.ailab-452.workers.dev/healthz`.
 3. Check `https://cail-gateway.ailab-452.workers.dev/healthz`.
-4. Check `https://runtime.cuny.qzz.io/.well-known/cail-runtime.json`.
+4. Check `https://runtime.cuny.qzz.io/.well-known/kale-runtime.json`.
 5. Check `https://cuny.qzz.io/kale/github/app` and confirm the app ID and slug are still populated.
 
 If the project host is broken but the control plane is healthy:

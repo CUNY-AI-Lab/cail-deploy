@@ -16,7 +16,7 @@ import {
 
 test("runtime manifest advertises the agent API without duplicate well-known keys", async () => {
   const { env } = createTestContext();
-  const response = await fetchApp("GET", "/.well-known/cail-runtime.json", env);
+  const response = await fetchApp("GET", "/.well-known/kale-runtime.json", env);
   assert.equal(response.status, 200);
 
   const body = await response.json() as {
@@ -63,7 +63,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     };
   };
 
-  assert.equal(body.well_known_runtime_url, "https://runtime.cuny.qzz.io/.well-known/cail-runtime.json");
+  assert.equal(body.well_known_runtime_url, "https://runtime.cuny.qzz.io/.well-known/kale-runtime.json");
   assert.deepEqual(body.reserved_project_names, ["runtime"]);
   assert.deepEqual(body.good_fit_project_types, [
     "exhibit-site",
@@ -226,9 +226,9 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Codex/);
   assert.match(html, /Gemini CLI/);
   assert.match(html, /Connect your agent/);
-  assert.match(html, /claude mcp remove cail -s local/);
+  assert.match(html, /claude plugins install kale-deploy@cuny-ai-lab -s local/);
   assert.match(html, /https:\/\/deploy\.example\/connect/);
-  assert.match(html, /codex mcp add cail --url https:\/\/[^\s"]+\/mcp/);
+  assert.match(html, /codex mcp add kale --url https:\/\/[^\s"]+\/mcp/);
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app and deploy it with Kale Deploy/);
   assert.match(html, /smoke-test/);

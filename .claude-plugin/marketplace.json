@@ -1,7 +1,7 @@
 {
   "name": "cuny-ai-lab",
   "metadata": {
-    "description": "CUNY AI Lab plugins for building and deploying CAIL-compatible web apps."
+    "description": "CUNY AI Lab plugins for building and deploying Kale Deploy web apps."
   },
   "owner": {
     "name": "CUNY AI Lab",
@@ -9,14 +9,14 @@
   },
   "plugins": [
     {
-      "name": "cail-deploy",
-      "description": "Build and deploy CAIL-compatible web apps through the CAIL remote MCP server.",
+      "name": "kale-deploy",
+      "description": "Build and deploy Kale Deploy web apps through the Kale remote MCP server.",
       "version": "0.1.0",
       "author": {
         "name": "CUNY AI Lab",
         "email": "hello@ailab.gc.cuny.edu"
       },
-      "source": "./plugins/cail-deploy",
+      "source": "./plugins/kale-deploy",
       "category": "development"
     }
   ]

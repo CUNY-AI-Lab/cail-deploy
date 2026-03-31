@@ -7,8 +7,8 @@ Use this when you want one clean Codex-first path for Kale Deploy.
 Run:
 
 ```bash
-codex mcp add cail --url https://cuny.qzz.io/kale/mcp
-codex mcp login cail
+codex mcp add kale --url https://cuny.qzz.io/kale/mcp
+codex mcp login kale
 ```
 
 Codex will open a browser sign-in flow for Kale Deploy. Finish that sign-in, then come back to Codex.
@@ -35,7 +35,7 @@ Ask Codex to:
 If Codex gives you a GitHub link or setup page:
 
 1. open it in the browser
-2. approve the GitHub app named `CAIL Deploy`
+2. approve the GitHub app named `Kale Deploy`
 3. choose only the repository you want if GitHub offers that option
 
 ## 5. Validate before going live

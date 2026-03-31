@@ -1,7 +1,7 @@
 {
-  "name": "cail-deploy",
+  "name": "kale-deploy",
   "version": "0.1.0",
-  "description": "CAIL Deploy assistant adapter for building CAIL-compatible Cloudflare apps.",
+  "description": "Kale Deploy assistant adapter for building Kale-compatible Cloudflare apps.",
   "author": {
     "name": "CUNY AI Lab",
     "email": "hello@ailab.gc.cuny.edu",
@@ -21,9 +21,9 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "CAIL Deploy",
-    "shortDescription": "Build and deploy apps that fit the CAIL runtime.",
-    "longDescription": "A Codex plugin that teaches the CAIL Deploy runtime, bundles the remote CAIL MCP server, and provides a cail-init command prompt for scaffolding and shipping new projects.",
+    "displayName": "Kale Deploy",
+    "shortDescription": "Build and deploy apps that fit the Kale runtime.",
+    "longDescription": "A Codex plugin that teaches the Kale Deploy runtime, bundles the remote Kale MCP server, and provides a kale-init command prompt for scaffolding and shipping new projects.",
     "developerName": "CUNY AI Lab",
     "category": "Developer Tools",
     "capabilities": [
@@ -35,9 +35,9 @@
     "privacyPolicyURL": "https://cail-deploy-service.ailab-452.workers.dev/privacy",
     "termsOfServiceURL": "https://cail-deploy-service.ailab-452.workers.dev/terms",
     "defaultPrompt": [
-      "Use CAIL Deploy to build me a small web app.",
-      "Scaffold and deploy a CAIL-compatible survey tool.",
-      "Make this Worker fit CAIL Deploy and push it live."
+      "Use Kale Deploy to build me a small web app.",
+      "Scaffold and deploy a Kale-compatible survey tool.",
+      "Make this Worker fit Kale Deploy and push it live."
     ],
     "brandColor": "#c2410c"
   }

@@ -1,6 +1,6 @@
 # Agent API
 
-CAIL Deploy now exposes a small machine-readable control-plane surface for assistants.
+Kale Deploy now exposes a small machine-readable control-plane surface for assistants.
 
 Use this when you want the loop to be:
 
@@ -14,7 +14,7 @@ Use this when you want the loop to be:
 
 Start here:
 
-- [https://runtime.cuny.qzz.io/.well-known/cail-runtime.json](https://runtime.cuny.qzz.io/.well-known/cail-runtime.json)
+- [https://runtime.cuny.qzz.io/.well-known/kale-runtime.json](https://runtime.cuny.qzz.io/.well-known/kale-runtime.json)
 
 That manifest describes:
 
@@ -29,7 +29,7 @@ That manifest describes:
 The preferred auth model is now:
 
 1. the harness connects to `POST /mcp`
-2. CAIL replies with an OAuth challenge and protected-resource metadata
+2. Kale replies with an OAuth challenge and protected-resource metadata
 3. the harness discovers `/.well-known/oauth-authorization-server`
 4. the harness registers as a public client at `POST /oauth/register`
 5. the harness opens the browser to `GET /api/oauth/authorize`
@@ -89,7 +89,7 @@ Notes:
 
 - the MCP layer is an adapter over the existing deploy-service API, not a separate control plane
 - `guidedInstallUrl` still represents a human GitHub browser handoff step
-- the MCP server also exposes runtime resources at `cail://runtime/manifest` and `cail://runtime/auth`
+- the MCP server also exposes runtime resources at `kale://runtime/manifest` and `kale://runtime/auth`
 
 ## Repository lifecycle status
 
@@ -107,7 +107,7 @@ Use this when you want a repo-first answer to:
 Example:
 
 ```bash
-curl https://cuny.qzz.io/kale/api/repositories/szweibel/cail-deploy-smoke-test/status \
+curl https://cuny.qzz.io/kale/api/repositories/szweibel/kale-deploy-smoke-test/status \
   -H 'authorization: Bearer <token>'
 ```
 
@@ -228,7 +228,7 @@ curl -X POST https://cuny.qzz.io/kale/api/validate \
   -H 'authorization: Bearer <token>' \
   -H 'content-type: application/json' \
   -d '{
-    "repositoryFullName": "szweibel/cail-assets-build-test",
+    "repositoryFullName": "szweibel/kale-assets-build-test",
     "ref": "main"
   }'
 ```
@@ -242,19 +242,19 @@ Response shape:
   "jobKind": "validation",
   "repository": {
     "ownerLogin": "szweibel",
-    "name": "cail-assets-build-test",
-    "fullName": "szweibel/cail-assets-build-test",
-    "htmlUrl": "https://github.com/szweibel/cail-assets-build-test"
+    "name": "kale-assets-build-test",
+    "fullName": "szweibel/kale-assets-build-test",
+    "htmlUrl": "https://github.com/szweibel/kale-assets-build-test"
   },
   "ref": "main",
   "headSha": "abc123",
-  "projectName": "cail-assets-build-test",
-  "projectUrlPreview": "https://cail-assets-build-test.cuny.qzz.io",
+  "projectName": "kale-assets-build-test",
+  "projectUrlPreview": "https://kale-assets-build-test.cuny.qzz.io",
   "status": "queued",
   "buildStatus": "queued",
   "statusUrl": "https://cuny.qzz.io/kale/api/build-jobs/job_123/status",
   "checkRunId": 456789012,
-  "checkRunUrl": "https://github.com/szweibel/cail-assets-build-test/runs/...",
+  "checkRunUrl": "https://github.com/szweibel/kale-assets-build-test/runs/...",
   "nextAction": "poll_status"
 }
 ```
@@ -288,7 +288,7 @@ curl -X POST https://cuny.qzz.io/kale/api/projects/register \
   -H 'authorization: Bearer <token>' \
   -H 'content-type: application/json' \
   -d '{
-    "repositoryFullName": "szweibel/cail-deploy-smoke-test"
+    "repositoryFullName": "szweibel/kale-deploy-smoke-test"
   }'
 ```
 
@@ -299,18 +299,18 @@ Successful response shape:
   "ok": true,
   "repository": {
     "ownerLogin": "szweibel",
-    "name": "cail-deploy-smoke-test",
-    "fullName": "szweibel/cail-deploy-smoke-test",
-    "htmlUrl": "https://github.com/szweibel/cail-deploy-smoke-test"
+    "name": "kale-deploy-smoke-test",
+    "fullName": "szweibel/kale-deploy-smoke-test",
+    "htmlUrl": "https://github.com/szweibel/kale-deploy-smoke-test"
   },
-  "projectName": "cail-deploy-smoke-test",
-  "projectUrl": "https://cail-deploy-smoke-test.cuny.qzz.io",
+  "projectName": "kale-deploy-smoke-test",
+  "projectUrl": "https://kale-deploy-smoke-test.cuny.qzz.io",
   "projectAvailable": true,
   "installStatus": "installed",
   "installUrl": "https://github.com/apps/cail-deploy/installations/new",
-  "guidedInstallUrl": "https://cuny.qzz.io/kale/github/install?repositoryFullName=szweibel%2Fcail-deploy-smoke-test&projectName=cail-deploy-smoke-test",
+  "guidedInstallUrl": "https://cuny.qzz.io/kale/github/install?repositoryFullName=szweibel%2Fkale-deploy-smoke-test&projectName=kale-deploy-smoke-test",
   "setupUrl": "https://cuny.qzz.io/kale/github/setup",
-  "statusUrl": "https://cuny.qzz.io/kale/api/projects/cail-deploy-smoke-test/status",
+  "statusUrl": "https://cuny.qzz.io/kale/api/projects/kale-deploy-smoke-test/status",
   "nextAction": "push_to_default_branch",
   "installed": true,
   "installationId": 12345678,
@@ -343,7 +343,7 @@ Endpoint:
 Example:
 
 ```bash
-curl https://cuny.qzz.io/kale/api/projects/cail-deploy-smoke-test/status \
+curl https://cuny.qzz.io/kale/api/projects/kale-deploy-smoke-test/status \
   -H 'authorization: Bearer <token>'
 ```
 
@@ -351,10 +351,10 @@ Response shape:
 
 ```json
 {
-  "projectName": "cail-deploy-smoke-test",
+  "projectName": "kale-deploy-smoke-test",
   "status": "live",
   "build_status": "success",
-  "deployment_url": "https://cail-deploy-smoke-test.cuny.qzz.io",
+  "deployment_url": "https://kale-deploy-smoke-test.cuny.qzz.io",
   "deployment_id": "dep_123",
   "error_kind": null,
   "error_message": null,
@@ -405,8 +405,8 @@ Important values:
 
 Today, the strongest loop is:
 
-1. acquire the `cail-deploy` skill or plugin first when the harness supports that surface
-2. scaffold with `CAIL-init` or create a Worker-compatible repo
+1. acquire the `kale-deploy` skill or plugin first when the harness supports that surface
+2. scaffold with `kale-init` or create a Worker-compatible repo
 3. create the GitHub repo with `gh repo create` or another GitHub client
 4. connect the harness to `POST /mcp`
 5. let the harness complete MCP OAuth through the browser, unless the harness is Claude Code and needs the `/connect` token bridge instead
@@ -420,7 +420,7 @@ If the GitHub App is already installed for all repositories in the owner account
 
 ## Local preflight before push
 
-CAIL Deploy now exposes a remote validation API for GitHub-visible refs, but local preflight is still the fastest feedback loop for unpushed work.
+Kale Deploy now exposes a remote validation API for GitHub-visible refs, but local preflight is still the fastest feedback loop for unpushed work.
 
 Agents should still use:
 

@@ -6,13 +6,13 @@ Use this checklist before inviting a new batch of Kale Deploy pilot users.
 
 - `npm run ops:healthcheck` passes
 - the public front door loads at `https://cuny.qzz.io/kale`
-- the runtime manifest loads at `https://runtime.cuny.qzz.io/.well-known/cail-runtime.json`
+- the runtime manifest loads at `https://runtime.cuny.qzz.io/.well-known/kale-runtime.json`
 - the AWS runner reports healthy on `readyz`
 - at least one known smoke-test project is still live
 
 ## GitHub Checks
 
-- the `CAIL Deploy` GitHub App is installed and working
+- the `Kale Deploy` GitHub App is installed and working
 - a push to a test repo creates a check run
 - a successful build still produces a live project URL
 - a failing build still returns a useful failure summary

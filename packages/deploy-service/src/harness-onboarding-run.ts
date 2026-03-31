@@ -12,6 +12,10 @@ import {
   type HarnessPromptProfile,
   type HarnessSetupPrompt
 } from "./harness-onboarding";
+import {
+  askedForKaleHandoff,
+  askedForKaleToken
+} from "./harness-onboarding-intent";
 
 type CliOptions = {
   outDir: string;
@@ -96,6 +100,10 @@ type PromptOverrideFile = {
 };
 
 const DEFAULT_SERVICE_BASE_URL = "https://cuny.qzz.io/kale";
+const KALE_PLUGIN_PACKAGE = "kale-deploy@cuny-ai-lab";
+const LEGACY_PLUGIN_PACKAGE = "cail-deploy@cuny-ai-lab";
+const KALE_SERVER_NAMES = ["kale", "cail"] as const;
+const KALE_SKILL_NAMES = ["kale-deploy", "cail-deploy"] as const;
 
 const HELP_TEXT = `Internal harness onboarding lab for Kale Deploy.
 
@@ -447,8 +455,10 @@ async function prepareHarness(input: {
     timeoutMs: 30_000
   });
   const pluginStateText = flattenOutput(pluginStateBefore);
-  const hadInstalledCailPlugin = /cail-deploy@cuny-ai-lab/.test(pluginStateText);
-  const hadEnabledCailPlugin = /cail-deploy@cuny-ai-lab[\s\S]*Status:\s*✔ enabled/.test(pluginStateText);
+  const hadInstalledKalePlugin = new RegExp(KALE_PLUGIN_PACKAGE).test(pluginStateText);
+  const hadEnabledKalePlugin = new RegExp(`${KALE_PLUGIN_PACKAGE}[\\s\\S]*Status:\\s*✔ enabled`).test(pluginStateText);
+  const hadInstalledLegacyPlugin = new RegExp(LEGACY_PLUGIN_PACKAGE).test(pluginStateText);
+  const hadEnabledLegacyPlugin = new RegExp(`${LEGACY_PLUGIN_PACKAGE}[\\s\\S]*Status:\\s*✔ enabled`).test(pluginStateText);
   const backups = await Promise.all([
     backupPath(path.join(currentHome(), ".claude.json"), path.join(backupsRoot, ".claude.json")),
     backupPath(path.join(currentHome(), ".claude", "plugins"), path.join(backupsRoot, "plugins"))
@@ -458,30 +468,34 @@ async function prepareHarness(input: {
     ? "Found a live Kale PAT for automated full-process Claude testing."
     : "No live Kale PAT was available, so Claude full-process testing may stop at the token handoff.");
 
-  await runCommand({
-    command: "claude",
-    args: ["mcp", "remove", "cail", "-s", "local"],
-    cwd: workspaceDir,
-    env: process.env,
-    timeoutMs: 30_000
-  });
-  await runCommand({
-    command: "claude",
-    args: ["mcp", "remove", "cail", "-s", "user"],
-    cwd: workspaceDir,
-    env: process.env,
-    timeoutMs: 30_000
-  });
-  notes.push("Removed existing Claude cail MCP server from local and user scopes before the run.");
+  for (const serverName of KALE_SERVER_NAMES) {
+    await runCommand({
+      command: "claude",
+      args: ["mcp", "remove", serverName, "-s", "local"],
+      cwd: workspaceDir,
+      env: process.env,
+      timeoutMs: 30_000
+    });
+    await runCommand({
+      command: "claude",
+      args: ["mcp", "remove", serverName, "-s", "user"],
+      cwd: workspaceDir,
+      env: process.env,
+      timeoutMs: 30_000
+    });
+  }
+  notes.push("Removed existing Claude Kale MCP entries from local and user scopes before the run.");
 
-  await runCommand({
-    command: "claude",
-    args: ["plugins", "uninstall", "cail-deploy@cuny-ai-lab"],
-    cwd: workspaceDir,
-    env: process.env,
-    timeoutMs: 30_000
-  });
-  notes.push("Uninstalled existing Claude cail-deploy plugin before the run.");
+  for (const pluginPackage of [KALE_PLUGIN_PACKAGE, LEGACY_PLUGIN_PACKAGE]) {
+    await runCommand({
+      command: "claude",
+      args: ["plugins", "uninstall", pluginPackage],
+      cwd: workspaceDir,
+      env: process.env,
+      timeoutMs: 30_000
+    });
+  }
+  notes.push("Uninstalled existing Claude Kale plugin packages before the run.");
 
   return {
     harnessId: input.harnessId,
@@ -493,10 +507,19 @@ async function prepareHarness(input: {
     notes,
     cleanup: async () => {
       await Promise.all(backups.map(restoreBackup));
-      if (hadInstalledCailPlugin && hadEnabledCailPlugin) {
+      if (hadInstalledKalePlugin && hadEnabledKalePlugin) {
         await runCommand({
           command: "claude",
-          args: ["plugins", "enable", "cail-deploy@cuny-ai-lab"],
+          args: ["plugins", "enable", KALE_PLUGIN_PACKAGE],
+          cwd: workspaceDir,
+          env: process.env,
+          timeoutMs: 30_000
+        });
+      }
+      if (hadInstalledLegacyPlugin && hadEnabledLegacyPlugin) {
+        await runCommand({
+          command: "claude",
+          args: ["plugins", "enable", LEGACY_PLUGIN_PACKAGE],
           cwd: workspaceDir,
           env: process.env,
           timeoutMs: 30_000
@@ -533,10 +556,10 @@ async function collectPostflight(harnessId: HarnessId, prepared: PreparedHarness
       env: prepared.env,
       timeoutMs: 30_000
     });
-    const skillPath = path.join(prepared.homeDir ?? currentHome(), ".codex", "skills", "cail-deploy", "SKILL.md");
+    const skillPath = await firstExistingPath(KALE_SKILL_NAMES.map((skillName) => path.join(prepared.homeDir ?? currentHome(), ".codex", "skills", skillName, "SKILL.md")));
     return {
       mcpList: flattenOutput(mcpList),
-      skillPath: await pathExists(skillPath) ? skillPath : ""
+      skillPath: skillPath ?? ""
     };
   }
 
@@ -570,11 +593,13 @@ async function collectPostflight(harnessId: HarnessId, prepared: PreparedHarness
     env: prepared.env,
     timeoutMs: 30_000
   });
-  const workspaceSkillPath = path.join(prepared.workspaceDir, ".gemini", "skills", "cail-deploy", "SKILL.md");
-  const homeSkillPath = path.join(prepared.homeDir ?? currentHome(), ".gemini", "skills", "cail-deploy", "SKILL.md");
+  const candidateSkillPaths = KALE_SKILL_NAMES.flatMap((skillName) => [
+    path.join(prepared.workspaceDir, ".gemini", "skills", skillName, "SKILL.md"),
+    path.join(prepared.homeDir ?? currentHome(), ".gemini", "skills", skillName, "SKILL.md")
+  ]);
   return {
     mcpList: flattenOutput(mcpList),
-    skillPath: await firstExistingPath([workspaceSkillPath, homeSkillPath]) ?? ""
+    skillPath: await firstExistingPath(candidateSkillPaths) ?? ""
   };
 }
 
@@ -587,15 +612,17 @@ function summarizeObservedState(
   const rawText = `${runResult.stdout}\n${runResult.stderr}`.toLowerCase();
   const postflightText = Object.values(postflight).join("\n").toLowerCase();
   const observedToolCallsText = (runResult.observedToolCalls ?? []).join("\n").toLowerCase();
-  const cailListed = /(^|\n)\s*[✓✗]?\s*cail(\s|:)/.test(postflightText)
-    || /cail\s+https:\/\/cuny\.qzz\.io\/kale\/mcp/.test(postflightText)
-    || /cail:\s+https:\/\/cuny\.qzz\.io\/kale\/mcp/.test(postflightText);
-  const cailDisconnected = /(^|\n)\s*[✗x]\s*cail:.*disconnected/im.test(postflightText)
-    || /cail.*disconnected/.test(postflightText);
+  const kaleServerListed = /(^|\n)\s*[✓✗]?\s*(kale|cail)(\s|:)/.test(postflightText)
+    || /(kale|cail)\s+https:\/\/cuny\.qzz\.io\/kale\/mcp/.test(postflightText)
+    || /(kale|cail):\s+https:\/\/cuny\.qzz\.io\/kale\/mcp/.test(postflightText);
+  const kaleServerDisconnected = /(^|\n)\s*[✗x]\s*(kale|cail):.*disconnected/im.test(postflightText)
+    || /(kale|cail).*disconnected/.test(postflightText);
   const skillAcquired = harnessId === "claude"
-    ? /cail-deploy@cuny-ai-lab/.test(postflightText)
+    ? /(kale-deploy|cail-deploy)@cuny-ai-lab/.test(postflightText)
     : Boolean(postflight.skillPath);
   const skillObserved = skillAcquired
+    || assistantText.includes("kale-deploy")
+    || rawText.includes("kale-deploy")
     || assistantText.includes("cail-deploy")
     || rawText.includes("cail-deploy")
     || rawText.includes("skill-installer")
@@ -604,17 +631,14 @@ function summarizeObservedState(
     || rawText.includes("claude plugins install")
     || rawText.includes("claude plugins marketplace add");
   return {
-    mcpConfigured: cailListed && !cailDisconnected,
-    pluginInstalled: /cail-deploy@cuny-ai-lab/.test(postflightText),
-    askedForHumanHandoff: assistantText.includes("please visit https://cuny.qzz.io/kale/connect")
-      || assistantText.includes("generate token")
-      || assistantText.includes("complete the browser sign-in flow")
-      || assistantText.includes("browser sign-in")
-      || assistantText.includes("open this url in your browser")
-      || rawText.includes("authorize `cail` by opening this url in your browser")
-      || rawText.includes("please visit https://cuny.qzz.io/kale/connect")
+    mcpConfigured: kaleServerListed && !kaleServerDisconnected,
+    pluginInstalled: /(kale-deploy|cail-deploy)@cuny-ai-lab/.test(postflightText),
+    askedForHumanHandoff: askedForKaleHandoff(assistantText)
+      || askedForKaleHandoff(rawText)
+      || rawText.includes("[mcp info] mcp server 'kale' requires authentication")
       || rawText.includes("[mcp info] mcp server 'cail' requires authentication"),
     mentionedVerification: hasVerificationEvidence(assistantText, observedToolCallsText, rawText)
+      || (rawText.includes("mcp__kale__test_connection") && rawText.includes("mcp__kale__register_project"))
       || (rawText.includes("mcp__cail__test_connection") && rawText.includes("mcp__cail__register_project")),
     skillAcquired,
     skillObserved
@@ -661,14 +685,14 @@ function summarizeOutcome(
   promptProfile: HarnessPromptProfile
 ): string {
   if (outcome === "skill_missing") {
-    return `${harnessName} did not acquire the required cail-deploy skill or plugin from the tested app flow.`;
+    return `${harnessName} did not acquire the required kale-deploy skill or plugin from the tested app flow.`;
   }
   if (outcome === "skill_not_observed") {
-    return `${harnessName} acquired cail-deploy artifacts ambiguously, but the run did not clearly show the skill-first flow being used.`;
+    return `${harnessName} acquired kale-deploy artifacts ambiguously, but the run did not clearly show the skill-first flow being used.`;
   }
   if (outcome === "configured_and_verified") {
     if (promptProfile === "skill-first") {
-      return `${harnessName} acquired the required cail-deploy skill or plugin, then configured Kale and verified the required Kale tools.`;
+      return `${harnessName} acquired the required kale-deploy skill or plugin, then configured Kale and verified the required Kale tools.`;
     }
     return `${harnessName} configured Kale and verified the required Kale tools.`;
   }
@@ -692,13 +716,13 @@ function summarizeOutcome(
   }
   const details = [];
   if (!observed.mcpConfigured) {
-    details.push("no cail MCP server observed");
+    details.push("no kale MCP server observed");
   }
   if (!observed.pluginInstalled) {
-    details.push("no cail plugin observed");
+    details.push("no kale plugin observed");
   }
   if (promptProfile === "skill-first" && !observed.skillAcquired) {
-    details.push("required cail-deploy skill or plugin missing");
+    details.push("required kale-deploy skill or plugin missing");
   }
   return `${harnessName} failed the onboarding test (${details.join(", ") || "no observable progress"}).`;
 }
@@ -959,7 +983,7 @@ function parseCodexJsonResult(stdout: string): { sessionId?: string; resultText:
 }
 
 function codexMcpListHasBearerToken(text: string): boolean {
-  return /^\s*cail\b.*\bbearer token\b/im.test(text);
+  return /^\s*(kale|cail)\b.*\bbearer token\b/im.test(text);
 }
 
 function buildCodexTokenReply(): string {
@@ -968,8 +992,8 @@ function buildCodexTokenReply(): string {
     "I visited https://cuny.qzz.io/kale/connect and generated a Kale token.",
     "The token is available in environment variable KALE_TEST_PAT. Do not print it or echo it back.",
     "Continue onboarding in this Codex environment.",
-    "If cail was already added without token auth, remove it and re-add it with:",
-    "codex mcp add cail --url https://cuny.qzz.io/kale/mcp --bearer-token-env-var KALE_TEST_PAT",
+    "If kale was already added without token auth, remove it and re-add it with:",
+    "codex mcp add kale --url https://cuny.qzz.io/kale/mcp --bearer-token-env-var KALE_TEST_PAT",
     "Stop once configuration is complete and say whether a fresh Codex session is needed before Kale tools appear."
   ].join("\n");
 }
@@ -1153,9 +1177,9 @@ function buildGeminiTokenReply(): string {
     "I visited https://cuny.qzz.io/kale/connect and generated a Kale token.",
     "The token is available in environment variable KALE_TEST_PAT. Do not print it or echo it back.",
     "Continue onboarding in this Gemini CLI environment.",
-    "If cail is already present, update or re-add it in project scope with:",
-    "gemini mcp remove cail --scope project",
-    "gemini mcp add --transport http --scope project cail https://cuny.qzz.io/kale/mcp -H \"Authorization: Bearer $KALE_TEST_PAT\"",
+    "If kale is already present, update or re-add it in project scope with:",
+    "gemini mcp remove kale --scope project",
+    "gemini mcp add --transport http --scope project kale https://cuny.qzz.io/kale/mcp -H \"Authorization: Bearer $KALE_TEST_PAT\"",
     "Stop once configuration is complete and say whether a fresh Gemini session is needed before Kale tools appear."
   ].join("\n");
 }
@@ -1404,23 +1428,6 @@ function parseClaudeStreamJsonResult(stdout: string): { sessionId?: string; resu
   };
 }
 
-function askedForKaleToken(text: string): boolean {
-  const normalized = text.toLowerCase();
-  return normalized.includes("visit https://cuny.qzz.io/kale/connect")
-    || normalized.includes("generate token")
-    || normalized.includes("paste the token back");
-}
-
-function askedForKaleHandoff(text: string): boolean {
-  const normalized = text.toLowerCase();
-  return askedForKaleToken(text)
-    || normalized.includes("complete the browser sign-in flow")
-    || normalized.includes("browser sign-in")
-    || normalized.includes("open this url in your browser")
-    || normalized.includes("requires authentication using")
-    || normalized.includes("authorize `cail` by opening this url in your browser");
-}
-
 function buildClaudeTokenReply(token: string): string {
   return [
     "Here is the Kale token. Do not repeat it back to me.",
@@ -1543,8 +1550,12 @@ async function readClaudeCailPatToken(): Promise<string | undefined> {
     projects?: Record<string, { mcpServers?: Record<string, { headers?: Record<string, string> }> }>;
   };
   const authorizationHeaders = [
+    parsed.mcpServers?.kale?.headers?.Authorization,
     parsed.mcpServers?.cail?.headers?.Authorization,
-    ...Object.values(parsed.projects ?? {}).map((project) => project.mcpServers?.cail?.headers?.Authorization)
+    ...Object.values(parsed.projects ?? {}).flatMap((project) => [
+      project.mcpServers?.kale?.headers?.Authorization,
+      project.mcpServers?.cail?.headers?.Authorization
+    ])
   ].filter((value): value is string => typeof value === "string");
 
   for (const authorization of authorizationHeaders) {

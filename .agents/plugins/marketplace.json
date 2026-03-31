@@ -5,10 +5,10 @@
   },
   "plugins": [
     {
-      "name": "cail-deploy",
+      "name": "kale-deploy",
       "source": {
         "source": "local",
-        "path": "./plugins/cail-deploy"
+        "path": "./plugins/kale-deploy"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -18,4 +18,3 @@
     }
   ]
 }
-

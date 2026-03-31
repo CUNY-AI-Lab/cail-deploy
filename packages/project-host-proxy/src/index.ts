@@ -139,7 +139,7 @@ function isRuntimeManifestRequest(
   const normalizedSuffix = projectHostSuffix.trim().toLowerCase();
   const normalizedRuntimeHost = runtimeManifestHost?.trim().toLowerCase();
 
-  return url.pathname === "/.well-known/cail-runtime.json"
+  return url.pathname === "/.well-known/kale-runtime.json"
     && (hostname === normalizedSuffix || hostname === normalizedRuntimeHost);
 }
 

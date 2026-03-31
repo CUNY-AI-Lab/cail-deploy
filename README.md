@@ -1,11 +1,11 @@
 # Kale Deploy
 
-Kale Deploy is the public name for CAIL Deploy, a GitHub-first publishing system from the CUNY AI Lab. It lets a user work with an AI agent, connect a GitHub repository, and publish a Cloudflare Worker app to a host-based project URL like `https://<project-name>.cuny.qzz.io`.
+Kale Deploy is a GitHub-first publishing system from the CUNY AI Lab. It lets a user work with an AI agent, connect a GitHub repository, and publish a Cloudflare Worker app to a host-based project URL like `https://<project-name>.cuny.qzz.io`.
 
 ## Current URLs
 
 - Public front door: `https://cuny.qzz.io/kale`
-- Runtime manifest: `https://runtime.cuny.qzz.io/.well-known/cail-runtime.json`
+- Runtime manifest: `https://runtime.cuny.qzz.io/.well-known/kale-runtime.json`
 - Project URL pattern: `https://<project-name>.cuny.qzz.io`
 
 The lower-level Cloudflare Workers still exist behind that front door:
@@ -21,7 +21,7 @@ The lower-level Cloudflare Workers still exist behind that front door:
 - `packages/build-runner`: managed Node-based runner that pulls build jobs from Cloudflare Queues, builds Worker artifacts, and reports back to the deploy service.
 - `packages/build-contract`: shared types used by the deploy service and the runner.
 - `platform`: assistant-neutral runtime contract in Markdown and JSON.
-- `plugins/cail-deploy`: shared Codex and Claude Code plugin bundle plus the `cail-init` assistant workflow.
+- `plugins/kale-deploy`: shared Codex and Claude Code plugin bundle plus the `kale-init` assistant workflow.
 
 ## Architecture
 
@@ -47,7 +47,7 @@ At a high level:
 │   └── project-host-proxy/
 ├── platform/
 └── plugins/
-    └── cail-deploy/
+    └── kale-deploy/
 ```
 
 ## Local Development
@@ -94,14 +94,14 @@ Kale Deploy exposes:
 
 - a remote MCP server at `POST /mcp`
 - MCP OAuth metadata under `/.well-known/oauth-*`
-- a machine-readable runtime manifest at `https://runtime.cuny.qzz.io/.well-known/cail-runtime.json`
+- a machine-readable runtime manifest at `https://runtime.cuny.qzz.io/.well-known/kale-runtime.json`
 - structured JSON endpoints for repo registration, validation, and status polling
 
 The MCP surface is a thin adapter over the deploy-service control plane, not a separate backend.
 
 Current harness note:
 
-- The public setup prompts now tell supported harnesses to acquire the `cail-deploy` skill or plugin first, then connect Kale.
+- The public setup prompts now tell supported harnesses to acquire the `kale-deploy` skill or plugin first, then connect Kale.
 - Codex can usually use the standard MCP OAuth flow directly.
 - Claude Code is more reliable today through the `/connect` token bridge plus `claude mcp add --transport http --header "Authorization: Bearer ..."` rather than the interactive `/mcp` screen.
 

@@ -308,7 +308,7 @@ deployServiceApp.use("/mcp/.well-known/*", cors({
 
 deployServiceApp.get("/healthz", (c) => c.json({ ok: true }));
 
-deployServiceApp.get("/.well-known/cail-runtime.json", (c) => {
+deployServiceApp.get("/.well-known/kale-runtime.json", (c) => {
   const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
   return c.json(buildRuntimeManifest(c.env, serviceBaseUrl), 200, {
     "cache-control": "public, max-age=300"
@@ -355,7 +355,7 @@ deployServiceApp.post("/oauth/register", async (c) => {
     }>();
 
     if ((body.token_endpoint_auth_method ?? "none") !== "none") {
-      throw new HttpError(400, "CAIL Deploy only supports public OAuth clients with token_endpoint_auth_method 'none'.");
+      throw new HttpError(400, "Kale Deploy only supports public OAuth clients with token_endpoint_auth_method 'none'.");
     }
 
     const redirectUris = (body.redirect_uris ?? []).map((value) => normalizeRedirectUri(String(value)));
@@ -462,7 +462,7 @@ deployServiceApp.post("/oauth/token", async (c) => {
     const form = await c.req.formData();
     const grantType = getRequiredOauthFormField(form, "grant_type");
     if (grantType !== "authorization_code") {
-      throw new HttpError(400, "CAIL Deploy currently supports only the authorization_code grant.");
+      throw new HttpError(400, "Kale Deploy currently supports only the authorization_code grant.");
     }
 
     const clientId = getRequiredOauthFormField(form, "client_id");
@@ -1251,7 +1251,7 @@ deployServiceApp.post("/github/webhook", async (c) => {
 
 deployServiceApp.get("/api/auth/session", async (c) => {
   return c.json({
-    error: "CAIL Deploy no longer mints bearer tokens here. Use standard MCP OAuth discovery through /mcp."
+    error: "Kale Deploy no longer mints bearer tokens here. Use standard MCP OAuth discovery through /mcp."
   }, 410);
 });
 
@@ -1818,7 +1818,7 @@ deployServiceApp.post("/internal/build-jobs/:jobId/complete", async (c) => {
         detailsUrl: result.buildLogUrl ?? buildJobStatusUrl(resolveServiceBaseUrl(c.env, c.req.raw.url), job.jobId),
         output: checkRunOutput(
           "Validation passed",
-          result.summary ?? "CAIL Validate built the Worker bundle successfully without deploying it.",
+          result.summary ?? "Kale Validate built the Worker bundle successfully without deploying it.",
           result.text
         )
       });
@@ -1850,7 +1850,7 @@ deployServiceApp.post("/internal/build-jobs/:jobId/complete", async (c) => {
       detailsUrl: result.buildLogUrl ?? currentJob.buildLogUrl,
       output: checkRunOutput(
         "Deploying to Cloudflare",
-        result.summary ?? "Build finished. CAIL Deploy is uploading the Worker bundle and provisioning bindings.",
+        result.summary ?? "Build finished. Kale Deploy is uploading the Worker bundle and provisioning bindings.",
         result.text
       )
     });
@@ -1988,7 +1988,7 @@ async function handlePushWebhook(
         const checkRun = await installationClient.createCheckRun({
           owner: repository.ownerLogin,
           repo: repository.name,
-          name: "CAIL Deploy",
+          name: "Kale Deploy",
           headSha: payload.after,
           externalId: jobId,
           status: "completed",
@@ -2041,13 +2041,13 @@ async function handlePushWebhook(
     const checkRun = await installationClient.createCheckRun({
       owner: repository.ownerLogin,
       repo: repository.name,
-      name: "CAIL Deploy",
+      name: "Kale Deploy",
       headSha: payload.after,
       externalId: jobId,
       status: "queued",
       output: checkRunOutput(
         "Queued for build",
-        "CAIL Deploy accepted the push and queued a managed build for the default branch."
+        "Kale Deploy accepted the push and queued a managed build for the default branch."
       )
     });
     checkRunId = checkRun.id;
@@ -2981,11 +2981,11 @@ function failureTitle(
   conclusion: GitHubCheckRunConclusion
 ): string {
   if (failureKind === "unsupported") {
-    return "Unsupported on CAIL";
+    return "Unsupported on Kale";
   }
 
   if (failureKind === "needs_adaptation" || conclusion === "action_required") {
-    return "Needs adaptation for CAIL";
+    return "Needs adaptation for Kale";
   }
 
   return eventName === "validate" ? "Validation failed" : "Deployment failed";
@@ -2993,8 +2993,8 @@ function failureTitle(
 
 function defaultJobStartSummary(eventName: BuildJobEventName): string {
   return eventName === "validate"
-    ? "CAIL Validate picked up this ref on the managed build runner."
-    : "CAIL Deploy picked up this commit on the managed build runner.";
+    ? "Kale Validate picked up this ref on the managed build runner."
+    : "Kale Deploy picked up this commit on the managed build runner.";
 }
 
 function normalizeStaticAssets(
@@ -3231,13 +3231,14 @@ ${baseStyles(`
       <strong>Next:</strong> Paste this token into your agent chat. Your agent will use it to connect to Kale Deploy.
     </div>
     <p class="token-status">This token expires in 90 days. You can revoke it or generate a new one at any time from this page.</p>
+    <div class="notice">If you are connecting Kale from more than one computer, reuse this same token on the other machine. Generating a new token here will revoke the old one.</div>
     <div class="actions">
       <form method="POST" action="${serviceBaseUrl}/connect/revoke"><button type="submit" class="action-btn btn-danger">Revoke token</button></form>
     </div>
   ` : `
     <p>Signed in as <strong>${escapeHtml(email)}</strong></p>
     ${hasActiveToken ? `
-      <div class="notice">You have an active token (created ${escapeHtml(activeTokenCreatedAt ?? "")}, expires ${escapeHtml(activeTokenExpiresAt ?? "")}). Generating a new one will replace it.</div>
+      <div class="notice">You have an active token (created ${escapeHtml(activeTokenCreatedAt ?? "")}, expires ${escapeHtml(activeTokenExpiresAt ?? "")}). Generating a new one will replace it. If you use Kale on more than one computer, reuse the same token there for now.</div>
     ` : `
       <p>Generate a token so your AI agent can connect to Kale Deploy on your behalf.</p>
     `}
@@ -3258,7 +3259,7 @@ function buildOauthProtectedResourceMetadata(serviceBaseUrl: string, oauthBaseUr
     resource: `${serviceBaseUrl}/mcp`,
     authorization_servers: [serviceBaseUrl],
     scopes_supported: [MCP_REQUIRED_SCOPE],
-    resource_name: "CAIL Deploy MCP",
+    resource_name: "Kale Deploy MCP",
     resource_documentation: serviceBaseUrl
   };
 }
@@ -3441,7 +3442,7 @@ function resolveGitHubApiBaseUrl(env: Env): string {
 }
 
 function resolveGitHubAppName(env: Env): string {
-  return env.GITHUB_APP_NAME?.trim() || "CAIL Deploy";
+  return env.GITHUB_APP_NAME?.trim() || "Kale Deploy";
 }
 
 function resolveGitHubAppId(env: Env): string | undefined {
@@ -3655,12 +3656,12 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
   const oauthAuthorizationMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-authorization-server`;
   const oauthProtectedResourceMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`;
   return {
-    name: "cail-runtime",
+    name: "kale-runtime",
     version: 1,
     provider: "cloudflare",
     deployment_model: "workers-for-platforms",
     build_surface: "github",
-    build_execution: "cail-owned-runner",
+    build_execution: "kale-owned-runner",
     build_queue: "cloudflare-queues",
     control_plane_store: "d1",
     artifact_archive: "r2",
@@ -4146,7 +4147,7 @@ async function queueValidationJob(
       status: 409,
       body: {
         ok: false,
-        error: "The CAIL Deploy GitHub App is not installed on this repository.",
+        error: "The Kale Deploy GitHub App is not installed on this repository.",
         repository: {
           ownerLogin: repositoryRef.owner,
           name: repositoryRef.repo,
@@ -4225,7 +4226,7 @@ async function queueValidationJob(
   const checkRun = await installationClient.createCheckRun({
     owner: repository.ownerLogin,
     repo: repository.name,
-    name: "CAIL Validate",
+    name: "Kale Validate",
     headSha: commit.sha,
     externalId: jobId,
     detailsUrl: statusUrl,
@@ -4233,7 +4234,7 @@ async function queueValidationJob(
     startedAt: now,
     output: checkRunOutput(
       "Validation queued",
-      "CAIL Deploy accepted this validation request and queued a build-only check.",
+      "Kale Deploy accepted this validation request and queued a build-only check.",
       "This run will build the Worker bundle without deploying it."
     )
   });
@@ -4821,10 +4822,10 @@ function resolveProjectPublicBaseUrl(env: Env): string {
 function resolvePublicRuntimeManifestUrl(env: Env, serviceBaseUrl: string): string {
   const projectHostSuffix = env.PROJECT_HOST_SUFFIX?.trim().replace(/^\.+|\.+$/g, "");
   if (projectHostSuffix) {
-    return `https://runtime.${projectHostSuffix}/.well-known/cail-runtime.json`;
+    return `https://runtime.${projectHostSuffix}/.well-known/kale-runtime.json`;
   }
 
-  return `${serviceBaseUrl.replace(/\/$/, "")}/.well-known/cail-runtime.json`;
+  return `${serviceBaseUrl.replace(/\/$/, "")}/.well-known/kale-runtime.json`;
 }
 
 function resolveReservedProjectNames(

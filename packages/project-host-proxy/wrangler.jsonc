@@ -7,7 +7,7 @@
   "workers_dev": true,
   "routes": [
     {
-      "pattern": "cuny.qzz.io/.well-known/cail-runtime.json",
+      "pattern": "cuny.qzz.io/.well-known/kale-runtime.json",
       "zone_name": "cuny.qzz.io"
     },
     {
@@ -25,6 +25,6 @@
     "DEPLOY_SERVICE_PATH_PREFIX": "/kale",
     "PROJECT_HOST_SUFFIX": "cuny.qzz.io",
     "RUNTIME_MANIFEST_HOST": "runtime.cuny.qzz.io",
-    "RUNTIME_MANIFEST_URL": "https://cail-deploy-service.ailab-452.workers.dev/.well-known/cail-runtime.json"
+    "RUNTIME_MANIFEST_URL": "https://cail-deploy-service.ailab-452.workers.dev/.well-known/kale-runtime.json"
   }
 }

@@ -1,10 +1,10 @@
-# CAIL Runtime Contract
+# Kale Runtime Contract
 
-This file is the assistant-neutral source of truth for the CAIL Deploy environment.
+This file is the assistant-neutral source of truth for the Kale Deploy environment.
 
 ## Core model
 
-CAIL Deploy hosts student applications on Cloudflare Workers using Workers for Platforms.
+Kale Deploy hosts student applications on Cloudflare Workers using Workers for Platforms.
 
 - Each student project is a user Worker in a shared dispatch namespace.
 - Public URLs are host-based: `https://<project-name>.cuny.qzz.io`.
@@ -18,7 +18,7 @@ The primary deployment UX lives in GitHub.
 - Students install a GitHub App on a repository.
 - A push to `main` triggers a build and deployment workflow.
 - GitHub receives a status or check result with the deployed URL.
-- The build itself runs on a CAIL-owned runner fed by a Cloudflare Queue and coordinated by the deploy service.
+- The build itself runs on a Kale-owned runner fed by a Cloudflare Queue and coordinated by the deploy service.
 
 Assistant integrations are optional helpers for authoring and scaffolding.
 
@@ -26,7 +26,7 @@ Assistant integrations are optional helpers for authoring and scaffolding.
 
 The repo-local contract is `AGENTS.md`, but the platform also exposes a machine-readable runtime contract at:
 
-- `https://runtime.cuny.qzz.io/.well-known/cail-runtime.json`
+- `https://runtime.cuny.qzz.io/.well-known/kale-runtime.json`
 
 Agents should prefer the structured control-plane endpoints over scraping GitHub check-run prose:
 
@@ -56,7 +56,7 @@ The intended auth model is now:
 
 Current harness note:
 
-- The public setup prompts now tell supported harnesses to acquire the `cail-deploy` skill or plugin first, then connect Kale.
+- The public setup prompts now tell supported harnesses to acquire the `kale-deploy` skill or plugin first, then connect Kale.
 - Codex can usually stay on the direct MCP OAuth path
 - Claude Code is currently more reliable through `GET /connect`, where the user generates a Kale token and the harness re-adds `/mcp` with `Authorization: Bearer kale_pat_*`
 
@@ -220,7 +220,7 @@ The scaffold is not a starter repo download. It writes files directly into the c
 
 ## Deployment contract
 
-The deploy service expects a built Worker artifact plus deployment metadata from the CAIL-owned build runner. The service is responsible for:
+The deploy service expects a built Worker artifact plus deployment metadata from the Kale-owned build runner. The service is responsible for:
 
 - validating the project name
 - claiming the project slug

@@ -16,7 +16,7 @@ This repository is the control plane and delivery stack for Kale Deploy, the pub
 - `packages/build-runner`: managed Node build runner
 - `packages/build-contract`: shared types between deploy-service and runner
 - `platform`: machine-readable and Markdown runtime contract
-- `plugins/cail-deploy`: Codex and Claude plugin bundle
+- `plugins/kale-deploy`: Codex and Claude plugin bundle
 
 ## Deployment shape
 

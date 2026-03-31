@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "cail": {
-      "type": "http",
-      "url": "https://cuny.qzz.io/kale/mcp",
-      "note": "CAIL Deploy remote MCP server. Uses OAuth on first connection through Cloudflare Access and then exposes project registration, validation, and deployment tools."
-    }
-  }
-}

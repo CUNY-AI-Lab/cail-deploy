@@ -41,7 +41,7 @@ export function createDeployServiceMcpServer(input: {
 }): McpServer {
   const server = new McpServer(
     {
-      name: "cail-deploy",
+      name: "kale-deploy",
       version: "0.1.0"
     },
     {
@@ -49,7 +49,7 @@ export function createDeployServiceMcpServer(input: {
         "Use register_project to determine the canonical slug and guided GitHub install URL.",
         "Use validate_project for a build-only check before asking the user to go live.",
         "If guidedInstallUrl is present, the next step still requires a human browser handoff to GitHub.",
-        "CAIL Deploy uses standard MCP OAuth on /mcp; let your harness open the browser login flow automatically.",
+        "Kale Deploy uses standard MCP OAuth on /mcp; let your harness open the browser login flow automatically.",
         "Only use the GitHub user-authorization step when managing sensitive project-admin features such as secrets."
       ].join(" "),
       jsonSchemaValidator: new CfWorkerJsonSchemaValidator()
@@ -60,10 +60,10 @@ export function createDeployServiceMcpServer(input: {
     "get_runtime_manifest",
     {
       title: "Get runtime manifest",
-      description: "Return the current CAIL Deploy runtime manifest, including the agent API and MCP endpoint.",
+      description: "Return the current Kale Deploy runtime manifest, including the agent API and MCP endpoint.",
       inputSchema: {}
     },
-    async () => createMcpToolResult("Returned the current CAIL Deploy runtime manifest.", input.getRuntimeManifest())
+    async () => createMcpToolResult("Returned the current Kale Deploy runtime manifest.", input.getRuntimeManifest())
   );
 
   server.registerTool(
@@ -262,15 +262,15 @@ export function createDeployServiceMcpServer(input: {
 
   server.registerResource(
     "runtime-manifest",
-    "cail://runtime/manifest",
+    "kale://runtime/manifest",
     {
       mimeType: "application/json",
-      description: "CAIL Deploy runtime manifest"
+      description: "Kale Deploy runtime manifest"
     },
     async () => ({
       contents: [
         {
-          uri: "cail://runtime/manifest",
+          uri: "kale://runtime/manifest",
           mimeType: "application/json",
           text: JSON.stringify(input.getRuntimeManifest(), null, 2)
         }
@@ -280,21 +280,21 @@ export function createDeployServiceMcpServer(input: {
 
   server.registerResource(
     "mcp-auth-model",
-    "cail://runtime/auth",
+    "kale://runtime/auth",
     {
       mimeType: "application/json",
-      description: "Authentication requirements for the CAIL Deploy MCP server"
+      description: "Authentication requirements for the Kale Deploy MCP server"
     },
     async () => ({
       contents: [
         {
-          uri: "cail://runtime/auth",
+          uri: "kale://runtime/auth",
           mimeType: "application/json",
           text: JSON.stringify(
             {
               identityType: input.identityType,
               notes: [
-                "CAIL Deploy uses standard MCP OAuth on /mcp.",
+                "Kale Deploy uses standard MCP OAuth on /mcp.",
                 "Your harness should discover /.well-known/oauth-protected-resource/mcp, open the browser login flow, and store the returned token automatically."
               ]
             },

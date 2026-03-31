@@ -19,7 +19,7 @@ jobs:
     env:
       AWS_REGION: us-east-1
       KALE_BASE_URL: https://cuny.qzz.io/kale
-      KALE_RUNTIME_URL: https://runtime.cuny.qzz.io/.well-known/cail-runtime.json
+      KALE_RUNTIME_URL: https://runtime.cuny.qzz.io/.well-known/kale-runtime.json
       KALE_DEPLOY_SERVICE_HEALTH_URL: https://cail-deploy-service.ailab-452.workers.dev/healthz
       KALE_GATEWAY_HEALTH_URL: https://cail-gateway.ailab-452.workers.dev/healthz
       KALE_SMOKE_URL: https://kale-cache-smoke-test.cuny.qzz.io/api/cache-smoke

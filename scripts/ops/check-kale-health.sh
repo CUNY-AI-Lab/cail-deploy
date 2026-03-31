@@ -3,7 +3,7 @@
 set -euo pipefail
 
 KALE_BASE_URL="${KALE_BASE_URL:-https://cuny.qzz.io/kale}"
-KALE_RUNTIME_URL="${KALE_RUNTIME_URL:-https://runtime.cuny.qzz.io/.well-known/cail-runtime.json}"
+KALE_RUNTIME_URL="${KALE_RUNTIME_URL:-https://runtime.cuny.qzz.io/.well-known/kale-runtime.json}"
 KALE_DEPLOY_SERVICE_HEALTH_URL="${KALE_DEPLOY_SERVICE_HEALTH_URL:-https://cail-deploy-service.ailab-452.workers.dev/healthz}"
 KALE_GATEWAY_HEALTH_URL="${KALE_GATEWAY_HEALTH_URL:-https://cail-gateway.ailab-452.workers.dev/healthz}"
 KALE_SMOKE_URL="${KALE_SMOKE_URL:-}"

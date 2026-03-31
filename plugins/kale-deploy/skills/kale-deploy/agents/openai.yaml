@@ -1,0 +1,8 @@
+interface:
+  display_name: "Kale Deploy"
+  short_description: "Build Cloudflare apps for Kale Deploy."
+  brand_color: "#c2410c"
+  default_prompt: "Use $kale-deploy to build a small Hono app that fits the Kale runtime."
+
+policy:
+  allow_implicit_invocation: true

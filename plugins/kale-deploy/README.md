@@ -1,7 +1,7 @@
-# CAIL Deploy Plugin
+# Kale Deploy Plugin
 
-This plugin bundles the CAIL Deploy skills, the `cail-init` command, and the
-remote CAIL MCP server.
+This plugin bundles the Kale Deploy skills, the `kale-init` command, and the
+remote Kale MCP server.
 
 It is intended to work as a shared plugin bundle for:
 
@@ -21,7 +21,7 @@ connection, because it makes the OAuth/browser handshake visible and easy to
 verify:
 
 ```bash
-codex mcp add cail --url https://cuny.qzz.io/kale/mcp
+codex mcp add kale --url https://cuny.qzz.io/kale/mcp
 ```
 
 After the first browser sign-in, make sure the harness can actually see Kale
@@ -41,9 +41,9 @@ Open:
 Sign in with a CUNY email, click **Generate token**, and then run:
 
 ```bash
-claude mcp remove cail -s local 2>/dev/null
-claude mcp remove cail -s user 2>/dev/null
-claude mcp add --transport http --header "Authorization: Bearer THE_TOKEN" -s local cail https://cuny.qzz.io/kale/mcp
+claude mcp remove kale -s local 2>/dev/null
+claude mcp remove kale -s user 2>/dev/null
+claude mcp add --transport http --header "Authorization: Bearer THE_TOKEN" -s local kale https://cuny.qzz.io/kale/mcp
 ```
 
 Replace `THE_TOKEN` with the generated token, then ask Claude to call
@@ -68,7 +68,7 @@ and the MCP connection authenticates through the same browser-based OAuth flow.
 I verified the Codex side at the packaging level:
 
 - the plugin manifest is valid and points at the bundled `.mcp.json`
-- the repo contains the Codex marketplace entry for `cail-deploy`
+- the repo contains the Codex marketplace entry for `kale-deploy`
 - the remote MCP server completes OAuth login successfully with `codex mcp add`
 
 What I have not yet proven is a Codex shell command for plugin marketplace
@@ -77,5 +77,5 @@ Codex install surface appears to be the app/UI consuming the repo marketplace,
 so the direct MCP setup remains the recommended path:
 
 ```bash
-codex mcp add cail --url https://cuny.qzz.io/kale/mcp
+codex mcp add kale --url https://cuny.qzz.io/kale/mcp
 ```

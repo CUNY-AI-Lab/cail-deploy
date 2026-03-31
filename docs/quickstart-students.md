@@ -26,7 +26,7 @@ If you already have a GitHub repo, skip to “If you already have a repo” belo
 
 ### 1. Connect your agent
 
-Open the CAIL homepage:
+Open the Kale homepage:
 
 - [https://cuny.qzz.io/kale](https://cuny.qzz.io/kale)
 
@@ -40,12 +40,13 @@ Paste that prompt into the agent.
 
 The goal is for the agent to connect Kale Deploy for you, rather than asking you to type setup commands by hand.
 
-The current website setup prompts tell supported agents to acquire the `cail-deploy` skill or plugin first, then connect Kale and verify Kale tools.
+The current website setup prompts tell supported agents to acquire the `kale-deploy` skill or plugin first, then connect Kale and verify Kale tools.
 
 Current Claude note:
 
 - Claude Code works most reliably through the token path right now.
-- If you use Claude, the normal flow is that Claude asks you to open [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), generate a token, paste it back, removes any stale `cail` entries from local and user scope, and then runs `claude mcp add ... -s local --header "Authorization: Bearer ..."`.
+- If you use Claude, the normal flow is that Claude installs `kale-deploy`, follows the bundled Kale guidance, asks you to open [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), generates a token handoff, and then verifies that Kale tools are really available.
+- If you use Kale from more than one computer, reuse the same Claude token on both machines for now. Generating a new one at `/connect` currently revokes the previous active token.
 - Do not use Claude's interactive `/mcp` screen for Kale right now.
 
 ### 2. Ask the agent to build the app
@@ -70,8 +71,8 @@ Kale Deploy needs one GitHub approval per repository.
 
 When the agent hands you a GitHub step:
 
-1. Open the CAIL setup page or GitHub link it gives you.
-2. Approve `CAIL Deploy` for the repository.
+1. Open the Kale setup page or GitHub link it gives you.
+2. Approve `Kale Deploy` for the repository.
 3. Return to the setup page if needed.
 
 If you are testing multiple repositories, make sure the GitHub install includes the correct one.
@@ -89,8 +90,8 @@ On the commit page, look for the Kale Deploy check.
 You should see one of these:
 
 - `Live`
-- `Needs adaptation for CAIL`
-- `Unsupported on CAIL`
+- `Needs adaptation for Kale`
+- `Unsupported on Kale`
 
 ### 7. Open the live app
 
@@ -100,7 +101,7 @@ Live project URLs use this shape:
 
 Example:
 
-- [https://cail-deploy-smoke-test.cuny.qzz.io](https://cail-deploy-smoke-test.cuny.qzz.io)
+- [https://kale-deploy-smoke-test.cuny.qzz.io](https://kale-deploy-smoke-test.cuny.qzz.io)
 
 ## What kinds of projects work best
 
