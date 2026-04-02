@@ -1,6 +1,8 @@
 # GitHub App Setup
 
-CAIL Deploy is designed around one central GitHub App owned by the [CUNY-AI-Lab](https://github.com/CUNY-AI-Lab) organization. Students, faculty, and staff should install that app on repositories; they should not have to create their own GitHub App.
+Kale Deploy is designed around one central GitHub App owned by the [CUNY-AI-Lab](https://github.com/CUNY-AI-Lab) organization. Students, faculty, and staff should install that app on repositories; they should not have to create their own GitHub App.
+
+The actual GitHub App name remains `CAIL Deploy`.
 
 The current public front door is:
 
@@ -51,6 +53,9 @@ Set these values in the deploy-service Worker:
   - `GITHUB_WEBHOOK_SECRET`
   - `BUILD_RUNNER_TOKEN`
   - `CLOUDFLARE_API_TOKEN`
+  - `GATEWAY_PREVIEW_TOKEN`
+
+Set the same `GATEWAY_PREVIEW_TOKEN` secret on the gateway Worker too. Kale uses it for the authenticated preview path that validates automatic `shared_static` cutovers without replacing the live project Worker first.
 
 Example commands:
 
@@ -59,6 +64,8 @@ npx wrangler secret put GITHUB_APP_PRIVATE_KEY --config packages/deploy-service/
 npx wrangler secret put GITHUB_WEBHOOK_SECRET --config packages/deploy-service/wrangler.jsonc
 npx wrangler secret put BUILD_RUNNER_TOKEN --config packages/deploy-service/wrangler.jsonc
 npx wrangler secret put CLOUDFLARE_API_TOKEN --config packages/deploy-service/wrangler.jsonc
+npx wrangler secret put GATEWAY_PREVIEW_TOKEN --config packages/deploy-service/wrangler.jsonc
+npx wrangler secret put GATEWAY_PREVIEW_TOKEN --config packages/gateway-worker/wrangler.jsonc
 ```
 
 The `CLOUDFLARE_API_TOKEN` now needs enough account permissions for Kale's managed provisioning flow:
@@ -68,10 +75,11 @@ The `CLOUDFLARE_API_TOKEN` now needs enough account permissions for Kale's manag
 - `Workers KV Storage: Edit`
 - `Workers R2 Storage: Edit`
 
-Then redeploy the Worker:
+Then redeploy the Workers:
 
 ```bash
 npx wrangler deploy --config packages/deploy-service/wrangler.jsonc
+npx wrangler deploy --config packages/gateway-worker/wrangler.jsonc
 ```
 
 ## Verification checklist

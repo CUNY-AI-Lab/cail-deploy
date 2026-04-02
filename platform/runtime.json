@@ -16,7 +16,25 @@
   "reserved_project_names": [
     "runtime"
   ],
-  "recommended_framework": "hono",
+  "agent_build_default": "choose-the-lightest-worker-compatible-shape",
+  "scaffold_shape_required": true,
+  "scaffold_shape_options": [
+    "static",
+    "worker"
+  ],
+  "preferred_worker_framework": "hono",
+  "static_project_marker_file": "kale.project.json",
+  "static_project_shape_value": "static_site",
+  "worker_project_shape_value": "worker_app",
+  "static_project_assets_directory_hint": "public",
+  "static_project_request_time_logic_key": "requestTimeLogic",
+  "static_project_request_time_logic_value": "none",
+  "agent_build_guidance": [
+    "Pick a starter shape explicitly: static for pure publishing sites, worker for projects that need request-time behavior.",
+    "If the project is mostly content or simple publishing, prefer a pure static project with kale.project.json, a Wrangler assets directory, and no request-time Worker routes, response headers, _headers file, or _redirects file.",
+    "If the project needs request-time routing, middleware, or a small API, Hono is the preferred Worker framework.",
+    "Do not introduce a heavy SPA stack or a traditional Node server unless the project clearly requires it."
+  ],
   "good_fit_project_types": [
     "exhibit-site",
     "course-site",
@@ -52,9 +70,9 @@
     "CACHE"
   ],
   "binding_rationale": {
-    "DB": "Self-service because Kale already provisions one D1 database per project.",
-    "FILES": "Self-service because Kale provisions one isolated R2 bucket per project when the repository requests FILES.",
-    "CACHE": "Self-service because Kale provisions one isolated KV namespace per project when the repository requests CACHE.",
+    "DB": "Self-service because Kale provisions one repo-scoped D1 database for each repository.",
+    "FILES": "Self-service because Kale provisions one repo-scoped R2 bucket when the repository requests FILES.",
+    "CACHE": "Self-service because Kale provisions one repo-scoped KV namespace when the repository requests CACHE.",
     "AI": "Approval-only because model usage is directly billable.",
     "VECTORIZE": "Approval-only because vector storage and queries are directly billable.",
     "ROOMS": "Approval-only because realtime state creates an always-on shared backend surface that needs moderation."
@@ -81,8 +99,7 @@
       "AGENTS.md"
     ],
     "expected_routes": [
-      "/",
-      "/api/health"
+      "/"
     ],
     "required_scripts": [
       "check",
@@ -107,6 +124,7 @@
     "build_job_status_template": "https://cuny.qzz.io/kale/api/build-jobs/{jobId}/status",
     "project_status_template": "https://cuny.qzz.io/kale/api/projects/{projectName}/status",
     "project_secrets_template": "https://cuny.qzz.io/kale/api/projects/{projectName}/secrets",
+    "project_delete_template": "https://cuny.qzz.io/kale/api/projects/{projectName}",
     "github_install": "https://cuny.qzz.io/kale/github/install",
     "github_setup": "https://cuny.qzz.io/kale/github/setup",
     "auth": {
@@ -119,8 +137,8 @@
         "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
         "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
         "If a harness cannot complete MCP OAuth reliably, send the user to /connect to generate a Kale token and configure the MCP server with an Authorization: Bearer header.",
-        "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access.",
-        "The browser settings page is a private admin surface. Use it only for project-admin tasks such as secrets, not for ordinary deploy or status work."
+        "Sensitive project-admin actions like secrets and project deletion may ask the user to confirm their GitHub account separately, because they require repo write/admin access.",
+        "The browser settings page is a private admin surface. Use it only for project-admin tasks such as secrets or project deletion, not for ordinary deploy or status work."
       ],
       "required_for": [
         "repository_status_template",
@@ -128,9 +146,9 @@
         "validate_project",
         "project_status_template",
         "build_job_status_template",
-        "project_secrets_template"
+        "project_secrets_template",
+        "project_delete_template"
       ]
-    }
     }
   },
   "mcp": {
@@ -153,7 +171,8 @@
       "get_build_job_status",
       "list_project_secrets",
       "set_project_secret",
-      "delete_project_secret"
+      "delete_project_secret",
+      "delete_project"
     ]
   },
   "disallowed": [
@@ -168,14 +187,14 @@
       "name": "DB",
       "type": "d1",
       "required": true,
-      "scope": "per-project",
+      "scope": "per-repository",
       "enabled_by_default": true
     },
     {
       "name": "FILES",
       "type": "r2",
       "required": false,
-      "scope": "per-project",
+      "scope": "per-repository",
       "enabled_by_default": true,
       "self_service": true
     },
@@ -183,7 +202,7 @@
       "name": "CACHE",
       "type": "kv",
       "required": false,
-      "scope": "per-project",
+      "scope": "per-repository",
       "enabled_by_default": true,
       "self_service": true
     },

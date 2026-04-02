@@ -5,10 +5,13 @@ import { SignJWT, base64url, importPKCS8 } from "jose";
 import type {
   BuildJobRecord,
   BuildRunnerJobRequest,
-  ProjectRecord
+  DeploymentRecord,
+  ProjectRecord,
+  RuntimeLane
 } from "@cuny-ai-lab/build-contract";
 
 import deployServiceWorker, { deployServiceApp } from "./index";
+import type { ProjectPolicyRecord } from "./lib/control-plane";
 import { encryptStoredText } from "./lib/sealed-data";
 
 export const TEST_PRIVATE_KEY = generateKeyPairSync("rsa", {
@@ -48,6 +51,9 @@ export type TestEnv = {
   WFP_NAMESPACE: string;
   PROJECT_BASE_URL: string;
   PROJECT_HOST_SUFFIX?: string;
+  GATEWAY_PREVIEW_TOKEN?: string;
+  SHARED_STATIC_VALIDATION_ATTEMPTS?: string;
+  SHARED_STATIC_VALIDATION_RETRY_MS?: string;
   DEPLOY_SERVICE_BASE_URL?: string;
   DEPLOY_API_TOKEN?: string;
   MCP_OAUTH_TOKEN_SECRET?: string;
@@ -66,6 +72,7 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
   env: TestEnv;
   db: FakeD1Database;
   queue: FakeQueue;
+  archive: FakeArchiveBucket;
 } {
   const db = new FakeD1Database();
   const queue = new FakeQueue();
@@ -80,6 +87,9 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
     WFP_NAMESPACE: "cail-production",
     PROJECT_BASE_URL: "https://gateway.example",
     PROJECT_HOST_SUFFIX: "cuny.qzz.io",
+    GATEWAY_PREVIEW_TOKEN: "preview-token",
+    SHARED_STATIC_VALIDATION_ATTEMPTS: "1",
+    SHARED_STATIC_VALIDATION_RETRY_MS: "0",
     DEPLOY_SERVICE_BASE_URL: "https://deploy.example",
     MCP_OAUTH_BASE_URL: "https://auth.example",
     DEPLOY_API_TOKEN: "deploy-token",
@@ -95,7 +105,7 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
     ...overrides
   };
 
-  return { env, db, queue };
+  return { env, db, queue, archive };
 }
 
 export async function fetchApp(
@@ -198,6 +208,20 @@ export function installGitHubFetchMock(
         html_url: `https://github.com/szweibel/${options.repositoryName}/runs/321`,
         status: "queued",
         conclusion: null
+      });
+    }
+
+    if (url.pathname.startsWith(`/repos/szweibel/${options.repositoryName}/check-runs/`) && request.method === "PATCH") {
+      const body = await request.json() as {
+        status?: string;
+        conclusion?: string | null;
+      };
+      const checkRunId = Number(url.pathname.split("/").pop() ?? "0");
+      return jsonResponse({
+        id: checkRunId,
+        html_url: `https://github.com/szweibel/${options.repositoryName}/runs/${checkRunId}`,
+        status: body.status ?? "completed",
+        conclusion: body.conclusion ?? "failure"
       });
     }
 
@@ -328,18 +352,77 @@ export function repositoryRecord(name: string) {
   };
 }
 
-function createArchiveBucketStub() {
-  return {
-    async put() {},
-    async list() {
-      return {
-        objects: [],
-        truncated: false,
-        cursor: undefined
-      };
-    },
-    async delete() {}
-  };
+function createArchiveBucketStub(): FakeArchiveBucket {
+  return new FakeArchiveBucket();
+}
+
+export class FakeArchiveBucket {
+  private readonly objects = new Map<string, {
+    body: ArrayBuffer;
+    contentType?: string;
+  }>();
+
+  async put(key: string, value: string | ArrayBuffer | ArrayBufferView | Blob, options?: { httpMetadata?: { contentType?: string } }): Promise<void> {
+    const blob = value instanceof Blob ? value : new Blob([coerceBlobPart(value)]);
+    this.objects.set(key, {
+      body: await blob.arrayBuffer(),
+      contentType: options?.httpMetadata?.contentType
+    });
+  }
+
+  async get(key: string): Promise<{
+    body: ReadableStream<Uint8Array>;
+    httpEtag: string;
+    size: number;
+    text(): Promise<string>;
+    writeHttpMetadata(headers: Headers): void;
+  } | null> {
+    const entry = this.objects.get(key);
+    if (!entry) {
+      return null;
+    }
+
+    return {
+      body: new Blob([entry.body]).stream(),
+      httpEtag: `"${key}"`,
+      size: entry.body.byteLength,
+      async text() {
+        return new TextDecoder().decode(entry.body);
+      },
+      writeHttpMetadata(headers: Headers) {
+        if (entry.contentType) {
+          headers.set("content-type", entry.contentType);
+        }
+      }
+    };
+  }
+
+  async list(options?: { prefix?: string }): Promise<{
+    objects: Array<{ key: string }>;
+    truncated: false;
+    cursor: undefined;
+  }> {
+    const prefix = options?.prefix ?? "";
+    return {
+      objects: Array.from(this.objects.keys())
+        .filter((key) => key.startsWith(prefix))
+        .sort()
+        .map((key) => ({ key })),
+      truncated: false,
+      cursor: undefined
+    };
+  }
+
+  async delete(keys: string | string[]): Promise<void> {
+    for (const key of Array.isArray(keys) ? keys : [keys]) {
+      this.objects.delete(key);
+    }
+  }
+
+  readText(key: string): string | null {
+    const entry = this.objects.get(key);
+    return entry ? new TextDecoder().decode(entry.body) : null;
+  }
 }
 
 export class FakeQueue {
@@ -352,7 +435,9 @@ export class FakeQueue {
 
 export class FakeD1Database {
   private readonly projects = new Map<string, ProjectRecord>();
+  private readonly deployments = new Map<string, DeploymentRecord>();
   private readonly buildJobs = new Map<string, BuildJobRecord>();
+  private readonly projectPolicies = new Map<string, ProjectPolicyRecord>();
   private readonly githubUserAuth = new Map<string, Record<string, unknown>>();
   private readonly mcpTokens = new Map<string, Record<string, unknown>>();
   private readonly projectSecrets = new Map<string, Record<string, unknown>>();
@@ -373,6 +458,14 @@ export class FakeD1Database {
 
   putBuildJob(job: BuildJobRecord): void {
     this.buildJobs.set(job.jobId, job);
+  }
+
+  putDeployment(deployment: DeploymentRecord): void {
+    this.deployments.set(deployment.deploymentId, deployment);
+  }
+
+  putProjectPolicy(policy: ProjectPolicyRecord): void {
+    this.projectPolicies.set(policy.githubRepo, policy);
   }
 
   putGitHubUserAuth(row: {
@@ -440,17 +533,62 @@ export class FakeD1Database {
       databaseId: nullableString(params[5]) ?? undefined,
       filesBucketName: nullableString(params[6]) ?? undefined,
       cacheNamespaceId: nullableString(params[7]) ?? undefined,
-      hasAssets: Number(params[8]) === 1,
-      latestDeploymentId: nullableString(params[9]) ?? undefined,
-      createdAt: String(params[10]),
-      updatedAt: String(params[11])
+      runtimeLane: (nullableString(params[8]) ?? "dedicated_worker") as RuntimeLane,
+      recommendedRuntimeLane: (nullableString(params[9]) ?? nullableString(params[8]) ?? "dedicated_worker") as RuntimeLane,
+      hasAssets: Number(params[10]) === 1,
+      latestDeploymentId: nullableString(params[11]) ?? undefined,
+      createdAt: String(params[12]),
+      updatedAt: String(params[13])
     };
 
     this.putProject(project);
   }
 
+  upsertDeploymentFromParams(params: unknown[]): void {
+    const deployment: DeploymentRecord = {
+      deploymentId: String(params[0]),
+      jobId: nullableString(params[1]) ?? undefined,
+      projectName: String(params[2]),
+      ownerLogin: String(params[3]),
+      githubRepo: String(params[4]),
+      headSha: nullableString(params[5]) ?? undefined,
+      status: String(params[6]) as DeploymentRecord["status"],
+      deploymentUrl: String(params[7]),
+      artifactPrefix: String(params[8]),
+      archiveKind: String(params[9]) as DeploymentRecord["archiveKind"],
+      manifestKey: nullableString(params[10]) ?? undefined,
+      runtimeLane: (nullableString(params[11]) ?? "dedicated_worker") as RuntimeLane,
+      recommendedRuntimeLane: (nullableString(params[12]) ?? nullableString(params[11]) ?? "dedicated_worker") as RuntimeLane,
+      hasAssets: Number(params[13]) === 1,
+      createdAt: String(params[14])
+    };
+
+    this.putDeployment(deployment);
+  }
+
   getBuildJob(jobId: string): BuildJobRecord | undefined {
     return this.buildJobs.get(jobId);
+  }
+
+  selectProjectPolicy(githubRepo: string): Record<string, unknown> | null {
+    const policy = this.projectPolicies.get(githubRepo);
+    if (!policy) {
+      return null;
+    }
+
+    return {
+      github_repo: policy.githubRepo,
+      project_name: policy.projectName ?? null,
+      ai_enabled: policy.aiEnabled ? 1 : 0,
+      vectorize_enabled: policy.vectorizeEnabled ? 1 : 0,
+      rooms_enabled: policy.roomsEnabled ? 1 : 0,
+      max_validations_per_day: policy.maxValidationsPerDay,
+      max_deployments_per_day: policy.maxDeploymentsPerDay,
+      max_concurrent_builds: policy.maxConcurrentBuilds,
+      max_asset_bytes: policy.maxAssetBytes,
+      created_at: policy.createdAt,
+      updated_at: policy.updatedAt
+    };
   }
 
   selectGitHubUserAuth(accessSubject: string): Record<string, unknown> | null {
@@ -548,8 +686,105 @@ export class FakeD1Database {
     this.projectSecrets.delete(`${githubRepo}:${secretName}`);
   }
 
+  deleteProjectSecretsForProject(projectName: string): void {
+    for (const [key, secret] of this.projectSecrets.entries()) {
+      if (secret.project_name === projectName) {
+        this.projectSecrets.delete(key);
+      }
+    }
+  }
+
   deleteProjectDomain(domainLabel: string): void {
     this.projectDomains.delete(domainLabel);
+  }
+
+  deleteProjectDomainsForProject(projectName: string): void {
+    for (const [domainLabel, domain] of this.projectDomains.entries()) {
+      if (domain.project_name === projectName) {
+        this.projectDomains.delete(domainLabel);
+      }
+    }
+  }
+
+  deleteProject(projectName: string): void {
+    this.projects.delete(projectName);
+  }
+
+  deleteProjectsForRepository(githubRepo: string): void {
+    for (const [projectName, project] of this.projects.entries()) {
+      if (project.githubRepo === githubRepo) {
+        this.projects.delete(projectName);
+      }
+    }
+  }
+
+  deleteBuildJobsForProject(projectName: string): void {
+    for (const [jobId, job] of this.buildJobs.entries()) {
+      if (job.projectName === projectName) {
+        this.buildJobs.delete(jobId);
+      }
+    }
+  }
+
+  deleteBuildJobsForRepository(githubRepo: string): void {
+    for (const [jobId, job] of this.buildJobs.entries()) {
+      if (job.repository.fullName === githubRepo) {
+        this.buildJobs.delete(jobId);
+      }
+    }
+  }
+
+  deleteDeploymentsForProject(projectName: string): void {
+    for (const [deploymentId, deployment] of this.deployments.entries()) {
+      if (deployment.projectName === projectName) {
+        this.deployments.delete(deploymentId);
+      }
+    }
+  }
+
+  deleteDeploymentsForRepository(githubRepo: string): void {
+    for (const [deploymentId, deployment] of this.deployments.entries()) {
+      if (deployment.githubRepo === githubRepo) {
+        this.deployments.delete(deploymentId);
+      }
+    }
+  }
+
+  deleteProjectSecretsForRepository(githubRepo: string): void {
+    for (const [key, secret] of this.projectSecrets.entries()) {
+      if (secret.github_repo === githubRepo) {
+        this.projectSecrets.delete(key);
+      }
+    }
+  }
+
+  deleteProjectDomainsForRepository(githubRepo: string): void {
+    for (const [domainLabel, domain] of this.projectDomains.entries()) {
+      if (domain.github_repo === githubRepo) {
+        this.projectDomains.delete(domainLabel);
+      }
+    }
+  }
+
+  deleteProjectPolicy(githubRepo: string): void {
+    this.projectPolicies.delete(githubRepo);
+  }
+
+  updateDeploymentArchiveState(
+    deploymentId: string,
+    archiveKind: DeploymentRecord["archiveKind"],
+    manifestKey?: string
+  ): void {
+    const deployment = this.deployments.get(deploymentId);
+    if (!deployment) {
+      return;
+    }
+
+    this.deployments.set(deploymentId, {
+      ...deployment,
+      archiveKind,
+      manifestKey
+    });
   }
 
   selectProjectDomain(domainLabel: string): Record<string, unknown> | null {
@@ -574,6 +809,125 @@ export class FakeD1Database {
       });
   }
 
+  listProjectDomainsForRepository(githubRepo: string): Record<string, unknown>[] {
+    return Array.from(this.projectDomains.values())
+      .filter((domain) => domain.github_repo === githubRepo)
+      .sort((left, right) => {
+        const primaryDiff = Number(right.is_primary) - Number(left.is_primary);
+        if (primaryDiff !== 0) {
+          return primaryDiff;
+        }
+        return String(left.domain_label).localeCompare(String(right.domain_label));
+      });
+  }
+
+  listDeployments(projectName: string): Record<string, unknown>[] {
+    return Array.from(this.deployments.values())
+      .filter((deployment) => deployment.projectName === projectName)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((deployment) => ({
+        deployment_id: deployment.deploymentId,
+        job_id: deployment.jobId ?? null,
+        project_name: deployment.projectName,
+        owner_login: deployment.ownerLogin,
+        github_repo: deployment.githubRepo,
+        head_sha: deployment.headSha ?? null,
+        status: deployment.status,
+        deployment_url: deployment.deploymentUrl,
+        artifact_prefix: deployment.artifactPrefix,
+        archive_kind: deployment.archiveKind,
+        manifest_key: deployment.manifestKey ?? null,
+        runtime_lane: deployment.runtimeLane ?? "dedicated_worker",
+        recommended_runtime_lane: deployment.recommendedRuntimeLane ?? deployment.runtimeLane ?? "dedicated_worker",
+        has_assets: deployment.hasAssets ? 1 : 0,
+        created_at: deployment.createdAt
+      }));
+  }
+
+  listDeploymentsForRepository(githubRepo: string): Record<string, unknown>[] {
+    return Array.from(this.deployments.values())
+      .filter((deployment) => deployment.githubRepo === githubRepo)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((deployment) => ({
+        deployment_id: deployment.deploymentId,
+        job_id: deployment.jobId ?? null,
+        project_name: deployment.projectName,
+        owner_login: deployment.ownerLogin,
+        github_repo: deployment.githubRepo,
+        head_sha: deployment.headSha ?? null,
+        status: deployment.status,
+        deployment_url: deployment.deploymentUrl,
+        artifact_prefix: deployment.artifactPrefix,
+        archive_kind: deployment.archiveKind,
+        manifest_key: deployment.manifestKey ?? null,
+        runtime_lane: deployment.runtimeLane ?? "dedicated_worker",
+        recommended_runtime_lane: deployment.recommendedRuntimeLane ?? deployment.runtimeLane ?? "dedicated_worker",
+        has_assets: deployment.hasAssets ? 1 : 0,
+        created_at: deployment.createdAt
+      }));
+  }
+
+  listProjectsForRepository(githubRepo: string): Record<string, unknown>[] {
+    return Array.from(this.projects.values())
+      .filter((project) => project.githubRepo === githubRepo)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((project) => ({
+        project_name: project.projectName,
+        owner_login: project.ownerLogin,
+        github_repo: project.githubRepo,
+        description: project.description ?? null,
+        deployment_url: project.deploymentUrl,
+        database_id: project.databaseId ?? null,
+        files_bucket_name: project.filesBucketName ?? null,
+        cache_namespace_id: project.cacheNamespaceId ?? null,
+        runtime_lane: project.runtimeLane ?? "dedicated_worker",
+        recommended_runtime_lane: project.recommendedRuntimeLane ?? project.runtimeLane ?? "dedicated_worker",
+        has_assets: project.hasAssets ? 1 : 0,
+        latest_deployment_id: project.latestDeploymentId ?? null,
+        created_at: project.createdAt,
+        updated_at: project.updatedAt
+      }));
+  }
+
+  listRetainedSuccessfulDeployments(projectName: string): Record<string, unknown>[] {
+    return this.listDeployments(projectName).filter((deployment) =>
+      deployment.status === "success" && deployment.archive_kind === "full"
+    );
+  }
+
+  listRetainedSuccessfulDeploymentsForRepository(githubRepo: string): Record<string, unknown>[] {
+    return this.listDeploymentsForRepository(githubRepo).filter((deployment) =>
+      deployment.status === "success" && deployment.archive_kind === "full"
+    );
+  }
+
+  listExpiredRetainedFailedDeployments(cutoffIso: string): Record<string, unknown>[] {
+    return Array.from(this.deployments.values())
+      .filter((deployment) =>
+        deployment.status === "failure"
+        && deployment.archiveKind !== "none"
+        && deployment.createdAt < cutoffIso
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((deployment) => ({
+        deployment_id: deployment.deploymentId,
+        job_id: deployment.jobId ?? null,
+        project_name: deployment.projectName,
+        owner_login: deployment.ownerLogin,
+        github_repo: deployment.githubRepo,
+        head_sha: deployment.headSha ?? null,
+        status: deployment.status,
+        deployment_url: deployment.deploymentUrl,
+        artifact_prefix: deployment.artifactPrefix,
+        archive_kind: deployment.archiveKind,
+        manifest_key: deployment.manifestKey ?? null,
+        runtime_lane: deployment.runtimeLane ?? "dedicated_worker",
+        recommended_runtime_lane: deployment.recommendedRuntimeLane ?? deployment.runtimeLane ?? "dedicated_worker",
+        has_assets: deployment.hasAssets ? 1 : 0,
+        created_at: deployment.createdAt
+      }));
+  }
+
   updateProjectDeploymentUrl(projectName: string, deploymentUrl: string, updatedAt: string): void {
     const project = this.projects.get(projectName);
     if (project) {
@@ -582,6 +936,18 @@ export class FakeD1Database {
         deploymentUrl,
         updatedAt
       });
+    }
+  }
+
+  unpublishProjectsForRepository(githubRepo: string, updatedAt: string): void {
+    for (const [projectName, project] of this.projects.entries()) {
+      if (project.githubRepo === githubRepo) {
+        this.projects.set(projectName, {
+          ...project,
+          latestDeploymentId: undefined,
+          updatedAt
+        });
+      }
     }
   }
 
@@ -609,6 +975,8 @@ export class FakeD1Database {
         database_id: project.databaseId ?? null,
         files_bucket_name: project.filesBucketName ?? null,
         cache_namespace_id: project.cacheNamespaceId ?? null,
+        runtime_lane: project.runtimeLane ?? "dedicated_worker",
+        recommended_runtime_lane: project.recommendedRuntimeLane ?? project.runtimeLane ?? "dedicated_worker",
         has_assets: project.hasAssets ? 1 : 0,
         latest_deployment_id: project.latestDeploymentId ?? null,
         created_at: project.createdAt,
@@ -631,6 +999,8 @@ export class FakeD1Database {
       database_id: project.databaseId ?? null,
       files_bucket_name: project.filesBucketName ?? null,
       cache_namespace_id: project.cacheNamespaceId ?? null,
+      runtime_lane: project.runtimeLane ?? "dedicated_worker",
+      recommended_runtime_lane: project.recommendedRuntimeLane ?? project.runtimeLane ?? "dedicated_worker",
       has_assets: project.hasAssets ? 1 : 0,
       latest_deployment_id: project.latestDeploymentId ?? null,
       created_at: project.createdAt,
@@ -656,6 +1026,8 @@ export class FakeD1Database {
       database_id: project.databaseId ?? null,
       files_bucket_name: project.filesBucketName ?? null,
       cache_namespace_id: project.cacheNamespaceId ?? null,
+      runtime_lane: project.runtimeLane ?? "dedicated_worker",
+      recommended_runtime_lane: project.recommendedRuntimeLane ?? project.runtimeLane ?? "dedicated_worker",
       has_assets: project.hasAssets ? 1 : 0,
       latest_deployment_id: project.latestDeploymentId ?? null,
       created_at: project.createdAt,
@@ -666,6 +1038,29 @@ export class FakeD1Database {
   selectBuildJob(jobId: string): Record<string, unknown> | null {
     const job = this.buildJobs.get(jobId);
     return job ? buildJobRow(job) : null;
+  }
+
+  selectDeployment(deploymentId: string): Record<string, unknown> | null {
+    const deployment = this.deployments.get(deploymentId);
+    return deployment
+      ? {
+          deployment_id: deployment.deploymentId,
+          job_id: deployment.jobId ?? null,
+          project_name: deployment.projectName,
+          owner_login: deployment.ownerLogin,
+          github_repo: deployment.githubRepo,
+          head_sha: deployment.headSha ?? null,
+          status: deployment.status,
+          deployment_url: deployment.deploymentUrl,
+          artifact_prefix: deployment.artifactPrefix,
+          archive_kind: deployment.archiveKind,
+          manifest_key: deployment.manifestKey ?? null,
+          runtime_lane: deployment.runtimeLane ?? "dedicated_worker",
+          recommended_runtime_lane: deployment.recommendedRuntimeLane ?? deployment.runtimeLane ?? "dedicated_worker",
+          has_assets: deployment.hasAssets ? 1 : 0,
+          created_at: deployment.createdAt
+        }
+      : null;
   }
 
   selectLatestPushBuildJob(projectName: string): Record<string, unknown> | null {
@@ -688,6 +1083,16 @@ export class FakeD1Database {
       job.repository.fullName === repositoryFullName
       && (job.status === "queued" || job.status === "in_progress" || job.status === "deploying")
     ).length;
+  }
+
+  listActiveBuildJobsForRepository(repositoryFullName: string): Record<string, unknown>[] {
+    return Array.from(this.buildJobs.values())
+      .filter((job) =>
+        job.repository.fullName === repositoryFullName
+        && (job.status === "queued" || job.status === "in_progress" || job.status === "deploying")
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((job) => buildJobRow(job));
   }
 
   upsertBuildJobFromParams(params: unknown[]): void {
@@ -753,12 +1158,20 @@ class FakePreparedStatement {
       return this.db.selectLatestProjectForRepository(String(this.params[0])) as T | null;
     }
 
+    if (normalized.includes("from project_policies") && normalized.includes("where github_repo = ?")) {
+      return this.db.selectProjectPolicy(String(this.params[0])) as T | null;
+    }
+
     if (normalized.includes("from build_jobs") && normalized.includes("where job_id = ?")) {
       return this.db.selectBuildJob(String(this.params[0])) as T | null;
     }
 
     if (normalized.includes("from build_jobs") && normalized.includes("where project_name = ?") && normalized.includes("event_name = 'push'")) {
       return this.db.selectLatestPushBuildJob(String(this.params[0])) as T | null;
+    }
+
+    if (normalized.includes("from deployments") && normalized.includes("where deployment_id = ?")) {
+      return this.db.selectDeployment(String(this.params[0])) as T | null;
     }
 
     if (normalized.includes("from github_user_auth") && normalized.includes("where access_subject = ?")) {
@@ -826,6 +1239,40 @@ class FakePreparedStatement {
       return { results: this.db.listProjectDomains(String(this.params[0])) as T[] };
     }
 
+    if (normalized.includes("from project_domains") && normalized.includes("where github_repo = ?")) {
+      return { results: this.db.listProjectDomainsForRepository(String(this.params[0])) as T[] };
+    }
+
+    if (normalized.includes("from deployments") && normalized.includes("where project_name = ?") && normalized.includes("and status = 'success'") && normalized.includes("and archive_kind = 'full'")) {
+      return { results: this.db.listRetainedSuccessfulDeployments(String(this.params[0])) as T[] };
+    }
+
+    if (normalized.includes("from deployments") && normalized.includes("where github_repo = ?") && normalized.includes("and status = 'success'") && normalized.includes("and archive_kind = 'full'")) {
+      return { results: this.db.listRetainedSuccessfulDeploymentsForRepository(String(this.params[0])) as T[] };
+    }
+
+    if (normalized.includes("from deployments") && normalized.includes("where status = 'failure'") && normalized.includes("and archive_kind != 'none'") && normalized.includes("created_at < ?")) {
+      return { results: this.db.listExpiredRetainedFailedDeployments(String(this.params[0])) as T[] };
+    }
+
+    if (normalized.includes("from deployments") && normalized.includes("where project_name = ?")) {
+      return { results: this.db.listDeployments(String(this.params[0])) as T[] };
+    }
+
+    if (normalized.includes("from deployments") && normalized.includes("where github_repo = ?")) {
+      return { results: this.db.listDeploymentsForRepository(String(this.params[0])) as T[] };
+    }
+
+    if (normalized.includes("from build_jobs")
+      && normalized.includes("json_extract(repository_json, '$.fullname') = ?")
+      && normalized.includes("status in ('queued', 'in_progress', 'deploying')")) {
+      return { results: this.db.listActiveBuildJobsForRepository(String(this.params[0])) as T[] };
+    }
+
+    if (normalized.includes("from projects") && normalized.includes("where github_repo = ?") && !normalized.includes("limit 1")) {
+      return { results: this.db.listProjectsForRepository(String(this.params[0])) as T[] };
+    }
+
     return { results: [] };
   }
 
@@ -840,8 +1287,28 @@ class FakePreparedStatement {
       this.db.upsertBuildJobFromParams(this.params);
     }
 
+    if (normalized.includes("insert into deployments")) {
+      this.db.upsertDeploymentFromParams(this.params);
+    }
+
     if (normalized.includes("insert into github_user_auth")) {
       this.db.upsertGitHubUserAuthFromParams(this.params);
+    }
+
+    if (normalized.includes("insert into project_policies")) {
+      this.db.putProjectPolicy({
+        githubRepo: String(this.params[0]),
+        projectName: nullableString(this.params[1]) ?? undefined,
+        aiEnabled: Number(this.params[2]) === 1,
+        vectorizeEnabled: Number(this.params[3]) === 1,
+        roomsEnabled: Number(this.params[4]) === 1,
+        maxValidationsPerDay: Number(this.params[5]),
+        maxDeploymentsPerDay: Number(this.params[6]),
+        maxConcurrentBuilds: Number(this.params[7]),
+        maxAssetBytes: Number(this.params[8]),
+        createdAt: String(this.params[9]),
+        updatedAt: String(this.params[10])
+      });
     }
 
     if (normalized.includes("insert into project_secrets")) {
@@ -874,6 +1341,62 @@ class FakePreparedStatement {
 
     if (normalized.includes("delete from project_domains") && normalized.includes("where domain_label = ?")) {
       this.db.deleteProjectDomain(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from project_domains") && normalized.includes("where project_name = ?")) {
+      this.db.deleteProjectDomainsForProject(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from project_domains") && normalized.includes("where github_repo = ?")) {
+      this.db.deleteProjectDomainsForRepository(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from project_secrets") && normalized.includes("where project_name = ?")) {
+      this.db.deleteProjectSecretsForProject(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from project_secrets") && normalized.includes("where github_repo = ?")) {
+      this.db.deleteProjectSecretsForRepository(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from deployments") && normalized.includes("where project_name = ?")) {
+      this.db.deleteDeploymentsForProject(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from deployments") && normalized.includes("where github_repo = ?")) {
+      this.db.deleteDeploymentsForRepository(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from build_jobs") && normalized.includes("where project_name = ?")) {
+      this.db.deleteBuildJobsForProject(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from build_jobs") && normalized.includes("json_extract(repository_json, '$.fullname') = ?")) {
+      this.db.deleteBuildJobsForRepository(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from projects") && normalized.includes("where project_name = ?")) {
+      this.db.deleteProject(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from projects") && normalized.includes("where github_repo = ?")) {
+      this.db.deleteProjectsForRepository(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from project_policies") && normalized.includes("where github_repo = ?")) {
+      this.db.deleteProjectPolicy(String(this.params[0]));
+    }
+
+    if (normalized.includes("update deployments") && normalized.includes("set archive_kind = ?, manifest_key = ?") && normalized.includes("where deployment_id = ?")) {
+      this.db.updateDeploymentArchiveState(
+        String(this.params[2]),
+        String(this.params[0]) as DeploymentRecord["archiveKind"],
+        nullableString(this.params[1]) ?? undefined
+      );
+    }
+
+    if (normalized.includes("update projects") && normalized.includes("set latest_deployment_id = null") && normalized.includes("where github_repo = ?")) {
+      this.db.unpublishProjectsForRepository(String(this.params[1]), String(this.params[0]));
     }
 
     if (normalized.includes("update projects") && normalized.includes("set deployment_url = ?, updated_at = ?") && normalized.includes("where project_name = ?")) {
@@ -925,4 +1448,14 @@ function normalizeSql(sql: string): string {
 
 function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
+}
+
+function coerceBlobPart(value: string | ArrayBuffer | ArrayBufferView | Blob): string | ArrayBuffer | Blob {
+  if (typeof value === "string" || value instanceof ArrayBuffer || value instanceof Blob) {
+    return value;
+  }
+
+  const bytes = new Uint8Array(value.byteLength);
+  bytes.set(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  return bytes.buffer;
 }

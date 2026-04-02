@@ -1,0 +1,7 @@
+{
+  "name": "hono-with-assets",
+  "private": true,
+  "dependencies": {
+    "hono": "^4.12.9"
+  }
+}

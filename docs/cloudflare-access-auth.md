@@ -1,15 +1,15 @@
 # Cloudflare Access and MCP OAuth
 
-CAIL Deploy now uses Cloudflare Access as the browser identity layer inside a standard MCP OAuth flow.
+Kale Deploy now uses Cloudflare Access as the browser identity layer inside a standard MCP OAuth flow.
 
 The intended shape is:
 
 1. a harness connects to `POST /mcp`
-2. CAIL replies with OAuth challenge headers and protected-resource metadata
+2. Kale replies with OAuth challenge headers and protected-resource metadata
 3. the harness discovers the authorization server metadata
 4. the harness opens the browser to `GET /api/oauth/authorize`
 5. Cloudflare Access handles the institutional login there
-6. CAIL issues an OAuth access token back to the harness
+6. Kale issues an OAuth access token back to the harness
 7. the harness stores that token and continues using `/mcp`
 
 This keeps the harness-facing auth model standard while still letting Cloudflare Access enforce institutional identity.

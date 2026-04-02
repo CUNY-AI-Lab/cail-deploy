@@ -59,6 +59,11 @@ Use the build prompt from the homepage, or say something like:
 
 If the agent starts from a blank project, it will usually create the project structure Kale needs for you.
 
+The simplest rule is:
+
+- if the project is mostly pages and media, let the agent make a static site
+- if the project needs forms, a small API, auth, or other request-time behavior, let the agent make a Worker app
+
 ### 3. Push to GitHub
 
 Your agent should create or connect a GitHub repository and push the code.
@@ -114,6 +119,8 @@ Kale Deploy works best for:
 - forms and guestbooks
 - directories, catalogs, and searchable collections
 - small interactive apps
+
+Many publishing-style projects can stay mostly static. Small dynamic apps still work, but they should fit the Cloudflare Workers model rather than a traditional server.
 
 Some advanced features may require approval and usage caps:
 

@@ -1,0 +1,7 @@
+{
+  "name": "worker-first-static",
+  "private": true,
+  "devDependencies": {
+    "vite": "^7.0.0"
+  }
+}

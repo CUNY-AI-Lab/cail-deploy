@@ -1,0 +1,5 @@
+{
+  "projectShape": "static_site",
+  "staticOutputDir": "public",
+  "requestTimeLogic": "none"
+}

@@ -38,6 +38,7 @@ export function createDeployServiceMcpServer(input: {
   listProjectSecrets: (projectName: string) => Promise<McpStatusResponse & { summary: string }>;
   setProjectSecret: (projectName: string, secretName: string, value: string) => Promise<McpStatusResponse & { summary: string }>;
   deleteProjectSecret: (projectName: string, secretName: string) => Promise<McpStatusResponse & { summary: string }>;
+  deleteProject: (projectName: string, confirmProjectName: string) => Promise<McpStatusResponse & { summary: string }>;
 }): McpServer {
   const server = new McpServer(
     {
@@ -50,7 +51,7 @@ export function createDeployServiceMcpServer(input: {
         "Use validate_project for a build-only check before asking the user to go live.",
         "If guidedInstallUrl is present, the next step still requires a human browser handoff to GitHub.",
         "Kale Deploy uses standard MCP OAuth on /mcp; let your harness open the browser login flow automatically.",
-        "Only use the GitHub user-authorization step when managing sensitive project-admin features such as secrets."
+        "Only use the GitHub user-authorization step when managing sensitive project-admin features such as secrets or project deletion."
       ].join(" "),
       jsonSchemaValidator: new CfWorkerJsonSchemaValidator()
     }
@@ -252,6 +253,26 @@ export function createDeployServiceMcpServer(input: {
     },
     async ({ projectName, secretName }) => {
       const result = await input.deleteProjectSecret(projectName, secretName);
+      if (result.status >= 400) {
+        return createMcpToolErrorResult(result.summary, result.body);
+      }
+
+      return createMcpToolResult(result.summary, result.body);
+    }
+  );
+
+  server.registerTool(
+    "delete_project",
+    {
+      title: "Delete project",
+      description: "Permanently delete a Kale project and its Kale-managed resources. This does not delete the GitHub repository.",
+      inputSchema: {
+        projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${input.maxProjectNameLength} characters.`),
+        confirmProjectName: z.string().describe("Repeat the exact project slug to confirm permanent deletion.")
+      }
+    },
+    async ({ projectName, confirmProjectName }) => {
+      const result = await input.deleteProject(projectName, confirmProjectName);
       if (result.status >= 400) {
         return createMcpToolErrorResult(result.summary, result.body);
       }

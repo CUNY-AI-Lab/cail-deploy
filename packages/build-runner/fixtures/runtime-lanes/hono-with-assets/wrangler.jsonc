@@ -1,0 +1,9 @@
+{
+  "name": "hono-with-assets",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-01",
+  "assets": {
+    "directory": "./public",
+    "html_handling": "auto-trailing-slash"
+  }
+}

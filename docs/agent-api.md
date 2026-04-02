@@ -19,10 +19,27 @@ Start here:
 That manifest describes:
 
 - public URL shape
+- required starter-shape choices for agents
 - supported languages and bindings
 - disallowed runtime patterns
 - local preflight commands
 - the agent API endpoints
+
+Important current manifest fields:
+
+- `scaffold_shape_required: true`
+- `scaffold_shape_options: ["static", "worker"]`
+- `static_project_marker_file: "kale.project.json"`
+- `static_project_shape_value: "static_site"`
+- `worker_project_shape_value: "worker_app"`
+- `static_project_request_time_logic_key: "requestTimeLogic"`
+- `static_project_request_time_logic_value: "none"`
+
+Current shape policy:
+
+- choose `static` for pure publishing sites with no request-time behavior
+- choose `worker` for forms, APIs, auth, redirects, or other request-time logic
+- `_headers` and `_redirects` currently keep a project on the dedicated Worker lane rather than the shared-static lane
 
 ## Agent auth
 
@@ -73,6 +90,7 @@ Current MCP tools:
 - `list_project_secrets`
 - `set_project_secret`
 - `delete_project_secret`
+- `delete_project`
 
 Public connection-health document:
 
@@ -142,10 +160,10 @@ Token exchange:
 
 The `/api/oauth/authorize` route is where Cloudflare Access applies. The token endpoint stays public so the harness can complete the standard OAuth exchange.
 
-Ordinary deploys stop here. Secret management is the first exception:
+Ordinary deploys stop here. Sensitive project-admin work is the first exception:
 
 - normal deploys do not require a second GitHub user-authorization step
-- secret management may ask the user to confirm their GitHub account in the browser
+- secret management and project deletion may ask the user to confirm their GitHub account in the browser
 - Kale then checks that the linked GitHub user has write, maintain, or admin access to the repository that owns the project
 
 That second GitHub confirmation is not part of the normal deploy loop. It is reserved for sensitive project-admin actions.
@@ -163,6 +181,7 @@ MCP tools:
 - `list_project_secrets`
 - `set_project_secret`
 - `delete_project_secret`
+- `delete_project`
 
 Behavior:
 
@@ -172,7 +191,7 @@ Behavior:
 - if that live update fails, the secret is still saved and will apply on the next deploy
 - humans can also manage secrets in the Access-protected project settings page on the Kale auth host
 - that settings page is a private admin surface, not a general project page
-- agents should only send users there for project-admin tasks such as secrets or future domain controls
+- agents should only send users there for project-admin tasks such as secrets, project deletion, or future domain controls
 
 Agent pattern:
 
@@ -196,6 +215,42 @@ curl -X PUT https://cuny.qzz.io/kale/api/projects/my-project/secrets/OPENAI_API_
   -H 'content-type: application/json' \
   -d '{
     "value": "sk-..."
+  }'
+```
+
+## Delete a Kale project
+
+Endpoint:
+
+- `DELETE https://cuny.qzz.io/kale/api/projects/<projectName>`
+
+MCP tool:
+
+- `delete_project`
+
+Behavior:
+
+- this deletes the Kale project only
+- it removes the live Kale URL, stored secrets, deployment history, archived deployment artifacts, and Kale-managed D1/R2/KV resources
+- it does **not** delete the GitHub repository
+- the request must confirm the slug exactly with `confirmProjectName`
+
+Agent pattern:
+
+1. Resolve the canonical `projectName` first.
+2. Ask for explicit user confirmation before deleting.
+3. Call `delete_project` or `DELETE /api/projects/<projectName>` with `confirmProjectName`.
+4. If Kale returns `nextAction="connect_github_user"`, stop and hand the user `connectGitHubUserUrl`.
+5. Treat the delete as irreversible inside Kale. If the user wants the site back later, redeploy from GitHub.
+
+Example:
+
+```bash
+curl -X DELETE https://cuny.qzz.io/kale/api/projects/my-project \
+  -H 'authorization: Bearer <token>' \
+  -H 'content-type: application/json' \
+  -d '{
+    "confirmProjectName": "my-project"
   }'
 ```
 
@@ -266,6 +321,24 @@ This endpoint is intentionally GitHub-first:
 - it does not deploy on success
 - it can return `429` if the repository already has the maximum number of active builds, or if an operator has set a repository-specific daily validation cap
 
+## Project status details
+
+Endpoint:
+
+- `GET https://cuny.qzz.io/kale/api/projects/<project-name>/status`
+
+The status payload now includes runtime-lane data so agents can see what Kale actually chose:
+
+- `runtime_lane`
+- `recommended_runtime_lane`
+- runtime-evidence fields such as framework, classification, confidence, basis, and summary
+
+That lets an agent distinguish between:
+
+- a live dedicated Worker app
+- a certified shared-static deploy
+- a project that looked static-ish but stayed dedicated because the runner did not have strong enough evidence
+
 ## Register a repository
 
 Endpoint:
@@ -321,7 +394,7 @@ Successful response shape:
 Policy notes:
 
 - advanced bindings such as `AI`, `VECTORIZE`, and `ROOMS` are approval-only because they create billable or always-on platform resources
-- `DB`, `FILES`, and `CACHE` are self-service production bindings because Kale provisions one isolated D1 database, R2 bucket, and KV namespace per project when the repository requests them
+- `DB`, `FILES`, and `CACHE` are self-service production bindings because Kale provisions one repo-scoped D1 database, R2 bucket, and KV namespace when the repository requests them
 - the control plane can reject validate or deploy activity when a repository already has the maximum number of active builds, or when an operator has set a repository-specific cap
 
 Conflict response:

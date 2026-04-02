@@ -1,6 +1,6 @@
 ---
 name: kale-deploy
-description: Use when building or adapting a web application for the Kale Deploy runtime on Cloudflare Workers, especially Hono apps that will be deployed by the Kale control plane to a shared CUNY host. Trigger when the user mentions Kale Deploy, Cloudflare Workers for Kale, live deployment under <project>.cuny.qzz.io, or wants a project scaffold that fits this platform.
+description: Use when building or adapting a web application for the Kale Deploy runtime on Cloudflare Workers, especially lightweight Worker-compatible apps that will be deployed by the Kale control plane to a shared CUNY host. Trigger when the user mentions Kale Deploy, Cloudflare Workers for Kale, live deployment under <project>.cuny.qzz.io, or wants a project scaffold that fits this platform.
 ---
 
 # Kale Deploy
@@ -23,8 +23,13 @@ Kale Deploy is a GitHub-first deployment platform from the CUNY AI Lab.
 When there is no strong reason to do otherwise:
 
 - use TypeScript
-- use Hono for routing
-- serve small HTML pages directly from the Worker
+- choose a project shape explicitly: `static` or `worker`
+- choose the lightest Worker-compatible shape that fits the project
+- prefer a static-first project when the project is mostly content
+- for a Kale-owned static-first project, add `kale.project.json` with `projectShape: "static_site"` and `requestTimeLogic: "none"`, then point Wrangler assets at the static output directory
+- for a Kale-owned Worker project, add `kale.project.json` with `projectShape: "worker_app"` and `requestTimeLogic: "allowed"`
+- if the project needs `/api/health`, auth, redirects, custom headers, `_headers`, `_redirects`, or any other request-time behavior, it is not pure static
+- if request-time routing or middleware is clearly useful, use Hono for routing
 - add JSON routes only where they are clearly useful
 - use D1 for structured data
 - treat R2 and KV as managed platform extras
@@ -41,6 +46,7 @@ Bias toward projects that make the platform useful quickly:
 - bibliographies or lightweight searchable collections
 
 These are usually better targets than heavy SPA stacks or apps that assume a traditional server.
+Many of them can stay mostly static or use only a very small Worker surface.
 
 ## Runtime constraints
 
@@ -66,7 +72,7 @@ Use these names consistently in generated code:
 
 Not every project needs every binding. Do not invent binding names unless the user explicitly asks.
 
-To request `FILES` or `CACHE`, add the standard binding names to `wrangler.jsonc` under `r2_buckets` or `kv_namespaces`. Use placeholder local values — Kale replaces them with project-isolated resources during deployment.
+To request `FILES` or `CACHE`, add the standard binding names to `wrangler.jsonc` under `r2_buckets` or `kv_namespaces`. Use placeholder local values — Kale replaces them with repo-scoped resources during deployment.
 
 Do not promise AI, vector search, realtime rooms, or large asset hosting unless the user has explicit approval.
 
@@ -77,6 +83,7 @@ Prefer:
 ```text
 src/
   index.ts
+kale.project.json (for static-first projects)
 package.json
 tsconfig.json
 wrangler.jsonc
@@ -85,12 +92,14 @@ CLAUDE.md
 ```
 
 Keep early projects small. Do not introduce a large front-end framework unless the user clearly needs one.
+If a static-first project, plain Worker, or static export solves the job cleanly, prefer that over adding Hono by habit.
+If you scaffold with `kale-init`, pass `--shape static` or `--shape worker` explicitly.
 
 ## Forms and HTML
 
 For most class and workshop projects:
 
-- render HTML directly from the Worker
+- render HTML directly from a small Worker when request-time logic is actually needed
 - use standard forms and `request.formData()`
 - return friendly HTML error states
 - keep client-side JavaScript minimal
@@ -205,7 +214,7 @@ Before asking the user to validate or deploy, the repository should include:
 - `src/index.ts`
 - `AGENTS.md`
 - a root route at `/`
-- a health route at `/api/health`
+- if the repository is a Worker app, a health route at `/api/health`
 
 It should not depend on `app.listen(...)`, Python, native Node modules, or filesystem-backed state.
 

@@ -3,6 +3,11 @@
 This plugin bundles the Kale Deploy skills, the `kale-init` and `kale-connect`
 commands, and the remote Kale MCP server.
 
+When `kale-init` is used, it now requires an explicit starter shape:
+
+- `--shape static` for pure publishing sites
+- `--shape worker` for forms, APIs, auth, or other request-time behavior
+
 It is intended to work as a shared plugin bundle for:
 
 - Codex

@@ -12,6 +12,7 @@
     "harness:onboarding": "node --import tsx packages/deploy-service/src/harness-onboarding-run.ts",
     "test": "npm run test --workspaces --if-present",
     "ops:healthcheck": "bash scripts/ops/check-kale-health.sh",
+    "ops:lifecycle-smoke": "node scripts/ops/run-kale-lifecycle-smoke.mjs",
     "ops:runner-cache-prune": "bash scripts/ops/prune-runner-cache.sh"
   }
 }

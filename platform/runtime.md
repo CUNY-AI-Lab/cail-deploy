@@ -41,10 +41,11 @@ Agents should prefer the structured control-plane endpoints over scraping GitHub
 - `POST /api/projects/register`: validate a GitHub repository reference, suggest or confirm the project slug, report whether the GitHub App is installed, and return the canonical project URL plus a status endpoint
 - `POST /api/validate`: validate a GitHub-visible branch or commit without deploying it
 - `GET /api/build-jobs/<jobId>/status`: poll a specific validation or deployment job
-- `GET /api/projects/<project-name>/status`: return structured deployment state, including `status`, `deployment_url`, `error_kind`, `error_message`, and `error_detail`
+- `GET /api/projects/<project-name>/status`: return structured deployment state, including `status`, `deployment_url`, `runtime_lane`, `recommended_runtime_lane`, runtime evidence fields, `error_kind`, `error_message`, and `error_detail`
 - `GET /api/projects/<project-name>/secrets`: list stored project secret names and metadata, never values
 - `PUT /api/projects/<project-name>/secrets/<SECRET_NAME>`: create or update one project secret
 - `DELETE /api/projects/<project-name>/secrets/<SECRET_NAME>`: remove one project secret
+- `DELETE /api/projects/<project-name>`: permanently delete the Kale project and its Kale-managed resources after confirming the slug in the request body
 
 The intended auth model is now:
 
@@ -76,6 +77,7 @@ The MCP tool surface is intentionally thin. It wraps the same control-plane beha
 - `list_project_secrets`
 - `set_project_secret`
 - `delete_project_secret`
+- `delete_project`
 
 The intended long-term model is:
 
@@ -98,7 +100,13 @@ The remote validate endpoint is intentionally GitHub-first. It validates a branc
 - No long-running CPU-heavy jobs.
 - Do not build around `app.listen(...)`, long-lived in-memory server state, or filesystem-backed application state.
 - Prefer server-rendered HTML plus small JSON APIs over heavy SPA infrastructure.
-- Prefer Hono for routing.
+- Declare the starter shape explicitly: `static` for pure publishing sites, `worker` for projects that need request-time behavior.
+- Choose the lightest Worker-compatible shape that fits the project.
+- Prefer a static-first project when the work is mostly content or simple publishing.
+- For a Kale-owned static-first project, write `kale.project.json` with `projectShape: "static_site"` and `requestTimeLogic: "none"`, then point `wrangler.jsonc` `assets.directory` at the static output directory.
+- For a Kale-owned Worker project, write `kale.project.json` with `projectShape: "worker_app"` and `requestTimeLogic: "allowed"`.
+- A project that needs `/api/health`, auth, redirects, custom headers, `_headers`, `_redirects`, or any other request-time behavior is not pure static and should stay on a Worker lane.
+- If request-time routing, middleware, or a small API is clearly useful, Hono is the preferred Worker framework.
 
 ## Good first app shapes
 
@@ -130,7 +138,6 @@ Before asking the user to validate or deploy, the repository should usually incl
 It should also usually provide:
 
 - a root route at `/`
-- a health route at `/api/health`
 - `npm run check`
 - `npm run dev`
 
@@ -145,8 +152,8 @@ It should not depend on:
 
 These names should remain stable across assistant adapters:
 
-- `DB`: primary per-project D1 database
-- `FILES`: R2 bucket binding or per-project bucket prefix facade
+- `DB`: primary repo-scoped D1 database
+- `FILES`: R2 bucket binding or repo-scoped bucket/prefix facade
 - `CACHE`: KV namespace for light configuration and cache data
 - `AI`: Workers AI binding
 - `VECTORIZE`: Vectorize binding when enabled
@@ -158,14 +165,15 @@ Current policy defaults are:
 
 - `DB`, `FILES`, and `CACHE` are self-service production bindings.
 - `AI`, `VECTORIZE`, and `ROOMS` are approval-only.
-- `FILES` is implemented as one project-isolated R2 bucket per repository that requests it.
-- `CACHE` is implemented as one project-isolated KV namespace per repository that requests it.
+- `DB`, `FILES`, and `CACHE` are repo-scoped. A slug rename keeps using the same provisioned resources.
+- `FILES` is implemented as one repo-scoped R2 bucket per repository that requests it.
+- `CACHE` is implemented as one repo-scoped KV namespace per repository that requests it.
 
 To request self-service storage in a repository:
 
 - declare `FILES` in `wrangler.jsonc` under `r2_buckets`
 - declare `CACHE` in `wrangler.jsonc` under `kv_namespaces`
-- use placeholder local IDs or bucket names if needed; Kale replaces the production binding values with project-isolated resources during deployment
+- use placeholder local IDs or bucket names if needed; Kale replaces the production binding values with repo-scoped resources during deployment
 
 Default caps are:
 
@@ -182,19 +190,19 @@ Those caps are intentionally narrow:
 
 Assistants should not promise AI, vector search, realtime rooms, or large asset hosting unless the user has explicit approval.
 
-Per-project secrets now use an extra GitHub-backed admin check:
+Sensitive project-admin actions now use an extra GitHub-backed admin check:
 
 - ordinary deploys still use only MCP OAuth plus the shared GitHub App install
-- secret management may ask the user to confirm their GitHub account separately
+- secret management and project deletion may ask the user to confirm their GitHub account separately
 - Kale then checks that the linked GitHub user has write, maintain, or admin access to the repository that owns the project
 
-This second GitHub user-authorization step is intentionally limited to sensitive project-admin actions such as secrets.
+This second GitHub user-authorization step is intentionally limited to sensitive project-admin actions such as secrets and project deletion.
 
 The browser settings surface is also intentionally narrow:
 
 - it is a private admin page, not a general project homepage
 - it should remain behind CUNY sign-in and repo-admin verification
-- agents should send users there only for project-admin work such as secrets and later domain/redirect controls
+- agents should send users there only for project-admin work such as secrets, project deletion, and later domain/redirect controls
 - ordinary deploy, validate, and status loops should stay in the standard repo-first flow
 
 ## Naming conventions
@@ -209,14 +217,27 @@ The browser settings surface is also intentionally narrow:
 
 The scaffold should create:
 
+- an explicit shape choice, not a hidden default
 - `wrangler.jsonc` for local structure and type generation
-- a minimal Hono app
+- the lightest Worker-compatible starter that fits the chosen project shape
+- `kale.project.json` declaring either `projectShape: "static_site"` or `projectShape: "worker_app"`
+- for pure static projects, `kale.project.json` should explicitly declare `requestTimeLogic: "none"`
+- for Worker projects, `kale.project.json` should explicitly declare `requestTimeLogic: "allowed"`
+- a plain Worker handler when a homepage plus `/api/health` is enough
+- Hono only when route composition or middleware clarity is clearly useful
 - `AGENTS.md` as the canonical repo-local assistant guidance
 - `CLAUDE.md` as an optional tool-specific shim
 - scripts for local checking
 - a request-handler-oriented app shape rather than a traditional Node server bootstrap
 
 The scaffold is not a starter repo download. It writes files directly into the current project.
+
+Shared static coverage is intentionally certification-based:
+
+- explicit framework exports such as Next export, Astro static, SvelteKit adapter-static, and Nuxt generate can be auto-certified
+- Kale-owned static-first projects can be auto-certified only when `kale.project.json` declares a pure static contract and Wrangler points at the same asset directory
+- static projects that include `_headers` or `_redirects` stay on the dedicated lane until Kale's shared-static gateway explicitly supports those control files
+- generic Worker-plus-assets projects stay on the dedicated lane unless the runner has strong positive evidence that request-time Worker behavior is disposable
 
 ## Deployment contract
 

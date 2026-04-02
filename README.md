@@ -1,6 +1,6 @@
 # Kale Deploy
 
-Kale Deploy is a GitHub-first publishing system from the CUNY AI Lab. It lets a user work with an AI agent, connect a GitHub repository, and publish a Cloudflare Worker app to a host-based project URL like `https://<project-name>.cuny.qzz.io`.
+Kale Deploy is a GitHub-first publishing system from the CUNY AI Lab. It lets a user work with an AI agent, connect a GitHub repository, and publish a website or Worker-based web app to a host-based project URL like `https://<project-name>.cuny.qzz.io`.
 
 ## Current URLs
 
@@ -31,8 +31,8 @@ At a high level:
 1. A user connects a repository through the shared GitHub App.
 2. A push to the default branch reaches the deploy-service webhook.
 3. The deploy service creates a GitHub check, stores state in D1, and enqueues a build job.
-4. The build runner checks out the repository, builds the Worker bundle, and calls back with the artifact metadata.
-5. The deploy service uploads the Worker to Workers for Platforms, updates deployment state, and completes the GitHub check.
+4. The build runner checks out the repository, builds the deployable bundle, and calls back with artifact metadata plus runtime evidence.
+5. The deploy service either promotes a certified static build onto the shared-static lane or uploads a dedicated Worker to Workers for Platforms, updates deployment state, and completes the GitHub check.
 6. Public traffic reaches `https://<project-name>.cuny.qzz.io` through the host proxy and gateway.
 
 ## Repository Layout
@@ -87,7 +87,38 @@ npx wrangler deploy --config packages/gateway-worker/wrangler.jsonc
 npx wrangler deploy --config packages/project-host-proxy/wrangler.jsonc
 ```
 
-The build runner is separate from the Workers deployment. See the runner hosting guide below before changing how it is hosted.
+Set the shared preview secret on both Workers before expecting automatic `shared_static` cutover:
+
+```bash
+npx wrangler secret put GATEWAY_PREVIEW_TOKEN --config packages/deploy-service/wrangler.jsonc
+npx wrangler secret put GATEWAY_PREVIEW_TOKEN --config packages/gateway-worker/wrangler.jsonc
+```
+
+The build runner is separate from the Workers deployment. If you change `packages/build-runner` or `packages/build-contract`, rebuild and restart the runner too so production classification matches the deployed Workers. See the runner hosting guide below before changing how it is hosted.
+
+There is also a real lifecycle smoke runner for a dedicated smoke repository:
+
+```bash
+npm run ops:lifecycle-smoke
+```
+
+It uses the public Kale MCP tool surface plus real Git pushes to exercise:
+
+- an initial live dedicated Worker deploy
+- a same-lane dedicated Worker redeploy
+- a redeploy that promotes the same repo onto `shared_static`
+- a same-lane `shared_static` redeploy
+- a redeploy that demotes the repo back onto `dedicated_worker`
+- a real `delete_project` plus public unpublish check
+- a fresh re-register plus restore deploy
+
+Required environment variables for the smoke runner:
+
+- `KALE_SMOKE_REPOSITORY`
+- `KALE_SMOKE_GITHUB_TOKEN`
+- `KALE_SMOKE_KALE_TOKEN`
+
+The GitHub token must be able to push to the dedicated smoke repo. The Kale token is used as a bearer token on `/mcp`, and in practice it should be a fresh `kale_pat_*` token from `https://cuny.qzz.io/kale/connect` under a user who already linked GitHub admin access for that smoke repo, because the delete step uses the same project-admin check as the live product.
 
 ## Assistant and MCP Surface
 
@@ -118,9 +149,12 @@ Implemented now:
 - Codex and Claude plugin packaging
 - an AWS-hosted build runner with a stable Elastic IP and SSM-ready instance profile
 - a scheduled GitHub Actions healthcheck for the public stack and AWS runner
+- a scheduled GitHub Actions lifecycle smoke workflow for real dedicated/shared-static/deletion/redeploy scenario checks on a dedicated smoke repo
 - no daily validate/deploy cap by default, but support for per-repository override caps
-- project-isolated `DB`, `FILES`, and `CACHE` provisioning
+- repo-scoped `DB`, `FILES`, and `CACHE` provisioning
 - approval-only policy for advanced bindings such as AI, Vectorize, and Rooms
+- explicit `static` and `worker` starter shapes for new projects
+- conservative automatic `shared_static` cutover for certified pure static builds
 - internal groundwork for future custom-domain routing
 
 Still not finished:

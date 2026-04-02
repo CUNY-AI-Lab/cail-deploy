@@ -16,6 +16,7 @@ import {
   verifyGitHubUserAuthStateToken,
   type AgentRequestIdentity,
   type AuthenticatedAgentRequestIdentity,
+  type ProjectSecretsAuthorization
 } from "./project-admin-auth";
 import { baseStyles, escapeHtml, faviconLink, logoHtml, serializeJsonForHtml } from "./ui";
 import {
@@ -42,6 +43,7 @@ import {
 import {
   createProjectAdminEntryResponse,
   createProjectControlPanelResponse,
+  createProjectControlProjectDeleteResponse,
   createProjectControlSecretDeleteResponse,
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
@@ -58,6 +60,15 @@ import {
   setProjectSecretValue,
   type ProjectSecretsAccessContext
 } from "./project-secrets";
+import {
+  assertProjectDeleteConfirmation,
+  deleteProjectFromKale
+} from "./project-delete";
+import {
+  canAutoPromoteToSharedStatic,
+  DEFAULT_RUNTIME_LANE,
+  recommendRuntimeLane
+} from "./runtime-lanes";
 import { prepareStaticAssetsUpload } from "./lib/assets";
 import {
   readBearerToken,
@@ -77,14 +88,16 @@ import {
   ensureProjectPolicy,
   getBuildJob,
   getBuildJobByDeliveryId,
+  getDeployment,
   getLatestBuildJobForProject,
   getLatestProjectForRepository,
   getPreferredProjectNameForRepository,
   getProjectDomain,
   getProject,
+  listActiveBuildJobsForRepository,
   listExpiredRetainedFailedDeployments,
   listProjects,
-  listRetainedSuccessfulDeployments,
+  listRetainedSuccessfulDeploymentsForRepository,
   putGitHubUserAuth,
   putBuildJob,
   putProject,
@@ -127,9 +140,17 @@ import type {
   DeploymentRecord,
   GitHubRepositoryRecord,
   ProjectRecord,
+  RuntimeEvidence,
   StaticAssetUpload,
   WorkerAssetsConfig,
   WorkerBinding
+} from "@cuny-ai-lab/build-contract";
+import {
+  buildLoadedSharedStaticManifest,
+  collectSharedStaticValidationPaths,
+  normalizeSharedStaticPath,
+  resolveSharedStaticRequest,
+  stripLeadingSlash
 } from "@cuny-ai-lab/build-contract";
 
 type Env = {
@@ -163,6 +184,9 @@ type Env = {
   WFP_NAMESPACE: string;
   PROJECT_BASE_URL: string;
   PROJECT_HOST_SUFFIX?: string;
+  GATEWAY_PREVIEW_TOKEN?: string;
+  SHARED_STATIC_VALIDATION_ATTEMPTS?: string;
+  SHARED_STATIC_VALIDATION_RETRY_MS?: string;
   D1_LOCATION_HINT?: string;
 };
 
@@ -249,6 +273,8 @@ type ApiResponseStatus = 200 | 202 | 400 | 401 | 403 | 404 | 409 | 413 | 429 | 5
 export const deployServiceApp = new Hono<{ Bindings: Env }>();
 const DEFAULT_SUCCESSFUL_ARTIFACT_RETENTION = 2;
 const DEFAULT_FAILED_ARTIFACT_RETENTION_DAYS = 7;
+const STALE_QUEUED_BUILD_WINDOW_MS = 10 * 60 * 1000;
+const STALE_STARTED_BUILD_WINDOW_MS = 2 * 60 * 60 * 1000;
 const MAX_PROJECT_NAME_LENGTH = 63;
 const GITHUB_MANIFEST_STATE_COOKIE = "cail_github_manifest_state";
 const GITHUB_MANIFEST_STATE_MAX_AGE_SECONDS = 60 * 60;
@@ -259,6 +285,9 @@ const PROJECT_SECRETS_CONFIG = {
   resolveControlPlaneEncryptionKey,
   resolveRequiredCloudflareApiToken,
   formatBytes
+};
+const PROJECT_DELETE_CONFIG = {
+  resolveRequiredCloudflareApiToken
 };
 const PROJECT_ADMIN_AUTH_DEPENDENCIES = {
   resolveServiceBaseUrl,
@@ -1509,14 +1538,7 @@ deployServiceApp.get("/api/projects", async (c) => {
 });
 
 deployServiceApp.post("/api/projects/register", async (c) => {
-  try {
-    await requireAgentRequestIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
-  }
-
-  try {
+  return runProtectedAgentApiAction(c, async () => {
     const body = await c.req.json<{
       repositoryUrl?: string;
       repositoryFullName?: string;
@@ -1525,21 +1547,11 @@ deployServiceApp.post("/api/projects/register", async (c) => {
     const repository = parseRepositoryReference(body);
     const lifecycle = await buildRepositoryLifecycleState(c.env, c.req.raw.url, repository, body.projectName);
     return c.json(lifecycle.payload, lifecycle.httpStatus);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
-  }
+  });
 });
 
 deployServiceApp.get("/api/repositories/:owner/:repo/status", async (c) => {
-  try {
-    await requireAgentRequestIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
-  }
-
-  try {
+  return runProtectedAgentApiAction(c, async () => {
     const repository = {
       owner: c.req.param("owner"),
       repo: c.req.param("repo")
@@ -1551,21 +1563,11 @@ deployServiceApp.get("/api/repositories/:owner/:repo/status", async (c) => {
       c.req.query("projectName") ?? undefined
     );
     return c.json(lifecycle.payload);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
-  }
+  });
 });
 
 deployServiceApp.post("/api/validate", async (c) => {
-  try {
-    await requireAgentRequestIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
-  }
-
-  try {
+  return runProtectedAgentApiAction(c, async () => {
     const body = await c.req.json<{
       repositoryUrl?: string;
       repositoryFullName?: string;
@@ -1574,124 +1576,58 @@ deployServiceApp.post("/api/validate", async (c) => {
     }>();
     const result = await queueValidationJob(c.env, c.req.raw.url, body);
     return c.json(result.body, { status: result.status });
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
-  }
+  });
 });
 
 deployServiceApp.get("/api/projects/:projectName/status", async (c) => {
-  try {
-    await requireAgentRequestIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
-  }
-
-  const result = await buildProjectStatusResponse(c.env, c.req.param("projectName"));
-  return c.json(result.body, { status: result.status });
+  return runProtectedAgentApiAction(c, async () => {
+    const result = await buildProjectStatusResponse(c.env, c.req.param("projectName"));
+    return c.json(result.body, { status: result.status });
+  });
 });
 
 deployServiceApp.get("/api/projects/:projectName/secrets", async (c) => {
-  let identity: AgentRequestIdentity;
-
-  try {
-    identity = await requireAgentRequestIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
-  }
-
-  try {
-    const authorization = await authorizeProjectSecretsAccess(
-      c.env,
-      c.req.raw.url,
-      identity,
-      c.req.param("projectName"),
-      PROJECT_ADMIN_AUTH_DEPENDENCIES
-    );
-    if (!authorization.ok) {
-      return c.json(authorization.body, { status: authorization.status });
-    }
-
-    const payload = await buildProjectSecretsListPayload(c.env, authorization.project, authorization.githubLogin);
-    return c.json(payload);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
-  }
+  return runProjectAdminAgentApiAction(c, c.req.param("projectName"), async (authorization) =>
+    buildProjectSecretsListPayload(c.env, authorization.project, authorization.githubLogin)
+  );
 });
 
 deployServiceApp.put("/api/projects/:projectName/secrets/:secretName", async (c) => {
-  let identity: AgentRequestIdentity;
-
-  try {
-    identity = await requireAgentRequestIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
-  }
-
-  try {
-    const authorization = await authorizeProjectSecretsAccess(
-      c.env,
-      c.req.raw.url,
-      identity,
-      c.req.param("projectName"),
-      PROJECT_ADMIN_AUTH_DEPENDENCIES
-    );
-    if (!authorization.ok) {
-      return c.json(authorization.body, { status: authorization.status });
-    }
-
+  return runProjectAdminAgentApiAction(c, c.req.param("projectName"), async (authorization) => {
     const body = await c.req.json<{ value?: string }>();
-    const payload = await setProjectSecretValue(
+    return setProjectSecretValue(
       c.env,
       PROJECT_SECRETS_CONFIG,
       authorization,
       c.req.param("secretName"),
       body.value
     );
-    return c.json(payload);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
-  }
+  });
 });
 
 deployServiceApp.delete("/api/projects/:projectName/secrets/:secretName", async (c) => {
-  let identity: AgentRequestIdentity;
-
-  try {
-    identity = await requireAgentRequestIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
-  }
-
-  try {
-    const authorization = await authorizeProjectSecretsAccess(
-      c.env,
-      c.req.raw.url,
-      identity,
-      c.req.param("projectName"),
-      PROJECT_ADMIN_AUTH_DEPENDENCIES
-    );
-    if (!authorization.ok) {
-      return c.json(authorization.body, { status: authorization.status });
-    }
-
-    const payload = await removeProjectSecretValue(
+  return runProjectAdminAgentApiAction(c, c.req.param("projectName"), async (authorization) =>
+    removeProjectSecretValue(
       c.env,
       PROJECT_SECRETS_CONFIG,
       authorization,
       c.req.param("secretName")
-    );
-    return c.json(payload);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
-  }
+    )
+  );
+});
+
+deployServiceApp.delete("/api/projects/:projectName", async (c) => {
+  return runProjectAdminAgentApiAction(c, c.req.param("projectName"), async (authorization) => {
+    let body: { confirmProjectName?: string };
+    try {
+      body = await c.req.json<{ confirmProjectName?: string }>();
+    } catch {
+      throw new HttpError(400, "Provide confirmProjectName in the request body to confirm permanent deletion.");
+    }
+
+    assertProjectDeleteConfirmation(c.req.param("projectName"), body.confirmProjectName);
+    return deleteProjectFromKale(c.env, PROJECT_DELETE_CONFIG, authorization);
+  });
 });
 
 deployServiceApp.get("/projects/control", async (c) => {
@@ -1711,13 +1647,9 @@ deployServiceApp.get("/projects/:projectName/control", async (c) => {
     env: c.env,
     request: c.req.raw,
     projectName: c.req.param("projectName"),
-    requireCloudflareAccessIdentity,
-    resolveServiceBaseUrl,
-    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
-      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
+    ...PROJECT_CONTROL_ROUTE_DEPENDENCIES,
     buildProjectStatusResponse,
     buildProjectSecretsListPayload,
-    resolveMcpOauthSecret
   });
 });
 
@@ -1726,11 +1658,7 @@ deployServiceApp.post("/projects/:projectName/control/secrets", async (c) => {
     env: c.env,
     request: c.req.raw,
     projectName: c.req.param("projectName"),
-    requireCloudflareAccessIdentity,
-    resolveServiceBaseUrl,
-    resolveMcpOauthSecret,
-    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
-      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
+    ...PROJECT_CONTROL_ROUTE_DEPENDENCIES,
     setProjectSecretValue: (env, authorization, secretName, value) =>
       setProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName, value)
   });
@@ -1742,26 +1670,65 @@ deployServiceApp.post("/projects/:projectName/control/secrets/:secretName/delete
     request: c.req.raw,
     projectName: c.req.param("projectName"),
     secretName: c.req.param("secretName"),
-    requireCloudflareAccessIdentity,
-    resolveServiceBaseUrl,
-    resolveMcpOauthSecret,
-    authorizeProjectSecretsAccess: (env, requestUrl, identity, projectName) =>
-      authorizeProjectSecretsAccess(env, requestUrl, identity, projectName, PROJECT_ADMIN_AUTH_DEPENDENCIES),
+    ...PROJECT_CONTROL_ROUTE_DEPENDENCIES,
     removeProjectSecretValue: (env, authorization, secretName) =>
       removeProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName)
   });
 });
 
-deployServiceApp.get("/api/build-jobs/:jobId/status", async (c) => {
+deployServiceApp.post("/projects/:projectName/control/delete", async (c) => {
+  return createProjectControlProjectDeleteResponse({
+    env: c.env,
+    request: c.req.raw,
+    projectName: c.req.param("projectName"),
+    ...PROJECT_CONTROL_ROUTE_DEPENDENCIES,
+    deleteProject: (env, authorization) =>
+      deleteProjectFromKale(env, PROJECT_DELETE_CONFIG, authorization)
+  });
+});
+
+async function runProjectAdminAgentApiAction<TPayload extends Record<string, unknown>>(
+  c: Context<{ Bindings: Env }>,
+  projectName: string,
+  action: (authorization: ProjectSecretsAccessContext) => Promise<TPayload>
+): Promise<Response> {
+  return runProtectedAgentApiAction(c, async (identity) => {
+    const authorization = await authorizeProjectAdminAction(c.env, c.req.raw.url, identity, projectName);
+    if (!authorization.ok) {
+      return c.json(authorization.body, { status: authorization.status });
+    }
+
+    const payload = await action(authorization);
+    return c.json(payload);
+  });
+}
+
+async function runProtectedAgentApiAction(
+  c: Context<{ Bindings: Env }>,
+  action: (identity: AgentRequestIdentity) => Promise<Response>
+): Promise<Response> {
+  let identity: AgentRequestIdentity;
+
   try {
-    await requireAgentRequestIdentity(c.req.raw, c.env);
+    identity = await requireAgentRequestIdentity(c.req.raw, c.env);
   } catch (error) {
     const httpError = asHttpError(error);
     return protectedAgentApiAuthErrorResponse(c, c.env, httpError);
   }
 
-  const result = await buildBuildJobStatusResponse(c.env, c.req.param("jobId"));
-  return c.json(result.body, { status: result.status });
+  try {
+    return await action(identity);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.json({ error: httpError.message }, { status: httpError.status });
+  }
+}
+
+deployServiceApp.get("/api/build-jobs/:jobId/status", async (c) => {
+  return runProtectedAgentApiAction(c, async () => {
+    const result = await buildBuildJobStatusResponse(c.env, c.req.param("jobId"));
+    return c.json(result.body, { status: result.status });
+  });
 });
 
 deployServiceApp.all("/mcp", async (c) => {
@@ -1988,6 +1955,7 @@ deployServiceApp.post("/internal/build-jobs/:jobId/complete", async (c) => {
         ownerLogin: job.repository.ownerLogin,
         githubRepo: job.repository.fullName,
         description: result.deployment.description,
+        runtimeEvidence: result.deployment.runtimeEvidence,
         workerUpload: result.deployment.workerUpload,
         staticAssets: normalizeStaticAssets(result.deployment.staticAssets, result.deployment.projectName)
       },
@@ -2403,6 +2371,12 @@ async function deployArtifact(
   const projectClaim = await getProjectClaim(env.CONTROL_PLANE_DB, metadata.projectName, repositoryFullName);
   const existingRecord = projectClaim.project;
   const repositoryRecord = existingRecord ?? await getLatestProjectForRepository(env.CONTROL_PLANE_DB, repositoryFullName);
+  const laneSourceRecord = existingRecord ?? repositoryRecord;
+  const recommendedRuntimeLane = recommendRuntimeLane(metadata);
+  const projectSecretBindings = await buildProjectSecretBindings(env, PROJECT_SECRETS_CONFIG, metadata);
+  const sharedStaticCandidate =
+    canAutoPromoteToSharedStatic(metadata)
+    && projectSecretBindings.length === 0;
   if (projectClaim.conflict) {
     throw new HttpError(409, `Project name '${metadata.projectName}' is already claimed by another GitHub repository.`);
   }
@@ -2416,6 +2390,10 @@ async function deployArtifact(
     databaseId: repositoryRecord?.databaseId,
     filesBucketName: repositoryRecord?.filesBucketName,
     cacheNamespaceId: repositoryRecord?.cacheNamespaceId,
+    runtimeLane: repositoryRecord?.runtimeLane ?? DEFAULT_RUNTIME_LANE,
+    recommendedRuntimeLane:
+      repositoryRecord?.recommendedRuntimeLane
+      ?? DEFAULT_RUNTIME_LANE,
     hasAssets: false,
     createdAt: now,
     updatedAt: now
@@ -2430,65 +2408,74 @@ async function deployArtifact(
   }
 
   const deploymentId = crypto.randomUUID();
-  const artifactPrefix = `deployments/${metadata.projectName}/${deploymentId}`;
+  const artifactPrefix = buildRepositoryScopedArtifactPrefix(repositoryFullName, deploymentId);
   const staticAssets = normalizeStaticAssets(metadata.staticAssets, metadata.projectName);
   assertDeploymentUploadWithinLimit(metadata, files, policy.maxAssetBytes);
   const workerFiles = getWorkerFiles(staticAssets, files);
   ensureUploadContainsMainModule(workerFiles, metadata.workerUpload.main_module);
   const archiveManifest = createDeploymentArchiveManifest(metadata, workerFiles, staticAssets, options);
+  const existingWorkerHasAssets = laneSourceRecord?.runtimeLane === "dedicated_worker" && (laneSourceRecord.hasAssets ?? false);
   const client = new CloudflareApiClient({
     accountId: env.CLOUDFLARE_ACCOUNT_ID,
     apiToken: cloudflareApiToken
   });
-
-  const { databaseId, filesBucketName, cacheNamespaceId } = await resolveProjectResources(
-    client,
-    metadata,
-    repositoryRecord,
-    env.D1_LOCATION_HINT
-  );
+  const provisionalResources = sharedStaticCandidate
+    ? {
+        databaseId: repositoryRecord?.databaseId,
+        filesBucketName: repositoryRecord?.filesBucketName,
+        cacheNamespaceId: repositoryRecord?.cacheNamespaceId
+      }
+    : await resolveProjectResources(
+        client,
+        metadata,
+        repositoryRecord,
+        env.D1_LOCATION_HINT
+      );
+  let {
+    databaseId,
+    filesBucketName,
+    cacheNamespaceId
+  } = provisionalResources;
   await putProject(env.CONTROL_PLANE_DB, {
     ...reservedRecord,
     databaseId,
     filesBucketName,
     cacheNamespaceId,
+    runtimeLane: existingRecord?.runtimeLane ?? reservedRecord.runtimeLane,
+    recommendedRuntimeLane: existingRecord?.recommendedRuntimeLane ?? reservedRecord.recommendedRuntimeLane,
     hasAssets: existingRecord?.hasAssets ?? false,
     latestDeploymentId: existingRecord?.latestDeploymentId,
     updatedAt: now
   });
-  const staticAssetsResult = await prepareStaticAssetsUpload(client, env.WFP_NAMESPACE, metadata.projectName, staticAssets, files);
-  const nextHasAssets = Boolean(staticAssets?.files.length || existingRecord?.hasAssets);
-  const secretBindings = await buildProjectSecretBindings(env, PROJECT_SECRETS_CONFIG, metadata);
-  const workerUpload = withProjectBindings(metadata, databaseId, {
-    filesBucketName,
-    cacheNamespaceId,
-    secretBindings,
-    existingHasAssets: existingRecord?.hasAssets ?? false,
-    staticAssetsJwt: staticAssetsResult.completionJwt,
-    staticAssetsConfig: staticAssets?.config ?? metadata.workerUpload.assets?.config
-  });
+  const previewHasAssets = Boolean(staticAssets?.files.length);
+  const liveDedicatedHasAssets = Boolean(staticAssets?.files.length || existingWorkerHasAssets);
 
   try {
-    await client.uploadUserWorker(env.WFP_NAMESPACE, metadata.projectName, workerUpload, workerFiles);
+    await uploadWorkerScript(client, env.WFP_NAMESPACE, metadata.projectName, metadata, workerFiles, {
+      databaseId: sharedStaticCandidate ? undefined : databaseId,
+      filesBucketName: sharedStaticCandidate ? undefined : filesBucketName,
+      cacheNamespaceId: sharedStaticCandidate ? undefined : cacheNamespaceId,
+      secretBindings: sharedStaticCandidate ? undefined : projectSecretBindings,
+      existingHasAssets: sharedStaticCandidate ? false : existingWorkerHasAssets,
+      staticAssets,
+      files
+    });
   } catch (error) {
     const archive = await tryArchiveDeploymentManifest(env, artifactPrefix, archiveManifest);
-    const failedDeployment: DeploymentRecord = {
+    await recordFailedDeployment(env, {
       deploymentId,
       jobId: options?.jobId,
       projectName: metadata.projectName,
       ownerLogin: metadata.ownerLogin,
       githubRepo: metadata.githubRepo,
       headSha: options?.headSha,
-      status: "failure",
       deploymentUrl,
       artifactPrefix,
-      archiveKind: archive.archiveKind,
-      manifestKey: archive.manifestKey,
-      hasAssets: nextHasAssets,
-      createdAt: new Date().toISOString()
-    };
-    await insertDeployment(env.CONTROL_PLANE_DB, failedDeployment);
-    void cleanupExpiredFailedArtifacts(env);
+      archive,
+      runtimeLane: DEFAULT_RUNTIME_LANE,
+      recommendedRuntimeLane,
+      hasAssets: sharedStaticCandidate ? previewHasAssets : liveDedicatedHasAssets
+    });
     throw error;
   }
 
@@ -2501,6 +2488,43 @@ async function deployArtifact(
     staticAssets,
     files
   );
+  let currentRuntimeLane: ProjectRecord["runtimeLane"] = DEFAULT_RUNTIME_LANE;
+  if (sharedStaticCandidate && archive.archiveKind === "full" && staticAssets) {
+    if (laneSourceRecord?.runtimeLane === "shared_static") {
+      await putProject(env.CONTROL_PLANE_DB, {
+        ...reservedRecord,
+        databaseId,
+        filesBucketName,
+        cacheNamespaceId,
+        runtimeLane: DEFAULT_RUNTIME_LANE,
+        recommendedRuntimeLane,
+        hasAssets: liveDedicatedHasAssets,
+        latestDeploymentId: existingRecord?.latestDeploymentId,
+        updatedAt
+      });
+    }
+
+    const validation = await validateSharedStaticCandidate(
+      deploymentUrl,
+      staticAssets,
+      files,
+      deploymentId,
+      {
+        attempts: resolvePositiveInteger(env.SHARED_STATIC_VALIDATION_ATTEMPTS) ?? 30,
+        retryMs: resolvePositiveInteger(env.SHARED_STATIC_VALIDATION_RETRY_MS) ?? 1000
+      }
+    );
+    if (validation.matches) {
+      currentRuntimeLane = "shared_static";
+    } else {
+      console.warn("Shared static validation kept the deployment on a dedicated Worker.", validation.reason);
+    }
+  }
+
+  const nextHasAssets = currentRuntimeLane === "shared_static"
+    ? Boolean(staticAssets?.files.length)
+    : liveDedicatedHasAssets;
+
   const project: ProjectRecord = {
     projectName: metadata.projectName,
     ownerLogin: metadata.ownerLogin,
@@ -2510,6 +2534,8 @@ async function deployArtifact(
     databaseId,
     filesBucketName,
     cacheNamespaceId,
+    runtimeLane: currentRuntimeLane,
+    recommendedRuntimeLane,
     hasAssets: nextHasAssets,
     latestDeploymentId: deploymentId,
     createdAt: existingRecord?.createdAt ?? reservedRecord.createdAt,
@@ -2528,13 +2554,18 @@ async function deployArtifact(
     artifactPrefix,
     archiveKind: archive.archiveKind,
     manifestKey: archive.manifestKey,
+    runtimeLane: currentRuntimeLane,
+    recommendedRuntimeLane,
     hasAssets: nextHasAssets,
     createdAt: updatedAt
   };
 
-  await putProject(env.CONTROL_PLANE_DB, project);
   await insertDeployment(env.CONTROL_PLANE_DB, deployment);
-  void enforceArtifactRetentionPolicy(env, project.projectName);
+  await putProject(env.CONTROL_PLANE_DB, project);
+  if (currentRuntimeLane === "shared_static") {
+    await tryDeleteWorkerScript(client, env.WFP_NAMESPACE, metadata.projectName, "dedicated Worker for a shared static deployment");
+  }
+  void enforceArtifactRetentionPolicy(env, project.githubRepo);
 
   return { project, deployment };
 }
@@ -2589,7 +2620,7 @@ function assertDeploymentPolicy(
   if (invalidBindings.length > 0) {
     throw new HttpError(
       403,
-      `This deployment requests bindings that Kale Deploy does not allow by default: ${invalidBindings.join(", ")}. FILES and CACHE are supported only as the standard per-project bindings, while AI, Vectorize, and Rooms still require approval.`
+      `This deployment requests bindings that Kale Deploy does not allow by default: ${invalidBindings.join(", ")}. FILES and CACHE are supported only as the standard repo-scoped bindings, while AI, Vectorize, and Rooms still require approval.`
     );
   }
 }
@@ -2633,6 +2664,54 @@ function createDeploymentArchiveManifest(
   };
 }
 
+async function uploadWorkerScript(
+  client: CloudflareApiClient,
+  namespace: string,
+  scriptName: string,
+  metadata: DeploymentMetadata,
+  workerFiles: Array<{ name: string; file: File }>,
+  options: {
+    databaseId?: string;
+    filesBucketName?: string;
+    cacheNamespaceId?: string;
+    secretBindings?: WorkerBinding[];
+    existingHasAssets: boolean;
+    staticAssets: StaticAssetUpload | undefined;
+    files: Array<{ name: string; file: File }>;
+  }
+): Promise<void> {
+  const staticAssetsResult = await prepareStaticAssetsUpload(
+    client,
+    namespace,
+    scriptName,
+    options.staticAssets,
+    options.files
+  );
+  const workerUpload = withProjectBindings(metadata, options.databaseId, {
+    filesBucketName: options.filesBucketName,
+    cacheNamespaceId: options.cacheNamespaceId,
+    secretBindings: options.secretBindings,
+    existingHasAssets: options.existingHasAssets,
+    staticAssetsJwt: staticAssetsResult.completionJwt,
+    staticAssetsConfig: options.staticAssets?.config ?? metadata.workerUpload.assets?.config
+  });
+
+  await client.uploadUserWorker(namespace, scriptName, workerUpload, workerFiles);
+}
+
+async function tryDeleteWorkerScript(
+  client: CloudflareApiClient,
+  namespace: string,
+  scriptName: string,
+  description: string
+): Promise<void> {
+  try {
+    await client.deleteUserWorker(namespace, scriptName);
+  } catch (error) {
+    console.error(`Failed to remove ${description}.`, error);
+  }
+}
+
 async function tryArchiveSuccessfulDeployment(
   env: Env,
   artifactPrefix: string,
@@ -2667,6 +2746,300 @@ async function tryArchiveDeploymentManifest(
     console.error("Failed to archive deployment manifest.", error);
     return { archiveKind: "none" };
   }
+}
+
+async function recordFailedDeployment(
+  env: Env,
+  input: {
+    deploymentId: string;
+    jobId?: string;
+    projectName: string;
+    ownerLogin: string;
+    githubRepo: string;
+    headSha?: string;
+    deploymentUrl: string;
+    artifactPrefix: string;
+    archive: DeploymentArchiveResult;
+    runtimeLane: ProjectRecord["runtimeLane"];
+    recommendedRuntimeLane: ProjectRecord["recommendedRuntimeLane"];
+    hasAssets: boolean;
+  }
+): Promise<void> {
+  const failedDeployment: DeploymentRecord = {
+    deploymentId: input.deploymentId,
+    jobId: input.jobId,
+    projectName: input.projectName,
+    ownerLogin: input.ownerLogin,
+    githubRepo: input.githubRepo,
+    headSha: input.headSha,
+    status: "failure",
+    deploymentUrl: input.deploymentUrl,
+    artifactPrefix: input.artifactPrefix,
+    archiveKind: input.archive.archiveKind,
+    manifestKey: input.archive.manifestKey,
+    runtimeLane: input.runtimeLane,
+    recommendedRuntimeLane: input.recommendedRuntimeLane,
+    hasAssets: input.hasAssets,
+    createdAt: new Date().toISOString()
+  };
+  await insertDeployment(env.CONTROL_PLANE_DB, failedDeployment);
+  void cleanupExpiredFailedArtifacts(env);
+}
+
+async function validateSharedStaticCandidate(
+  deploymentUrl: string,
+  staticAssets: StaticAssetUpload,
+  files: Array<{ name: string; file: File }>,
+  cacheBustKey: string,
+  options: {
+    attempts: number;
+    retryMs: number;
+  }
+): Promise<{ matches: boolean; reason?: string }> {
+  let lastFailure: { matches: boolean; reason?: string } = {
+    matches: false,
+    reason: "Shared static validation did not run."
+  };
+
+  for (let attempt = 0; attempt < options.attempts; attempt += 1) {
+    const result = await validateSharedStaticCandidateOnce(
+      deploymentUrl,
+      staticAssets,
+      files,
+      `${cacheBustKey}-${attempt}`
+    );
+    if (result.matches) {
+      return result;
+    }
+
+    lastFailure = result;
+    if (attempt < options.attempts - 1 && options.retryMs > 0) {
+      await delay(options.retryMs);
+    }
+  }
+
+  return lastFailure;
+}
+
+async function validateSharedStaticCandidateOnce(
+  deploymentUrl: string,
+  staticAssets: StaticAssetUpload,
+  files: Array<{ name: string; file: File }>,
+  cacheBustKey: string
+): Promise<{ matches: boolean; reason?: string }> {
+  const manifest = buildLoadedSharedStaticManifest({
+    staticAssets: staticAssets.files,
+    metadata: {
+      staticAssets: {
+        config: staticAssets.config
+      }
+    }
+  });
+  const assetBodies = await loadSharedStaticAssetBodies(staticAssets, files);
+  const probePaths = collectSharedStaticValidationPaths(manifest);
+
+  for (const probePath of probePaths) {
+    const normalizedPath = normalizeSharedStaticPath(probePath);
+    if (!normalizedPath) {
+      return { matches: false, reason: `Invalid shared static probe path '${probePath}'.` };
+    }
+
+    const expected = resolveSharedStaticRequest(manifest, normalizedPath);
+    const actual = await fetchSharedStaticValidationResponse(deploymentUrl, probePath, cacheBustKey);
+    if (!actual) {
+      return { matches: false, reason: `Validation fetch failed for '${probePath}'.` };
+    }
+
+    const unexpectedHeader = findUnexpectedSharedStaticHeader(actual.headers);
+    if (unexpectedHeader) {
+      return {
+        matches: false,
+        reason: `Response for '${probePath}' included '${unexpectedHeader}', which indicates request-time Worker behavior that shared static hosting would drop.`
+      };
+    }
+
+    if (expected.kind === "redirect") {
+      if (actual.status < 300 || actual.status >= 400) {
+        return { matches: false, reason: `Expected a redirect for '${probePath}' but received ${actual.status}.` };
+      }
+
+      const location = actual.headers.get("location");
+      if (!location) {
+        return { matches: false, reason: `Redirect for '${probePath}' did not include a Location header.` };
+      }
+
+      const resolvedLocation = new URL(location, deploymentUrl).pathname;
+      if (resolvedLocation !== expected.locationPath) {
+        return {
+          matches: false,
+          reason: `Expected '${probePath}' to redirect to '${expected.locationPath}' but received '${resolvedLocation}'.`
+        };
+      }
+      continue;
+    }
+
+    if (expected.kind === "not_found") {
+      if (actual.status !== 404) {
+        return { matches: false, reason: `Expected '${probePath}' to return 404 but received ${actual.status}.` };
+      }
+
+      if (!matchesSharedStaticNotFoundBody(await actual.text())) {
+        return { matches: false, reason: `Expected '${probePath}' to match the shared static 404 response body.` };
+      }
+      continue;
+    }
+
+    if (actual.status !== expected.status) {
+      return {
+        matches: false,
+        reason: `Expected '${probePath}' to return ${expected.status} but received ${actual.status}.`
+      };
+    }
+
+    const expectedBody = assetBodies.get(expected.assetPath);
+    if (!expectedBody) {
+      return { matches: false, reason: `Static asset '${expected.assetPath}' was missing from the validation set.` };
+    }
+
+    const expectedContentType = manifest.assets.get(expected.assetPath)?.contentType;
+    if (!matchesExpectedContentType(actual.headers.get("content-type"), expectedContentType)) {
+      return {
+        matches: false,
+        reason: `Expected '${probePath}' to return content type '${expectedContentType ?? "unknown"}', but received '${actual.headers.get("content-type") ?? "none"}'.`
+      };
+    }
+
+    const actualBody = new Uint8Array(await actual.arrayBuffer());
+    if (!equalUint8Arrays(actualBody, expectedBody)) {
+      return { matches: false, reason: `Response body for '${probePath}' did not match the shared static asset.` };
+    }
+  }
+
+  return { matches: true };
+}
+
+const SHARED_STATIC_DISALLOWED_RESPONSE_HEADERS = [
+  "access-control-allow-credentials",
+  "access-control-allow-methods",
+  "access-control-allow-origin",
+  "clear-site-data",
+  "content-security-policy",
+  "content-security-policy-report-only",
+  "cross-origin-embedder-policy",
+  "cross-origin-opener-policy",
+  "cross-origin-resource-policy",
+  "permissions-policy",
+  "referrer-policy",
+  "set-cookie",
+  "www-authenticate",
+  "x-content-type-options",
+  "x-frame-options"
+] as const;
+
+function findUnexpectedSharedStaticHeader(headers: Headers): string | undefined {
+  return SHARED_STATIC_DISALLOWED_RESPONSE_HEADERS.find((headerName) => headers.has(headerName));
+}
+
+function matchesExpectedContentType(actual: string | null, expected: string | undefined): boolean {
+  if (!expected) {
+    return true;
+  }
+
+  if (!actual) {
+    return false;
+  }
+
+  return normalizeContentType(actual) === normalizeContentType(expected);
+}
+
+function matchesSharedStaticNotFoundBody(body: string): boolean {
+  return body.length === 0 || body === "Not found.";
+}
+
+function normalizeContentType(value: string): string {
+  return value.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+}
+
+async function fetchSharedStaticValidationResponse(
+  deploymentUrl: string,
+  probePath: string,
+  cacheBustKey: string
+): Promise<Response | null> {
+  let publicBaseUrl: URL;
+  try {
+    publicBaseUrl = new URL(deploymentUrl.endsWith("/") ? deploymentUrl : `${deploymentUrl}/`);
+  } catch {
+    return null;
+  }
+
+  const targetUrl = new URL(stripLeadingSlash(probePath), publicBaseUrl);
+  targetUrl.searchParams.set("__kale_validate", cacheBustKey);
+
+  try {
+    return await fetch(targetUrl.toString(), {
+      headers: {
+        accept: "*/*",
+        "cache-control": "no-cache, no-store",
+        pragma: "no-cache"
+      },
+      redirect: "manual"
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function loadSharedStaticAssetBodies(
+  staticAssets: StaticAssetUpload,
+  files: Array<{ name: string; file: File }>
+): Promise<Map<string, Uint8Array>> {
+  const fileMap = new Map(files.map((entry) => [entry.name, entry.file]));
+  const assetBodies = new Map<string, Uint8Array>();
+
+  for (const asset of staticAssets.files) {
+    const normalizedPath = normalizeSharedStaticPath(asset.path);
+    if (!normalizedPath) {
+      continue;
+    }
+
+    const file = fileMap.get(asset.partName);
+    if (!file) {
+      throw new Error(`Static asset part '${asset.partName}' was not included in the upload.`);
+    }
+
+    assetBodies.set(normalizedPath, new Uint8Array(await file.arrayBuffer()));
+  }
+
+  return assetBodies;
+}
+
+function equalUint8Arrays(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function resolvePositiveInteger(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 async function archiveDeploymentFiles(
@@ -2708,17 +3081,17 @@ async function putArchiveManifest(
   });
 }
 
-async function enforceArtifactRetentionPolicy(env: Env, projectName: string): Promise<void> {
+async function enforceArtifactRetentionPolicy(env: Env, githubRepo: string): Promise<void> {
   try {
-    await pruneOlderSuccessfulArtifacts(env, projectName);
+    await pruneOlderSuccessfulArtifacts(env, githubRepo);
     await cleanupExpiredFailedArtifacts(env);
   } catch (error) {
     console.error("Artifact retention cleanup failed.", error);
   }
 }
 
-async function pruneOlderSuccessfulArtifacts(env: Env, projectName: string): Promise<void> {
-  const retained = await listRetainedSuccessfulDeployments(env.CONTROL_PLANE_DB, projectName);
+async function pruneOlderSuccessfulArtifacts(env: Env, githubRepo: string): Promise<void> {
+  const retained = await listRetainedSuccessfulDeploymentsForRepository(env.CONTROL_PLANE_DB, githubRepo);
   const keep = parseNonNegativeInteger(env.RETAIN_SUCCESSFUL_ARTIFACTS, DEFAULT_SUCCESSFUL_ARTIFACT_RETENTION);
 
   for (const deployment of retained.slice(keep)) {
@@ -2786,13 +3159,62 @@ async function updateJobCheckRun(
 function parseDeploymentMetadata(raw: string): DeploymentMetadata {
   try {
     const value = JSON.parse(raw) as DeploymentMetadata;
-    if (!value?.projectName || !value?.ownerLogin || !value?.githubRepo || !value?.workerUpload?.main_module) {
+    if (
+      !value?.projectName
+      || !value?.ownerLogin
+      || !value?.githubRepo
+      || !value?.workerUpload?.main_module
+      || (
+        value.requestedRuntimeLane !== undefined
+        && value.requestedRuntimeLane !== "dedicated_worker"
+        && value.requestedRuntimeLane !== "shared_static"
+        && value.requestedRuntimeLane !== "shared_app"
+      )
+      || !isValidRuntimeEvidence(value.runtimeEvidence)
+    ) {
       throw new Error();
     }
     return value;
   } catch {
     throw new HttpError(400, "Deployment metadata is missing required fields.");
   }
+}
+
+function isValidRuntimeEvidence(value: DeploymentMetadata["runtimeEvidence"]): boolean {
+  if (!value) {
+    return true;
+  }
+
+  const validFrameworks = new Set(["astro", "next", "nuxt", "sveltekit", "vite", "unknown"]);
+  const validClassifications = new Set(["shared_static_eligible", "dedicated_required", "unknown"]);
+  const validConfidence = new Set(["high", "medium", "low"]);
+  const validBasis = new Set([
+    "astro_server_output",
+    "astro_static_output",
+    "bindings_present",
+    "generic_assets_only",
+    "kale_static_project_contract_incomplete",
+    "kale_static_project_manifest",
+    "kale_static_project_manifest_mismatch",
+    "next_output_export",
+    "no_static_assets",
+    "nuxt_generate",
+    "run_worker_first",
+    "static_asset_headers_file",
+    "static_asset_redirects_file",
+    "sveltekit_adapter_static",
+    "vite_build_script"
+  ]);
+
+  return (
+    value.source === "build_runner"
+    && validFrameworks.has(value.framework)
+    && validClassifications.has(value.classification)
+    && validConfidence.has(value.confidence)
+    && Array.isArray(value.basis)
+    && value.basis.every((entry) => validBasis.has(entry))
+    && typeof value.summary === "string"
+  );
 }
 
 function parseBuildRunnerResult(raw: string): BuildRunnerCompletePayload {
@@ -2846,11 +3268,11 @@ function ensureUploadContainsMainModule(
 
 async function provisionProjectDatabase(
   client: CloudflareApiClient,
-  projectName: string,
+  githubRepo: string,
   locationHint?: string
 ): Promise<string> {
   const database = await client.createD1Database(
-    buildProjectScopedResourceName("cail", projectName, MAX_PROJECT_NAME_LENGTH),
+    buildRepositoryScopedResourceName("cail", githubRepo, MAX_PROJECT_NAME_LENGTH),
     locationHint
   );
   return database.uuid;
@@ -2867,21 +3289,21 @@ async function resolveProjectResources(
   cacheNamespaceId?: string;
 }> {
   const databaseId = await resolveProjectDatabaseId(client, {
-    projectName: metadata.projectName,
+    githubRepo: metadata.githubRepo,
     existingDatabaseId: repositoryRecord?.databaseId,
     locationHint
   });
 
   const filesBucketName = requestsBinding(metadata, "r2_bucket", "FILES")
     ? await resolveProjectFilesBucketName(client, {
-        projectName: metadata.projectName,
+        githubRepo: metadata.githubRepo,
         existingBucketName: repositoryRecord?.filesBucketName
       })
     : undefined;
 
   const cacheNamespaceId = requestsBinding(metadata, "kv_namespace", "CACHE")
     ? await resolveProjectCacheNamespaceId(client, {
-        projectName: metadata.projectName,
+        githubRepo: metadata.githubRepo,
         existingNamespaceId: repositoryRecord?.cacheNamespaceId
       })
     : undefined;
@@ -2892,7 +3314,7 @@ async function resolveProjectResources(
 async function resolveProjectDatabaseId(
   client: CloudflareApiClient,
   options: {
-    projectName: string;
+    githubRepo: string;
     existingDatabaseId?: string;
     locationHint?: string;
   }
@@ -2901,19 +3323,19 @@ async function resolveProjectDatabaseId(
     return options.existingDatabaseId;
   }
 
-  const databaseName = buildProjectScopedResourceName("cail", options.projectName, MAX_PROJECT_NAME_LENGTH);
+  const databaseName = buildRepositoryScopedResourceName("cail", options.githubRepo, MAX_PROJECT_NAME_LENGTH);
   const existingDatabase = await client.findD1DatabaseByName(databaseName);
   if (existingDatabase) {
     return existingDatabase.uuid;
   }
 
-  return await provisionProjectDatabase(client, options.projectName, options.locationHint);
+  return await provisionProjectDatabase(client, options.githubRepo, options.locationHint);
 }
 
 async function resolveProjectCacheNamespaceId(
   client: CloudflareApiClient,
   options: {
-    projectName: string;
+    githubRepo: string;
     existingNamespaceId?: string;
   }
 ): Promise<string> {
@@ -2921,7 +3343,7 @@ async function resolveProjectCacheNamespaceId(
     return options.existingNamespaceId;
   }
 
-  const title = buildProjectScopedResourceName("kale-cache", options.projectName, 63);
+  const title = buildRepositoryScopedResourceName("kale-cache", options.githubRepo, 63);
   const existingNamespace = await client.findKvNamespaceByTitle(title);
   if (existingNamespace) {
     return existingNamespace.id;
@@ -2934,7 +3356,7 @@ async function resolveProjectCacheNamespaceId(
 async function resolveProjectFilesBucketName(
   client: CloudflareApiClient,
   options: {
-    projectName: string;
+    githubRepo: string;
     existingBucketName?: string;
   }
 ): Promise<string> {
@@ -2942,7 +3364,7 @@ async function resolveProjectFilesBucketName(
     return options.existingBucketName;
   }
 
-  const bucketName = buildProjectScopedResourceName("kale-files", options.projectName, 63);
+  const bucketName = buildRepositoryScopedResourceName("kale-files", options.githubRepo, 63);
   const existingBucket = await client.findR2BucketByName(bucketName);
   if (existingBucket) {
     return existingBucket.name;
@@ -2952,19 +3374,37 @@ async function resolveProjectFilesBucketName(
   return bucket.name;
 }
 
-function buildProjectScopedResourceName(prefix: string, projectName: string, maxLength: number): string {
-  const candidate = `${prefix}-${projectName}`;
+function buildRepositoryScopedResourceName(prefix: string, githubRepo: string, maxLength: number): string {
+  const repositoryKey = normalizeRepositoryScopedKey(githubRepo);
+  const candidate = `${prefix}-${repositoryKey}`;
   if (candidate.length <= maxLength) {
     return candidate;
   }
 
-  const hash = stableProjectHash(projectName);
+  const hash = stableScopedHash(githubRepo);
   const availableProjectChars = Math.max(8, maxLength - prefix.length - hash.length - 2);
-  const trimmedProject = projectName.slice(0, availableProjectChars).replace(/-+$/u, "");
+  const trimmedProject = repositoryKey.slice(0, availableProjectChars).replace(/-+$/u, "");
   return `${prefix}-${trimmedProject}-${hash}`;
 }
 
-function stableProjectHash(value: string): string {
+function buildRepositoryScopedArtifactPrefix(githubRepo: string, deploymentId: string): string {
+  const [owner, repo] = githubRepo.split("/", 2);
+  const ownerSegment = sanitizeArtifactPath(owner || "owner");
+  const repoSegment = sanitizeArtifactPath(repo || normalizeRepositoryScopedKey(githubRepo));
+  return `deployments/repos/${ownerSegment}/${repoSegment}/${deploymentId}`;
+}
+
+function normalizeRepositoryScopedKey(githubRepo: string): string {
+  const normalized = githubRepo
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .replace(/-+/gu, "-");
+  return normalized || "repo";
+}
+
+function stableScopedHash(value: string): string {
   let hash = 2166136261;
 
   for (let index = 0; index < value.length; index += 1) {
@@ -2985,7 +3425,7 @@ function requestsBinding(
 
 function withProjectBindings(
   metadata: DeploymentMetadata,
-  databaseId: string,
+  databaseId: string | undefined,
   options: {
     filesBucketName?: string;
     cacheNamespaceId?: string;
@@ -2996,11 +3436,13 @@ function withProjectBindings(
   }
 ) {
   const existingBindings = metadata.workerUpload.bindings ?? [];
-  let mergedBindings = upsertBinding(existingBindings, {
-    type: "d1",
-    name: "DB",
-    id: databaseId
-  });
+  let mergedBindings = databaseId
+    ? upsertBinding(existingBindings, {
+        type: "d1",
+        name: "DB",
+        id: databaseId
+      })
+    : existingBindings.filter((binding) => binding.name !== "DB");
 
   if (options.cacheNamespaceId) {
     mergedBindings = upsertBinding(mergedBindings, {
@@ -3121,6 +3563,81 @@ function defaultJobStartSummary(eventName: BuildJobEventName): string {
   return eventName === "validate"
     ? "Kale Validate picked up this ref on the managed build runner."
     : "Kale Deploy picked up this commit on the managed build runner.";
+}
+
+function staleBuildTitle(job: BuildJobRecord): string {
+  if (job.startedAt) {
+    return job.eventName === "validate" ? "Validation stalled" : "Deployment stalled";
+  }
+
+  return job.eventName === "validate" ? "Validation queue expired" : "Deployment queue expired";
+}
+
+function staleBuildSummary(job: BuildJobRecord): string {
+  if (job.startedAt) {
+    return job.eventName === "validate"
+      ? "Kale marked this validation as failed because it stopped reporting progress for too long. Run validate again to retry."
+      : "Kale marked this deployment as failed because it stopped reporting progress for too long. Push again to retry.";
+  }
+
+  return job.eventName === "validate"
+    ? "Kale marked this validation as failed because it stayed queued too long without starting. Run validate again to retry."
+    : "Kale marked this deployment as failed because it stayed queued too long without starting. Push again to retry.";
+}
+
+function isStaleActiveBuildJob(job: BuildJobRecord, nowMs: number): boolean {
+  const referenceTimestamp = Date.parse(job.updatedAt);
+  if (!Number.isFinite(referenceTimestamp)) {
+    return false;
+  }
+
+  const staleWindowMs = job.startedAt ? STALE_STARTED_BUILD_WINDOW_MS : STALE_QUEUED_BUILD_WINDOW_MS;
+  return referenceTimestamp <= nowMs - staleWindowMs;
+}
+
+async function expireStaleActiveBuildJobsForRepository(
+  env: Env,
+  githubRepo: string,
+  now: string
+): Promise<void> {
+  const activeJobs = await listActiveBuildJobsForRepository(env.CONTROL_PLANE_DB, githubRepo);
+  if (activeJobs.length === 0) {
+    return;
+  }
+
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(nowMs)) {
+    return;
+  }
+
+  const serviceBaseUrl = env.DEPLOY_SERVICE_BASE_URL ?? "https://cail.invalid";
+  const staleJobs = activeJobs.filter((job) => isStaleActiveBuildJob(job, nowMs));
+
+  for (const job of staleJobs) {
+    const failedJob: BuildJobRecord = {
+      ...job,
+      status: "failure",
+      updatedAt: now,
+      completedAt: now,
+      errorKind: "build_failure",
+      errorMessage: staleBuildSummary(job),
+      errorDetail: undefined
+    };
+
+    await putBuildJob(env.CONTROL_PLANE_DB, failedJob);
+
+    try {
+      await updateJobCheckRun(env, failedJob, {
+        status: "completed",
+        conclusion: "failure",
+        completedAt: now,
+        detailsUrl: job.buildLogUrl ?? buildJobStatusUrl(serviceBaseUrl, job.jobId),
+        output: checkRunOutput(staleBuildTitle(job), staleBuildSummary(job))
+      });
+    } catch (error) {
+      console.error(`[deploy-service] failed to update stale build check-run for job=${job.jobId}`, error);
+    }
+  }
 }
 
 function normalizeStaticAssets(
@@ -3797,7 +4314,22 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     project_url_template: exampleProjectDeploymentUrl(env),
     project_name_pattern: `^(?=.{1,${MAX_PROJECT_NAME_LENGTH}}$)[a-z0-9]+(?:-[a-z0-9]+)*$`,
     reserved_project_names: reservedProjectNames,
-    recommended_framework: "hono",
+    agent_build_default: "choose-the-lightest-worker-compatible-shape",
+    scaffold_shape_required: true,
+    scaffold_shape_options: ["static", "worker"],
+    preferred_worker_framework: "hono",
+    static_project_marker_file: "kale.project.json",
+    static_project_shape_value: "static_site",
+    worker_project_shape_value: "worker_app",
+    static_project_assets_directory_hint: "public",
+    static_project_request_time_logic_key: "requestTimeLogic",
+    static_project_request_time_logic_value: "none",
+    agent_build_guidance: [
+      "Pick a starter shape explicitly: static for pure publishing sites, worker for projects that need request-time behavior.",
+      "If the project is mostly content or simple publishing, prefer a pure static project with kale.project.json, a Wrangler assets directory, and no request-time Worker routes, response headers, _headers file, or _redirects file.",
+      "If the project needs request-time routing, middleware, or a small API, Hono is the preferred Worker framework.",
+      "Do not introduce a heavy SPA stack or a traditional Node server unless the project clearly requires it."
+    ],
     good_fit_project_types: [
       "exhibit-site",
       "course-site",
@@ -3833,9 +4365,9 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
       "CACHE"
     ],
     binding_rationale: {
-      DB: "Self-service because Kale already provisions one D1 database per project.",
-      FILES: "Self-service because Kale provisions one isolated R2 bucket per project when the repository requests FILES.",
-      CACHE: "Self-service because Kale provisions one isolated KV namespace per project when the repository requests CACHE.",
+      DB: "Self-service because Kale provisions one repo-scoped D1 database for each repository.",
+      FILES: "Self-service because Kale provisions one repo-scoped R2 bucket when the repository requests FILES.",
+      CACHE: "Self-service because Kale provisions one repo-scoped KV namespace when the repository requests CACHE.",
       AI: "Approval-only because model usage is directly billable.",
       VECTORIZE: "Approval-only because vector storage and queries are directly billable.",
       ROOMS: "Approval-only because realtime state creates an always-on shared backend surface that needs moderation."
@@ -3858,7 +4390,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
         "src/index.ts",
         "AGENTS.md"
       ],
-      expected_routes: ["/", "/api/health"],
+      expected_routes: ["/"],
       required_scripts: ["check", "dev"],
       must_not_include: [
         "app.listen(...)",
@@ -3879,6 +4411,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
       build_job_status_template: `${serviceBaseUrl}/api/build-jobs/{jobId}/status`,
       project_status_template: `${serviceBaseUrl}/api/projects/{projectName}/status`,
       project_secrets_template: `${serviceBaseUrl}/api/projects/{projectName}/secrets`,
+      project_delete_template: `${serviceBaseUrl}/api/projects/{projectName}`,
       github_install: `${serviceBaseUrl}/github/install`,
       github_setup: `${serviceBaseUrl}/github/setup`,
       auth: {
@@ -3890,8 +4423,8 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
           "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
           "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
           "If a harness cannot complete MCP OAuth reliably, send the user to /connect to generate a Kale token and configure the MCP server with an Authorization: Bearer header.",
-          "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access.",
-          "The browser settings page is a private admin surface. Use it only for project-admin tasks such as secrets, not for ordinary deploy or status work."
+          "Sensitive project-admin actions like secrets and project deletion may ask the user to confirm their GitHub account separately, because they require repo write/admin access.",
+          "The browser settings page is a private admin surface. Use it only for project-admin tasks such as secrets or project deletion, not for ordinary deploy or status work."
         ],
         required_for: [
           "repository_status_template",
@@ -3899,7 +4432,8 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
           "validate_project",
           "project_status_template",
           "build_job_status_template",
-          "project_secrets_template"
+          "project_secrets_template",
+          "project_delete_template"
         ]
       }
     },
@@ -3923,7 +4457,8 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
         "get_build_job_status",
         "list_project_secrets",
         "set_project_secret",
-        "delete_project_secret"
+        "delete_project_secret",
+        "delete_project"
       ]
     },
     disallowed: [
@@ -3934,9 +4469,9 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
       "filesystem-backed-runtime-state"
     ],
     bindings: [
-      { name: "DB", type: "d1", required: true, scope: "per-project", enabled_by_default: true },
-      { name: "FILES", type: "r2", required: false, scope: "per-project", enabled_by_default: true, self_service: true },
-      { name: "CACHE", type: "kv", required: false, scope: "per-project", enabled_by_default: true, self_service: true },
+      { name: "DB", type: "d1", required: true, scope: "per-repository", enabled_by_default: true },
+      { name: "FILES", type: "r2", required: false, scope: "per-repository", enabled_by_default: true, self_service: true },
+      { name: "CACHE", type: "kv", required: false, scope: "per-repository", enabled_by_default: true, self_service: true },
       { name: "AI", type: "ai", required: false, scope: "shared", enabled_by_default: false, approval_required: true },
       { name: "VECTORIZE", type: "vectorize", required: false, scope: "shared-or-per-project", enabled_by_default: false, approval_required: true },
       { name: "ROOMS", type: "durable_object_namespace", required: false, scope: "shared", enabled_by_default: false, approval_required: true }
@@ -3963,76 +4498,88 @@ function createDeployServiceMcpServer(
     summarizeProjectStatus: summarizeProjectStatusPayload,
     getBuildJobStatus: async (jobId) => buildBuildJobStatusResponse(env, jobId, { includeSensitive: true }),
     summarizeBuildJobStatus: summarizeBuildJobStatusPayload,
-    listProjectSecrets: async (projectName) => {
-      const authorization = await authorizeProjectSecretsAccess(
-        env,
-        requestUrl,
-        identity,
-        projectName,
-        PROJECT_ADMIN_AUTH_DEPENDENCIES
-      );
-      if (!authorization.ok) {
-        return {
-          status: authorization.status,
-          body: authorization.body,
-          summary: authorization.body.summary
-        };
-      }
+    listProjectSecrets: async (projectName) =>
+      runProjectAdminMcpAction(env, requestUrl, identity, projectName, (authorization) =>
+        buildProjectSecretsListPayload(env, authorization.project, authorization.githubLogin)
+      ),
+    setProjectSecret: async (projectName, secretName, value) =>
+      runProjectAdminMcpAction(env, requestUrl, identity, projectName, (authorization) =>
+        setProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName, value)
+      ),
+    deleteProjectSecret: async (projectName, secretName) =>
+      runProjectAdminMcpAction(env, requestUrl, identity, projectName, (authorization) =>
+        removeProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName)
+      ),
+    deleteProject: async (projectName, confirmProjectName) =>
+      runProjectAdminMcpAction(env, requestUrl, identity, projectName, async (authorization) => {
+        assertProjectDeleteConfirmation(projectName, confirmProjectName);
+        return deleteProjectFromKale(env, PROJECT_DELETE_CONFIG, authorization);
+      })
+  });
+}
 
-      const payload = await buildProjectSecretsListPayload(env, authorization.project, authorization.githubLogin);
-      return {
-        status: 200,
-        body: payload,
-        summary: payload.summary
-      };
-    },
-    setProjectSecret: async (projectName, secretName, value) => {
-      const authorization = await authorizeProjectSecretsAccess(
-        env,
-        requestUrl,
-        identity,
-        projectName,
-        PROJECT_ADMIN_AUTH_DEPENDENCIES
-      );
-      if (!authorization.ok) {
-        return {
-          status: authorization.status,
-          body: authorization.body,
-          summary: authorization.body.summary
-        };
-      }
+const PROJECT_CONTROL_ROUTE_DEPENDENCIES = {
+  requireCloudflareAccessIdentity,
+  resolveServiceBaseUrl,
+  resolveMcpOauthSecret,
+  authorizeProjectSecretsAccess: authorizeBrowserProjectAdminAction
+};
 
-      const payload = await setProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName, value);
-      return {
-        status: 200,
-        body: payload,
-        summary: payload.summary
-      };
-    },
-    deleteProjectSecret: async (projectName, secretName) => {
-      const authorization = await authorizeProjectSecretsAccess(
-        env,
-        requestUrl,
-        identity,
-        projectName,
-        PROJECT_ADMIN_AUTH_DEPENDENCIES
-      );
-      if (!authorization.ok) {
-        return {
-          status: authorization.status,
-          body: authorization.body,
-          summary: authorization.body.summary
-        };
-      }
+function authorizeBrowserProjectAdminAction(
+  env: Env,
+  requestUrl: string,
+  identity: AuthenticatedAgentRequestIdentity,
+  projectName: string
+): Promise<ProjectSecretsAuthorization> {
+  return authorizeProjectAdminAction(env, requestUrl, identity, projectName);
+}
 
-      const payload = await removeProjectSecretValue(env, PROJECT_SECRETS_CONFIG, authorization, secretName);
+async function authorizeProjectAdminAction(
+  env: Env,
+  requestUrl: string,
+  identity: AgentRequestIdentity,
+  projectName: string
+): Promise<ProjectSecretsAuthorization> {
+  return authorizeProjectSecretsAccess(
+    env,
+    requestUrl,
+    identity,
+    projectName,
+    PROJECT_ADMIN_AUTH_DEPENDENCIES
+  );
+}
+
+async function runProjectAdminMcpAction<TPayload extends Record<string, unknown> & { summary: string }>(
+  env: Env,
+  requestUrl: string,
+  identity: AgentRequestIdentity,
+  projectName: string,
+  action: (authorization: ProjectSecretsAccessContext) => Promise<TPayload>
+): Promise<{ status: number; body: Record<string, unknown>; summary: string }> {
+  try {
+    const authorization = await authorizeProjectAdminAction(env, requestUrl, identity, projectName);
+    if (!authorization.ok) {
       return {
-        status: 200,
-        body: payload,
-        summary: payload.summary
+        status: authorization.status,
+        body: authorization.body,
+        summary: authorization.body.summary
       };
     }
-  });
+
+    const payload = await action(authorization);
+    return {
+      status: 200,
+      body: payload,
+      summary: payload.summary
+    };
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return {
+      status: httpError.status,
+      body: { error: httpError.message },
+      summary: httpError.message
+    };
+  }
 }
 
 function summarizeProjectStatusPayload(payload: Record<string, unknown>): string {
@@ -4441,6 +4988,7 @@ async function assertRepositoryWithinJobLimits(
   now: string
 ): Promise<void> {
   const policy = await ensureProjectPolicy(env.CONTROL_PLANE_DB, githubRepo, projectName, now);
+  await expireStaleActiveBuildJobsForRepository(env, githubRepo, now);
   const activeBuilds = await countActiveBuildJobsForRepository(env.CONTROL_PLANE_DB, githubRepo);
   if (policy.maxConcurrentBuilds > 0 && activeBuilds >= policy.maxConcurrentBuilds) {
     throw new HttpError(
@@ -4495,38 +5043,85 @@ async function buildProjectStatusResponse(
     };
   }
 
-  const [project, latestJob] = await Promise.all([
-    getProject(env.CONTROL_PLANE_DB, projectName),
-    getLatestBuildJobForProject(env.CONTROL_PLANE_DB, projectName)
-  ]);
+  const projectState = await loadProjectLookupState(env.CONTROL_PLANE_DB, projectName);
+  const runtimeEvidence = await loadArchivedRuntimeEvidence(env, projectState.project);
 
-  if (!project && !latestJob) {
+  if (!projectState.project && !projectState.latestJob) {
     return {
       status: 404,
       body: { error: "Project not found." }
     };
   }
 
-  const lifecycleStatus = resolveProjectLifecycleStatus(project, latestJob);
   return {
     status: 200,
     body: {
       projectName,
-      status: lifecycleStatus,
-      build_status: latestJob?.status,
-      deployment_url: latestJob?.deploymentUrl ?? project?.deploymentUrl,
-      deployment_id: latestJob?.deploymentId ?? project?.latestDeploymentId,
-      error_kind: latestJob?.errorKind,
-      error_message: latestJob?.errorMessage,
-      ...(options?.includeSensitive ? { error_detail: latestJob?.errorDetail } : {}),
-      ...(options?.includeSensitive ? { build_log_url: latestJob?.buildLogUrl } : {}),
-      job_id: latestJob?.jobId,
-      check_run_id: latestJob?.checkRunId,
-      created_at: latestJob?.createdAt ?? project?.createdAt,
-      updated_at: latestJob?.updatedAt ?? project?.updatedAt,
-      started_at: latestJob?.startedAt,
-      completed_at: latestJob?.completedAt
+      status: projectState.lifecycleStatus,
+      build_status: projectState.latestJob?.status,
+      deployment_url: projectState.latestJob?.deploymentUrl ?? projectState.project?.deploymentUrl,
+      deployment_id: projectState.latestJob?.deploymentId ?? projectState.project?.latestDeploymentId,
+      runtime_lane: projectState.project?.runtimeLane ?? DEFAULT_RUNTIME_LANE,
+      recommended_runtime_lane:
+        projectState.project?.recommendedRuntimeLane
+        ?? projectState.project?.runtimeLane
+        ?? DEFAULT_RUNTIME_LANE,
+      ...buildRuntimeEvidenceStatusFields(runtimeEvidence),
+      error_kind: projectState.latestJob?.errorKind,
+      error_message: projectState.latestJob?.errorMessage,
+      ...(options?.includeSensitive ? { error_detail: projectState.latestJob?.errorDetail } : {}),
+      ...(options?.includeSensitive ? { build_log_url: projectState.latestJob?.buildLogUrl } : {}),
+      job_id: projectState.latestJob?.jobId,
+      check_run_id: projectState.latestJob?.checkRunId,
+      created_at: projectState.latestJob?.createdAt ?? projectState.project?.createdAt,
+      updated_at: projectState.latestJob?.updatedAt ?? projectState.project?.updatedAt,
+      started_at: projectState.latestJob?.startedAt,
+      completed_at: projectState.latestJob?.completedAt
     }
+  };
+}
+
+async function loadArchivedRuntimeEvidence(
+  env: Env,
+  project: Pick<ProjectRecord, "projectName" | "latestDeploymentId"> | null
+): Promise<RuntimeEvidence | undefined> {
+  if (!project?.latestDeploymentId) {
+    return undefined;
+  }
+
+  const deployment = await getDeployment(env.CONTROL_PLANE_DB, project.latestDeploymentId);
+  const manifestKey = deployment?.manifestKey
+    ?? `deployments/${project.projectName}/${project.latestDeploymentId}/manifest.json`;
+  const manifestObject = await env.DEPLOYMENT_ARCHIVE.get(manifestKey);
+  if (!manifestObject) {
+    return undefined;
+  }
+
+  try {
+    const manifest = JSON.parse(await manifestObject.text()) as {
+      metadata?: {
+        runtimeEvidence?: DeploymentMetadata["runtimeEvidence"];
+      };
+    };
+    return isValidRuntimeEvidence(manifest.metadata?.runtimeEvidence)
+      ? manifest.metadata?.runtimeEvidence
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildRuntimeEvidenceStatusFields(evidence: RuntimeEvidence | undefined): Record<string, unknown> {
+  if (!evidence) {
+    return {};
+  }
+
+  return {
+    runtime_evidence_framework: evidence.framework,
+    runtime_evidence_classification: evidence.classification,
+    runtime_evidence_confidence: evidence.confidence,
+    runtime_evidence_basis: evidence.basis,
+    runtime_evidence_summary: evidence.summary
   };
 }
 
@@ -4585,25 +5180,60 @@ async function getProjectClaim(
   claimedRepositoryFullName?: string;
   conflict: boolean;
 }> {
+  const projectState = await loadProjectLookupState(db, projectName);
+
+  return {
+    project: projectState.project,
+    latestJob: projectState.latestJob,
+    claimedRepositoryFullName: projectState.claimedRepositoryFullName,
+    conflict: Boolean(
+      projectState.claimedRepositoryFullName
+      && projectState.claimedRepositoryFullName !== repositoryFullName
+    )
+  };
+}
+
+async function loadProjectLookupState(
+  db: D1Database,
+  projectName: string
+): Promise<{
+  project: ProjectRecord | null;
+  latestJob: BuildJobRecord | null;
+  claimedRepositoryFullName?: string;
+  lifecycleStatus: "not_deployed" | "queued" | "running" | "live" | "failed";
+}> {
   const [project, latestJob, domain] = await Promise.all([
     getProject(db, projectName),
     getLatestBuildJobForProject(db, projectName),
     getProjectDomain(db, projectName)
   ]);
-  const claimedRepositoryFullName = project
-    ? formatRepositoryFullName(project.ownerLogin, project.githubRepo)
-    : domain
-      ? domain.githubRepo
-    : latestJob
-      ? formatRepositoryFullName(latestJob.repository.ownerLogin, latestJob.repository.name)
-      : undefined;
 
   return {
     project,
     latestJob,
-    claimedRepositoryFullName,
-    conflict: Boolean(claimedRepositoryFullName && claimedRepositoryFullName !== repositoryFullName)
+    claimedRepositoryFullName: resolveClaimedRepositoryFullName(project, latestJob, domain),
+    lifecycleStatus: resolveProjectLifecycleStatus(project, latestJob)
   };
+}
+
+function resolveClaimedRepositoryFullName(
+  project: ProjectRecord | null,
+  latestJob: BuildJobRecord | null,
+  domain: Awaited<ReturnType<typeof getProjectDomain>>
+): string | undefined {
+  if (project) {
+    return formatRepositoryFullName(project.ownerLogin, project.githubRepo);
+  }
+
+  if (domain) {
+    return domain.githubRepo;
+  }
+
+  if (latestJob) {
+    return formatRepositoryFullName(latestJob.repository.ownerLogin, latestJob.repository.name);
+  }
+
+  return undefined;
 }
 
 function resolveRepositoryWorkflowState(input: {

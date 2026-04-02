@@ -55,6 +55,12 @@ export class CloudflareApiClient {
     return envelope.result;
   }
 
+  async deleteD1Database(databaseId: string): Promise<void> {
+    await this.rawRequest(`/d1/database/${encodeURIComponent(databaseId)}`, {
+      method: "DELETE"
+    }, [404]);
+  }
+
   async findKvNamespaceByTitle(title: string): Promise<KvNamespaceResult | undefined> {
     let page = 1;
 
@@ -82,6 +88,12 @@ export class CloudflareApiClient {
     });
 
     return envelope.result;
+  }
+
+  async deleteKvNamespace(namespaceId: string): Promise<void> {
+    await this.rawRequest(`/storage/kv/namespaces/${encodeURIComponent(namespaceId)}`, {
+      method: "DELETE"
+    }, [404]);
   }
 
   async findR2BucketByName(name: string): Promise<R2BucketResult | undefined> {
@@ -124,6 +136,12 @@ export class CloudflareApiClient {
     return envelope.result;
   }
 
+  async deleteR2Bucket(name: string): Promise<void> {
+    await this.rawRequest(`/r2/buckets/${encodeURIComponent(name)}`, {
+      method: "DELETE"
+    }, [404]);
+  }
+
   async uploadUserWorker(
     namespace: string,
     scriptName: string,
@@ -145,6 +163,12 @@ export class CloudflareApiClient {
       method: "PUT",
       body
     });
+  }
+
+  async deleteUserWorker(namespace: string, scriptName: string): Promise<void> {
+    await this.rawRequest(`/workers/dispatch/namespaces/${namespace}/scripts/${scriptName}`, {
+      method: "DELETE"
+    }, [404]);
   }
 
   async setUserWorkerSecret(

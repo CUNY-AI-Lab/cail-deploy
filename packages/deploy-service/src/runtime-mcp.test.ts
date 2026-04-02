@@ -21,6 +21,17 @@ test("runtime manifest advertises the agent API without duplicate well-known key
 
   const body = await response.json() as {
     well_known_runtime_url: string;
+    agent_build_default: string;
+    scaffold_shape_required: boolean;
+    scaffold_shape_options: string[];
+    preferred_worker_framework: string;
+    static_project_marker_file: string;
+    static_project_shape_value: string;
+    worker_project_shape_value: string;
+    static_project_assets_directory_hint: string;
+    static_project_request_time_logic_key: string;
+    static_project_request_time_logic_value: string;
+    agent_build_guidance: string[];
     reserved_project_names: string[];
     good_fit_project_types: string[];
     approval_required_project_types: string[];
@@ -64,6 +75,19 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   };
 
   assert.equal(body.well_known_runtime_url, "https://runtime.cuny.qzz.io/.well-known/kale-runtime.json");
+  assert.equal(body.agent_build_default, "choose-the-lightest-worker-compatible-shape");
+  assert.equal(body.scaffold_shape_required, true);
+  assert.deepEqual(body.scaffold_shape_options, ["static", "worker"]);
+  assert.equal(body.preferred_worker_framework, "hono");
+  assert.equal(body.static_project_marker_file, "kale.project.json");
+  assert.equal(body.static_project_shape_value, "static_site");
+  assert.equal(body.worker_project_shape_value, "worker_app");
+  assert.equal(body.static_project_assets_directory_hint, "public");
+  assert.equal(body.static_project_request_time_logic_key, "requestTimeLogic");
+  assert.equal(body.static_project_request_time_logic_value, "none");
+  assert.match(body.agent_build_guidance[0] ?? "", /pick a starter shape explicitly/i);
+  assert.match(body.agent_build_guidance[1] ?? "", /prefer a pure static project/i);
+  assert.match(body.agent_build_guidance[2] ?? "", /Hono is the preferred Worker framework/i);
   assert.deepEqual(body.reserved_project_names, ["runtime"]);
   assert.deepEqual(body.good_fit_project_types, [
     "exhibit-site",
@@ -87,15 +111,15 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.match(body.limit_rationale.max_asset_bytes, /multipart upload/i);
   assert.deepEqual(body.approval_required_bindings, ["AI", "VECTORIZE", "ROOMS"]);
   assert.deepEqual(body.self_service_bindings, ["DB", "FILES", "CACHE"]);
-  assert.match(body.binding_rationale.FILES, /isolated R2 bucket/i);
-  assert.match(body.binding_rationale.CACHE, /isolated KV namespace/i);
+  assert.match(body.binding_rationale.FILES, /repo-scoped R2 bucket/i);
+  assert.match(body.binding_rationale.CACHE, /repo-scoped KV namespace/i);
   assert.deepEqual(body.deployment_ready_repository.required_files, [
     "package.json",
     "wrangler.jsonc",
     "src/index.ts",
     "AGENTS.md"
   ]);
-  assert.deepEqual(body.deployment_ready_repository.expected_routes, ["/", "/api/health"]);
+  assert.deepEqual(body.deployment_ready_repository.expected_routes, ["/"]);
   assert.deepEqual(body.deployment_ready_repository.required_scripts, ["check", "dev"]);
   assert.deepEqual(body.deployment_ready_repository.must_not_include, [
     "app.listen(...)",
@@ -116,8 +140,8 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     "If register_project or get_repository_status returns guidedInstallUrl, stop and give that URL to the user.",
     "GitHub repository approval is still a browser step for the user, even when the rest of the loop is agent-driven.",
     "If a harness cannot complete MCP OAuth reliably, send the user to /connect to generate a Kale token and configure the MCP server with an Authorization: Bearer header.",
-    "Project secret management may ask the user to confirm their GitHub account separately, because secret changes require repo write/admin access.",
-    "The browser settings page is a private admin surface. Use it only for project-admin tasks such as secrets, not for ordinary deploy or status work."
+    "Sensitive project-admin actions like secrets and project deletion may ask the user to confirm their GitHub account separately, because they require repo write/admin access.",
+    "The browser settings page is a private admin surface. Use it only for project-admin tasks such as secrets or project deletion, not for ordinary deploy or status work."
   ]);
   assert.deepEqual(body.agent_api.auth.required_for, [
     "repository_status_template",
@@ -125,9 +149,11 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     "validate_project",
     "project_status_template",
     "build_job_status_template",
-    "project_secrets_template"
+    "project_secrets_template",
+    "project_delete_template"
   ]);
   assert.equal(body.agent_api.project_secrets_template, "https://deploy.example/api/projects/{projectName}/secrets");
+  assert.equal(body.agent_api.project_delete_template, "https://deploy.example/api/projects/{projectName}");
   assert.equal(body.mcp.endpoint, "https://deploy.example/mcp");
   assert.equal(body.mcp.transport, "streamable_http");
   assert.equal(body.mcp.auth.authorization_metadata_url, "https://deploy.example/.well-known/oauth-authorization-server");
@@ -143,7 +169,8 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     "get_build_job_status",
     "list_project_secrets",
     "set_project_secret",
-    "delete_project_secret"
+    "delete_project_secret",
+    "delete_project"
   ]);
   assert.ok(!("well_known_runtime" in body.agent_api));
 });
@@ -221,15 +248,15 @@ test("landing page presents the agent-first flow and live project social proof",
   const html = await response.text();
   assert.match(html, /Kale Deploy/);
   assert.match(html, /From the CUNY AI Lab/);
-  assert.match(html, /Build a website with an AI coding agent/);
+  assert.match(html, /Build and deploy web apps with your AI coding agent/);
   assert.match(html, /Claude Code/);
   assert.match(html, /Codex/);
   assert.match(html, /Gemini CLI/);
-  assert.match(html, /Install Kale once/);
-  assert.match(html, /Paste the install command into the agent you use once/i);
+  assert.match(html, /Install once/);
+  assert.match(html, /Paste this command into your AI agent once/i);
   assert.match(html, /\/plugin marketplace add CUNY-AI-Lab\/CAIL-deploy/);
   assert.match(html, /\/plugin install kale-deploy@cuny-ai-lab/);
-  assert.match(html, /\$skill-installer install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy\/tree\/main\/plugins\/kale-deploy\/skills\/kale-deploy/);
+  assert.match(html, /codex mcp add kale-deploy --url https:\/\/deploy\.example\/mcp/);
   assert.match(html, /\/extensions install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy/);
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app with Kale Deploy and put it online so I can see it live/);
@@ -639,6 +666,63 @@ test("mcp project secret tools return a clear GitHub connect handoff when repo-a
         name: "list_project_secrets",
         arguments: {
           projectName: "cail-assets-build-test"
+        }
+      }
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+
+  assert.equal(response.status, 200);
+  const result = await response.json() as {
+    result: {
+      isError?: boolean;
+      structuredContent?: {
+        nextAction?: string;
+        connectGitHubUserUrl?: string;
+      };
+    };
+  };
+  assert.equal(result.result.isError, true);
+  assert.equal(result.result.structuredContent?.nextAction, "connect_github_user");
+  assert.match(
+    result.result.structuredContent?.connectGitHubUserUrl ?? "",
+    /^https:\/\/deploy\.example\/api\/github\/user-auth\/start\?/
+  );
+});
+
+test("mcp delete project returns a clear GitHub connect handoff when repo-admin auth is missing", async () => {
+  const { env, db } = createTestContext({
+    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
+  });
+  db.putProject({
+    projectName: "cail-assets-build-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-assets-build-test",
+    deploymentUrl: "https://cail-assets-build-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-03-29T12:00:00.000Z",
+    updatedAt: "2026-03-29T12:05:00.000Z"
+  });
+  const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
+
+  const response = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: {
+        name: "delete_project",
+        arguments: {
+          projectName: "cail-assets-build-test",
+          confirmProjectName: "cail-assets-build-test"
         }
       }
     },

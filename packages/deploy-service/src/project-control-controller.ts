@@ -7,6 +7,7 @@ import {
   type ProjectSecretsAuthorization,
 } from "./project-admin-auth";
 import {
+  buildProjectAdminEntryUrl,
   buildProjectControlPanelUrl,
   readProjectControlFlash,
   renderProjectAdminEntryPage,
@@ -20,6 +21,10 @@ import type {
   ProjectSecretsAccessContext,
   ProjectSecretsListPayload
 } from "./project-secrets";
+import {
+  assertProjectDeleteConfirmation,
+  type ProjectDeletePayload
+} from "./project-delete";
 
 type ProjectContext = {
   repositoryFullName: string;
@@ -46,6 +51,7 @@ export async function createProjectAdminEntryResponse<TEnv>(input: {
 }): Promise<Response> {
   const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
   const requestUrl = new URL(input.request.url);
+  const flash = readProjectControlFlash(input.request.url);
 
   let identity: AuthenticatedAgentRequestIdentity;
   try {
@@ -86,7 +92,8 @@ export async function createProjectAdminEntryResponse<TEnv>(input: {
     return htmlResponse(renderProjectAdminEntryPage({
       controlBaseUrl: serviceBaseUrl,
       serviceBaseUrl,
-      signedInEmail: identity.email
+      signedInEmail: identity.email,
+      flash
     }));
   } catch (error) {
     const httpError = asHttpError(error);
@@ -95,7 +102,8 @@ export async function createProjectAdminEntryResponse<TEnv>(input: {
       controlBaseUrl: serviceBaseUrl,
       serviceBaseUrl,
       signedInEmail: identity.email,
-      errorMessage: httpError.message
+      errorMessage: httpError.message,
+      flash
     }), status);
   }
 }
@@ -175,6 +183,34 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
       repositoryFullName: authorization.project.githubRepo,
       statusSlug: typeof statusResult.body.status === "string" ? statusResult.body.status : "unknown",
       deploymentUrl: typeof statusResult.body.deployment_url === "string" ? statusResult.body.deployment_url : authorization.project.deploymentUrl,
+      runtimeLane:
+        typeof statusResult.body.runtime_lane === "string"
+          ? statusResult.body.runtime_lane
+          : authorization.project.runtimeLane,
+      recommendedRuntimeLane:
+        typeof statusResult.body.recommended_runtime_lane === "string"
+          ? statusResult.body.recommended_runtime_lane
+          : authorization.project.recommendedRuntimeLane,
+      runtimeEvidenceFramework:
+        typeof statusResult.body.runtime_evidence_framework === "string"
+          ? statusResult.body.runtime_evidence_framework
+          : undefined,
+      runtimeEvidenceClassification:
+        typeof statusResult.body.runtime_evidence_classification === "string"
+          ? statusResult.body.runtime_evidence_classification
+          : undefined,
+      runtimeEvidenceConfidence:
+        typeof statusResult.body.runtime_evidence_confidence === "string"
+          ? statusResult.body.runtime_evidence_confidence
+          : undefined,
+      runtimeEvidenceBasis:
+        Array.isArray(statusResult.body.runtime_evidence_basis)
+          ? statusResult.body.runtime_evidence_basis.filter((entry): entry is string => typeof entry === "string")
+          : undefined,
+      runtimeEvidenceSummary:
+        typeof statusResult.body.runtime_evidence_summary === "string"
+          ? statusResult.body.runtime_evidence_summary
+          : undefined,
       buildLogUrl: typeof statusResult.body.build_log_url === "string" ? statusResult.body.build_log_url : undefined,
       errorMessage: typeof statusResult.body.error_message === "string" ? statusResult.body.error_message : undefined,
       errorDetail: typeof statusResult.body.error_detail === "string" ? statusResult.body.error_detail : undefined,
@@ -269,7 +305,48 @@ export async function createProjectControlSecretDeleteResponse<TEnv>(input: {
   });
 }
 
-async function createProjectControlMutationResponse<TEnv>(input: {
+export async function createProjectControlProjectDeleteResponse<TEnv>(input: {
+  env: TEnv;
+  request: Request;
+  projectName: string;
+  requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
+  resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
+  resolveMcpOauthSecret: (env: TEnv) => string;
+  authorizeProjectSecretsAccess: (
+    env: TEnv,
+    requestUrl: string,
+    identity: AuthenticatedAgentRequestIdentity,
+    projectName: string
+  ) => Promise<ProjectSecretsAuthorization>;
+  deleteProject: (
+    env: TEnv,
+    authorization: Extract<ProjectSecretsAuthorization, { ok: true }>
+  ) => Promise<ProjectDeletePayload>;
+}): Promise<Response> {
+  return createProjectControlMutationResponse({
+    ...input,
+    mutate: async ({ env, authorization, form }) => {
+      assertProjectDeleteConfirmation(
+        input.projectName,
+        getRequiredProjectControlFormField(form, "confirmProjectName")
+      );
+      return input.deleteProject(env, authorization);
+    },
+    buildSuccessRedirectUrl: (serviceBaseUrl, _projectName, result) =>
+      buildProjectAdminEntryUrl(serviceBaseUrl, {
+        flash: "success",
+        message: result.summary
+      })
+  });
+}
+
+type ProjectControlMutationResult = {
+  summary: string;
+  warning?: string;
+  nextAction?: string;
+};
+
+async function createProjectControlMutationResponse<TEnv, TResult extends ProjectControlMutationResult>(input: {
   env: TEnv;
   request: Request;
   projectName: string;
@@ -287,7 +364,8 @@ async function createProjectControlMutationResponse<TEnv>(input: {
     request: Request;
     authorization: Extract<ProjectSecretsAuthorization, { ok: true }>;
     form: FormData;
-  }) => Promise<ProjectSecretMutationPayload>;
+  }) => Promise<TResult>;
+  buildSuccessRedirectUrl?: (serviceBaseUrl: string, projectName: string, result: TResult) => string;
 }): Promise<Response> {
   const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
   let identity: AuthenticatedAgentRequestIdentity;
@@ -329,10 +407,14 @@ async function createProjectControlMutationResponse<TEnv>(input: {
       form
     });
 
-    return Response.redirect(buildProjectControlPanelUrl(serviceBaseUrl, input.projectName, {
-      flash: "nextAction" in result && result.nextAction === "redeploy_to_apply_secret" ? "warning" : "success",
-      message: "warning" in result ? (result.warning ?? result.summary) : result.summary
-    }), 302);
+    const redirectUrl = input.buildSuccessRedirectUrl
+      ? input.buildSuccessRedirectUrl(serviceBaseUrl, input.projectName, result)
+      : buildProjectControlPanelUrl(serviceBaseUrl, input.projectName, {
+          flash: result.nextAction === "redeploy_to_apply_secret" ? "warning" : "success",
+          message: result.warning ?? result.summary
+        });
+
+    return Response.redirect(redirectUrl, 302);
   } catch (error) {
     const httpError = asHttpError(error);
     return Response.redirect(buildProjectControlPanelUrl(serviceBaseUrl, input.projectName, {

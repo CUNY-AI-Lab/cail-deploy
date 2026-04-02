@@ -12,6 +12,12 @@
       "database_id": "9873e5f8-eefc-4078-81e3-0718ec5b402b"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "DEPLOYMENT_ARCHIVE",
+      "bucket_name": "cail-deployment-archive"
+    }
+  ],
   "dispatch_namespaces": [
     {
       "binding": "DISPATCHER",

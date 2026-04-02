@@ -1,0 +1,14 @@
+{
+  "name": "static-with-db",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_id": "db-placeholder"
+    }
+  ],
+  "assets": {
+    "directory": "./dist"
+  }
+}

@@ -5,6 +5,7 @@ Use this checklist before inviting a new batch of Kale Deploy pilot users.
 ## Platform Checks
 
 - `npm run ops:healthcheck` passes
+- the lifecycle smoke workflow passes on the dedicated smoke repo
 - the public front door loads at `https://cuny.qzz.io/kale`
 - the runtime manifest loads at `https://runtime.cuny.qzz.io/.well-known/kale-runtime.json`
 - the AWS runner reports healthy on `readyz`
@@ -15,6 +16,7 @@ Use this checklist before inviting a new batch of Kale Deploy pilot users.
 - the `Kale Deploy` GitHub App is installed and working
 - a push to a test repo creates a check run
 - a successful build still produces a live project URL
+- a dedicated repo still survives the full worker -> worker -> shared_static -> shared_static -> worker -> delete -> restore lifecycle smoke run
 - a failing build still returns a useful failure summary
 
 ## Access And Identity Checks

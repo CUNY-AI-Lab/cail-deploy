@@ -86,6 +86,8 @@ type ProjectRow = {
   database_id: string | null;
   files_bucket_name: string | null;
   cache_namespace_id: string | null;
+  runtime_lane: "dedicated_worker" | "shared_static" | "shared_app" | null;
+  recommended_runtime_lane: "dedicated_worker" | "shared_static" | "shared_app" | null;
   has_assets: number;
   latest_deployment_id: string | null;
   created_at: string;
@@ -104,6 +106,8 @@ type DeploymentRow = {
   artifact_prefix: string;
   archive_kind: "none" | "manifest" | "full";
   manifest_key: string | null;
+  runtime_lane: "dedicated_worker" | "shared_static" | "shared_app" | null;
+  recommended_runtime_lane: "dedicated_worker" | "shared_static" | "shared_app" | null;
   has_assets: number;
   created_at: string;
 };
@@ -201,6 +205,8 @@ export async function listProjects(db: D1Database): Promise<ProjectRecord[]> {
       database_id,
       files_bucket_name,
       cache_namespace_id,
+      runtime_lane,
+      recommended_runtime_lane,
       has_assets,
       latest_deployment_id,
       created_at,
@@ -225,6 +231,8 @@ export async function getProject(db: D1Database, projectName: string): Promise<P
       database_id,
       files_bucket_name,
       cache_namespace_id,
+      runtime_lane,
+      recommended_runtime_lane,
       has_assets,
       latest_deployment_id,
       created_at,
@@ -251,6 +259,8 @@ export async function getLatestProjectForRepository(
       database_id,
       files_bucket_name,
       cache_namespace_id,
+      runtime_lane,
+      recommended_runtime_lane,
       has_assets,
       latest_deployment_id,
       created_at,
@@ -262,6 +272,35 @@ export async function getLatestProjectForRepository(
   `).bind(githubRepo).first<ProjectRow>();
 
   return row ? toProjectRecord(row) : null;
+}
+
+export async function listProjectsForRepository(
+  db: D1Database,
+  githubRepo: string
+): Promise<ProjectRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      project_name,
+      owner_login,
+      github_repo,
+      description,
+      deployment_url,
+      database_id,
+      files_bucket_name,
+      cache_namespace_id,
+      runtime_lane,
+      recommended_runtime_lane,
+      has_assets,
+      latest_deployment_id,
+      created_at,
+      updated_at
+    FROM projects
+    WHERE github_repo = ?
+    ORDER BY updated_at DESC
+  `).bind(githubRepo).all<ProjectRow>();
+
+  return result.results.map(toProjectRecord);
 }
 
 export async function getProjectPolicy(
@@ -380,6 +419,27 @@ export async function listProjectDomainsForProject(
     WHERE project_name = ?
     ORDER BY is_primary DESC, domain_label ASC
   `).bind(projectName).all<ProjectDomainRow>();
+
+  return result.results.map(toProjectDomainRecord);
+}
+
+export async function listProjectDomainsForRepository(
+  db: D1Database,
+  githubRepo: string
+): Promise<ProjectDomainRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      domain_label,
+      project_name,
+      github_repo,
+      is_primary,
+      created_at,
+      updated_at
+    FROM project_domains
+    WHERE github_repo = ?
+    ORDER BY is_primary DESC, domain_label ASC
+  `).bind(githubRepo).all<ProjectDomainRow>();
 
   return result.results.map(toProjectDomainRecord);
 }
@@ -697,6 +757,44 @@ export async function countActiveBuildJobsForRepository(
   return Number(row?.count ?? 0);
 }
 
+export async function listActiveBuildJobsForRepository(
+  db: D1Database,
+  githubRepo: string
+): Promise<BuildJobRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      job_id,
+      delivery_id,
+      event_name,
+      installation_id,
+      repository_json,
+      ref,
+      head_sha,
+      previous_sha,
+      check_run_id,
+      status,
+      created_at,
+      updated_at,
+      started_at,
+      completed_at,
+      project_name,
+      deployment_url,
+      deployment_id,
+      build_log_url,
+      error_kind,
+      error_message,
+      error_detail,
+      runner_id
+    FROM build_jobs
+    WHERE json_extract(repository_json, '$.fullName') = ?
+      AND status IN ('queued', 'in_progress', 'deploying')
+    ORDER BY created_at ASC
+  `).bind(githubRepo).all<BuildJobRow>();
+
+  return result.results.map(toBuildJobRecord);
+}
+
 export async function putProject(db: D1Database, project: ProjectRecord): Promise<void> {
   await db.prepare(`
     INSERT INTO projects (
@@ -708,11 +806,13 @@ export async function putProject(db: D1Database, project: ProjectRecord): Promis
       database_id,
       files_bucket_name,
       cache_namespace_id,
+      runtime_lane,
+      recommended_runtime_lane,
       has_assets,
       latest_deployment_id,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(project_name) DO UPDATE SET
       owner_login = excluded.owner_login,
       github_repo = excluded.github_repo,
@@ -721,6 +821,8 @@ export async function putProject(db: D1Database, project: ProjectRecord): Promis
       database_id = excluded.database_id,
       files_bucket_name = excluded.files_bucket_name,
       cache_namespace_id = excluded.cache_namespace_id,
+      runtime_lane = excluded.runtime_lane,
+      recommended_runtime_lane = excluded.recommended_runtime_lane,
       has_assets = excluded.has_assets,
       latest_deployment_id = excluded.latest_deployment_id,
       updated_at = excluded.updated_at
@@ -733,6 +835,8 @@ export async function putProject(db: D1Database, project: ProjectRecord): Promis
     project.databaseId ?? null,
     project.filesBucketName ?? null,
     project.cacheNamespaceId ?? null,
+    project.runtimeLane ?? "dedicated_worker",
+    project.recommendedRuntimeLane ?? project.runtimeLane ?? "dedicated_worker",
     project.hasAssets ? 1 : 0,
     project.latestDeploymentId ?? null,
     project.createdAt,
@@ -751,11 +855,13 @@ export async function claimProjectName(db: D1Database, project: ProjectRecord): 
       database_id,
       files_bucket_name,
       cache_namespace_id,
+      runtime_lane,
+      recommended_runtime_lane,
       has_assets,
       latest_deployment_id,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(project_name) DO NOTHING
   `).bind(
     project.projectName,
@@ -766,6 +872,8 @@ export async function claimProjectName(db: D1Database, project: ProjectRecord): 
     project.databaseId ?? null,
     project.filesBucketName ?? null,
     project.cacheNamespaceId ?? null,
+    project.runtimeLane ?? "dedicated_worker",
+    project.recommendedRuntimeLane ?? project.runtimeLane ?? "dedicated_worker",
     project.hasAssets ? 1 : 0,
     project.latestDeploymentId ?? null,
     project.createdAt,
@@ -787,9 +895,11 @@ export async function insertDeployment(db: D1Database, deployment: DeploymentRec
       artifact_prefix,
       archive_kind,
       manifest_key,
+      runtime_lane,
+      recommended_runtime_lane,
       has_assets,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     deployment.deploymentId,
     deployment.jobId ?? null,
@@ -802,6 +912,8 @@ export async function insertDeployment(db: D1Database, deployment: DeploymentRec
     deployment.artifactPrefix,
     deployment.archiveKind,
     deployment.manifestKey ?? null,
+    deployment.runtimeLane ?? "dedicated_worker",
+    deployment.recommendedRuntimeLane ?? deployment.runtimeLane ?? "dedicated_worker",
     deployment.hasAssets ? 1 : 0,
     deployment.createdAt
   ).run();
@@ -838,6 +950,8 @@ export async function listRetainedSuccessfulDeployments(
       artifact_prefix,
       archive_kind,
       manifest_key,
+      runtime_lane,
+      recommended_runtime_lane,
       has_assets,
       created_at
     FROM deployments
@@ -846,6 +960,38 @@ export async function listRetainedSuccessfulDeployments(
       AND archive_kind = 'full'
     ORDER BY created_at DESC
   `).bind(projectName).all<DeploymentRow>();
+
+  return result.results.map(toDeploymentRecord);
+}
+
+export async function listRetainedSuccessfulDeploymentsForRepository(
+  db: D1Database,
+  githubRepo: string
+): Promise<DeploymentRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      deployment_id,
+      job_id,
+      project_name,
+      owner_login,
+      github_repo,
+      head_sha,
+      status,
+      deployment_url,
+      artifact_prefix,
+      archive_kind,
+      manifest_key,
+      runtime_lane,
+      recommended_runtime_lane,
+      has_assets,
+      created_at
+    FROM deployments
+    WHERE github_repo = ?
+      AND status = 'success'
+      AND archive_kind = 'full'
+    ORDER BY created_at DESC
+  `).bind(githubRepo).all<DeploymentRow>();
 
   return result.results.map(toDeploymentRecord);
 }
@@ -868,6 +1014,8 @@ export async function listExpiredRetainedFailedDeployments(
       artifact_prefix,
       archive_kind,
       manifest_key,
+      runtime_lane,
+      recommended_runtime_lane,
       has_assets,
       created_at
     FROM deployments
@@ -878,6 +1026,152 @@ export async function listExpiredRetainedFailedDeployments(
   `).bind(cutoffIso).all<DeploymentRow>();
 
   return result.results.map(toDeploymentRecord);
+}
+
+export async function listDeploymentsForProject(
+  db: D1Database,
+  projectName: string
+): Promise<DeploymentRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      deployment_id,
+      job_id,
+      project_name,
+      owner_login,
+      github_repo,
+      head_sha,
+      status,
+      deployment_url,
+      artifact_prefix,
+      archive_kind,
+      manifest_key,
+      runtime_lane,
+      recommended_runtime_lane,
+      has_assets,
+      created_at
+    FROM deployments
+    WHERE project_name = ?
+    ORDER BY created_at DESC
+  `).bind(projectName).all<DeploymentRow>();
+
+  return result.results.map(toDeploymentRecord);
+}
+
+export async function listDeploymentsForRepository(
+  db: D1Database,
+  githubRepo: string
+): Promise<DeploymentRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      deployment_id,
+      job_id,
+      project_name,
+      owner_login,
+      github_repo,
+      head_sha,
+      status,
+      deployment_url,
+      artifact_prefix,
+      archive_kind,
+      manifest_key,
+      runtime_lane,
+      recommended_runtime_lane,
+      has_assets,
+      created_at
+    FROM deployments
+    WHERE github_repo = ?
+    ORDER BY created_at DESC
+  `).bind(githubRepo).all<DeploymentRow>();
+
+  return result.results.map(toDeploymentRecord);
+}
+
+export async function getDeployment(
+  db: D1Database,
+  deploymentId: string
+): Promise<DeploymentRecord | null> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT
+      deployment_id,
+      job_id,
+      project_name,
+      owner_login,
+      github_repo,
+      head_sha,
+      status,
+      deployment_url,
+      artifact_prefix,
+      archive_kind,
+      manifest_key,
+      runtime_lane,
+      recommended_runtime_lane,
+      has_assets,
+      created_at
+    FROM deployments
+    WHERE deployment_id = ?
+  `).bind(deploymentId).first<DeploymentRow>();
+
+  return row ? toDeploymentRecord(row) : null;
+}
+
+export async function unpublishProjectsForRepository(
+  db: D1Database,
+  githubRepo: string,
+  updatedAt: string
+): Promise<void> {
+  await db.prepare(`
+    UPDATE projects
+    SET latest_deployment_id = NULL,
+        updated_at = ?
+    WHERE github_repo = ?
+  `).bind(updatedAt, githubRepo).run();
+}
+
+export async function deleteRepositoryControlPlaneState(
+  db: D1Database,
+  githubRepo: string
+): Promise<void> {
+  await db.prepare(`
+    DELETE FROM webhook_deliveries
+    WHERE job_id IN (
+      SELECT job_id
+      FROM build_jobs
+      WHERE json_extract(repository_json, '$.fullName') = ?
+    )
+  `).bind(githubRepo).run();
+
+  await db.prepare(`
+    DELETE FROM build_jobs
+    WHERE json_extract(repository_json, '$.fullName') = ?
+  `).bind(githubRepo).run();
+
+  await db.prepare(`
+    DELETE FROM deployments
+    WHERE github_repo = ?
+  `).bind(githubRepo).run();
+
+  await db.prepare(`
+    DELETE FROM project_domains
+    WHERE github_repo = ?
+  `).bind(githubRepo).run();
+
+  await db.prepare(`
+    DELETE FROM project_secrets
+    WHERE github_repo = ?
+  `).bind(githubRepo).run();
+
+  await db.prepare(`
+    DELETE FROM project_policies
+    WHERE github_repo = ?
+  `).bind(githubRepo).run();
+
+  await db.prepare(`
+    DELETE FROM projects
+    WHERE github_repo = ?
+  `).bind(githubRepo).run();
 }
 
 export async function getBuildJob(db: D1Database, jobId: string): Promise<BuildJobRecord | null> {
@@ -1119,6 +1413,8 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     databaseId: row.database_id ?? undefined,
     filesBucketName: row.files_bucket_name ?? undefined,
     cacheNamespaceId: row.cache_namespace_id ?? undefined,
+    runtimeLane: row.runtime_lane ?? "dedicated_worker",
+    recommendedRuntimeLane: row.recommended_runtime_lane ?? row.runtime_lane ?? "dedicated_worker",
     hasAssets: row.has_assets === 1,
     latestDeploymentId: row.latest_deployment_id ?? undefined,
     createdAt: row.created_at,
@@ -1223,6 +1519,8 @@ function toDeploymentRecord(row: DeploymentRow): DeploymentRecord {
     artifactPrefix: row.artifact_prefix,
     archiveKind: row.archive_kind,
     manifestKey: row.manifest_key ?? undefined,
+    runtimeLane: row.runtime_lane ?? "dedicated_worker",
+    recommendedRuntimeLane: row.recommended_runtime_lane ?? row.runtime_lane ?? "dedicated_worker",
     hasAssets: row.has_assets === 1,
     createdAt: row.created_at
   };

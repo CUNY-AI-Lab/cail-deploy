@@ -1,4 +1,5 @@
 import { baseStyles, escapeHtml, faviconLink, logoHtml } from "./ui";
+import { formatRuntimeLaneLabel } from "./runtime-lanes";
 
 export type ProjectControlFlash = {
   tone: "success" | "warning" | "error";
@@ -84,6 +85,20 @@ export function buildProjectControlPanelUrl(
   return url.toString();
 }
 
+export function buildProjectAdminEntryUrl(
+  baseUrl: string,
+  options?: { flash?: "success" | "warning" | "error"; message?: string }
+): string {
+  const url = new URL(`${baseUrl}/projects/control`);
+  if (options?.flash) {
+    url.searchParams.set("flash", options.flash);
+  }
+  if (options?.message) {
+    url.searchParams.set("message", options.message);
+  }
+  return url.toString();
+}
+
 export function readProjectControlFlash(requestUrl: string): ProjectControlFlash | undefined {
   const url = new URL(requestUrl);
   const tone = url.searchParams.get("flash");
@@ -134,8 +149,10 @@ export function renderProjectAdminEntryPage(input: {
   serviceBaseUrl: string;
   signedInEmail: string;
   errorMessage?: string;
+  flash?: ProjectControlFlash;
 }): string {
-  const { controlBaseUrl, serviceBaseUrl, signedInEmail, errorMessage } = input;
+  const { controlBaseUrl, serviceBaseUrl, signedInEmail, errorMessage, flash } = input;
+  const toneClass = flash ? `notice notice-${flash.tone}` : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -190,6 +207,14 @@ export function renderProjectAdminEntryPage(input: {
         background: #fff3f1;
         border-color: #f3b8ad;
       }
+      .notice-success {
+        background: #eefaf3;
+        border-color: #b9e3c8;
+      }
+      .notice-warning {
+        background: #fff9ea;
+        border-color: #ead28a;
+      }
     `)}
   </head>
   <body>
@@ -198,6 +223,7 @@ export function renderProjectAdminEntryPage(input: {
         <div class="logo">${logoHtml("44px")}</div>
         <h1>Project settings</h1>
         <p class="page-meta">Signed in as <strong>${escapeHtml(signedInEmail)}</strong></p>
+        ${flash ? `<div class="${toneClass}"><p>${escapeHtml(flash.message)}</p></div>` : ""}
         ${errorMessage ? `<div class="notice notice-error"><p>${escapeHtml(errorMessage)}</p></div>` : ""}
         <div class="lookup-grid">
           <form class="lookup-group" method="get" action="${escapeHtml(`${controlBaseUrl}/projects/control`)}">
@@ -292,6 +318,13 @@ export function renderProjectControlPanelPage(input: {
   repositoryFullName: string;
   statusSlug: string;
   deploymentUrl?: string;
+  runtimeLane?: string;
+  recommendedRuntimeLane?: string;
+  runtimeEvidenceFramework?: string;
+  runtimeEvidenceClassification?: string;
+  runtimeEvidenceConfidence?: string;
+  runtimeEvidenceBasis?: string[];
+  runtimeEvidenceSummary?: string;
   buildLogUrl?: string;
   errorMessage?: string;
   errorDetail?: string;
@@ -313,6 +346,13 @@ export function renderProjectControlPanelPage(input: {
     repositoryFullName,
     statusSlug,
     deploymentUrl,
+    runtimeLane,
+    recommendedRuntimeLane,
+    runtimeEvidenceFramework,
+    runtimeEvidenceClassification,
+    runtimeEvidenceConfidence,
+    runtimeEvidenceBasis,
+    runtimeEvidenceSummary,
     buildLogUrl,
     errorMessage,
     errorDetail,
@@ -325,6 +365,12 @@ export function renderProjectControlPanelPage(input: {
     flash
   } = input;
   const statusLabel = statusSlug.replaceAll("_", " ");
+  const runtimeLaneLabel = runtimeLane ? formatRuntimeLaneLabel(runtimeLane as Parameters<typeof formatRuntimeLaneLabel>[0]) : undefined;
+  const recommendedRuntimeLaneLabel = recommendedRuntimeLane
+    ? formatRuntimeLaneLabel(recommendedRuntimeLane as Parameters<typeof formatRuntimeLaneLabel>[0])
+    : undefined;
+  const runtimeEvidenceClassificationLabel = formatRuntimeEvidenceClassification(runtimeEvidenceClassification);
+  const runtimeEvidenceConfidenceLabel = formatRuntimeEvidenceConfidence(runtimeEvidenceConfidence);
   const toneClass = flash ? `notice notice-${flash.tone}` : "";
   const isLive = statusSlug === "live";
   const isFailed = statusSlug === "failed";
@@ -368,6 +414,11 @@ export function renderProjectControlPanelPage(input: {
         margin-top: 20px;
         animation: fadeUp 0.4s ease both;
         animation-delay: 0.08s;
+      }
+      .danger-panel {
+        margin-top: 20px;
+        animation: fadeUp 0.4s ease both;
+        animation-delay: 0.12s;
       }
       .domains-panel {
         margin-top: 20px;
@@ -511,6 +562,30 @@ export function renderProjectControlPanelPage(input: {
         border-radius: 50%;
         background: var(--border);
         flex-shrink: 0;
+      }
+      .runtime-assessment {
+        margin-top: 14px;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.74);
+      }
+      .runtime-assessment-label {
+        margin: 0 0 6px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .runtime-assessment-summary {
+        margin: 0;
+        font-size: 0.92rem;
+        line-height: 1.55;
+        color: var(--ink);
+      }
+      .runtime-assessment-summary code {
+        font-size: 0.8rem;
       }
 
       .section-header {
@@ -728,6 +803,30 @@ export function renderProjectControlPanelPage(input: {
         font-size: 0.88rem;
         padding: 9px 20px;
       }
+      .danger-zone {
+        margin-top: 16px;
+        padding: 18px 20px;
+        border-radius: 14px;
+        border: 1px solid #efb7ad;
+        background: #fff6f4;
+      }
+      .danger-zone p {
+        margin: 0;
+      }
+      .danger-help {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+      .danger-actions {
+        margin-top: 14px;
+      }
+      .danger-button {
+        background: #a52f1a;
+      }
+      .danger-button:hover {
+        background: #8c2715;
+      }
 
       .build-log-detail {
         margin-top: 12px;
@@ -811,8 +910,24 @@ export function renderProjectControlPanelPage(input: {
           </div>
           <div class="deploy-meta">
             <span class="deploy-meta-item">Updated ${escapeHtml(updatedAt)}</span>
+            ${runtimeLaneLabel ? `<span class="deploy-meta-dot"></span><span class="deploy-meta-item">Current lane: ${escapeHtml(runtimeLaneLabel)}</span>` : ""}
+            ${recommendedRuntimeLaneLabel && recommendedRuntimeLaneLabel !== runtimeLaneLabel
+              ? `<span class="deploy-meta-dot"></span><span class="deploy-meta-item">Recommended lane: ${escapeHtml(recommendedRuntimeLaneLabel)}</span>`
+              : ""}
             ${buildLogUrl ? `<span class="deploy-meta-dot"></span><span class="deploy-meta-item"><a href="${escapeHtml(buildLogUrl)}">Build log</a></span>` : ""}
           </div>
+          ${runtimeEvidenceSummary
+            ? `<div class="runtime-assessment">
+                <p class="runtime-assessment-label">Build assessment</p>
+                <p class="runtime-assessment-summary">${escapeHtml(runtimeEvidenceSummary)}</p>
+                <div class="deploy-meta">
+                  ${runtimeEvidenceClassificationLabel ? `<span class="deploy-meta-item">Classification: ${escapeHtml(runtimeEvidenceClassificationLabel)}</span>` : ""}
+                  ${runtimeEvidenceConfidenceLabel ? `<span class="deploy-meta-dot"></span><span class="deploy-meta-item">Confidence: ${escapeHtml(runtimeEvidenceConfidenceLabel)}</span>` : ""}
+                  ${runtimeEvidenceFramework ? `<span class="deploy-meta-dot"></span><span class="deploy-meta-item">Framework: ${escapeHtml(runtimeEvidenceFramework)}</span>` : ""}
+                  ${runtimeEvidenceBasis && runtimeEvidenceBasis.length > 0 ? `<span class="deploy-meta-dot"></span><span class="deploy-meta-item">Signals: <code>${escapeHtml(runtimeEvidenceBasis.join(", "))}</code></span>` : ""}
+                </div>
+              </div>`
+            : ""}
         </div>
       </section>
 
@@ -858,9 +973,63 @@ export function renderProjectControlPanelPage(input: {
           </div>
         </form>
       </section>
+
+      <section class="card danger-panel">
+        <div class="section-header">
+          <h2>Delete project</h2>
+        </div>
+        <p class="section-desc">Delete this Kale project, its live URL, stored secrets, deployment history, archived artifacts, and project storage. This does not delete the GitHub repository.</p>
+        <div class="danger-zone">
+          <p><strong>This cannot be undone inside Kale Deploy.</strong> Type <code>${escapeHtml(projectName)}</code> to confirm permanent deletion.</p>
+          <form method="post" action="${escapeHtml(`${controlBaseUrl}/projects/${encodeURIComponent(projectName)}/control/delete`)}">
+            <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
+            <div class="field-group" style="margin-top: 14px;">
+              <label for="confirm-project-delete">Project name</label>
+              <input
+                id="confirm-project-delete"
+                name="confirmProjectName"
+                placeholder="${escapeHtml(projectName)}"
+                required
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+            <p class="danger-help">The site will disappear from Kale immediately. If you need it later, redeploy from GitHub.</p>
+            <div class="danger-actions">
+              <button class="button danger-button" type="submit">Delete project</button>
+            </div>
+          </form>
+        </div>
+      </section>
     </main>
   </body>
 </html>`;
+}
+
+function formatRuntimeEvidenceClassification(value?: string): string | undefined {
+  switch (value) {
+    case "shared_static_eligible":
+      return "Shared Static Eligible";
+    case "dedicated_required":
+      return "Dedicated Required";
+    case "unknown":
+      return "Unknown";
+    default:
+      return undefined;
+  }
+}
+
+function formatRuntimeEvidenceConfidence(value?: string): string | undefined {
+  switch (value) {
+    case "high":
+      return "High";
+    case "medium":
+      return "Medium";
+    case "low":
+      return "Low";
+    default:
+      return undefined;
+  }
 }
 
 export function describeGitHubUserAuthContinueLabel(input: {

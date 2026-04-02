@@ -17,7 +17,7 @@ If there is no check run at all, the webhook probably never fired for that repo 
 
 The setup may still have worked even if GitHub returns you to what looks like the same page.
 
-First, check the CAIL setup page again for that repository. It should say whether GitHub is connected.
+First, check the Kale setup page again for that repository. It should say whether GitHub is connected.
 
 If it is still unclear, verify it from GitHub:
 
@@ -27,7 +27,7 @@ If it is still unclear, verify it from GitHub:
 
 If it is included, the install succeeded.
 
-## The check run says “Needs adaptation for CAIL”
+## The check run says “Needs adaptation for Kale”
 
 This means the repo is close, but not yet in the supported Worker shape.
 
@@ -40,10 +40,11 @@ Common reasons:
 
 Best fix:
 
-- scaffold a fresh Worker with `CAIL-init`
+- scaffold a fresh project with `kale-init`
+- choose `--shape static` for a pure publishing site or `--shape worker` for forms, APIs, or other request-time behavior
 - move your app logic into that structure
 
-## The check run says “Unsupported on CAIL”
+## The check run says “Unsupported on Kale”
 
 This means the repo is outside the supported runtime.
 
@@ -54,7 +55,7 @@ Common reasons:
 - container-style server workload
 - traditional backend that depends on a long-running process
 
-The right move is usually to rebuild the deployable part as a Worker app rather than trying to force the original stack onto CAIL Deploy.
+The right move is usually to rebuild the deployable part as either a pure static Kale site or a Worker app rather than trying to force the original stack onto Kale Deploy.
 
 ## My app deployed but the page is broken
 
@@ -106,7 +107,7 @@ Watch for:
 - socket assumptions
 - packages expecting full Node APIs
 
-## The app works locally in Node but not on CAIL Deploy
+## The app works locally in Node but not on Kale Deploy
 
 That is possible because local Node and Cloudflare Workers are different runtimes.
 
@@ -128,6 +129,7 @@ Read:
 
 If you are still unsure, the safest path is:
 
-1. start with `CAIL-init`
-2. move your content and logic into that structure
-3. keep the project small until deployment works
+1. start with `kale-init`
+2. choose `--shape static` or `--shape worker` explicitly
+3. move your content and logic into that structure
+4. keep the project small until deployment works

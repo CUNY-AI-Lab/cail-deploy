@@ -69,6 +69,8 @@ Ask Claude to:
 - create or connect the GitHub repository
 - check whether Kale needs a GitHub approval step
 
+If Claude is starting from scratch, tell it whether this should be a pure static site or a Worker app.
+
 ## 7. Approve GitHub once
 
 If Claude gives you a GitHub link or setup page:

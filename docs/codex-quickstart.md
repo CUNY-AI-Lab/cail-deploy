@@ -30,6 +30,8 @@ Ask Codex to:
 - create or connect the GitHub repository
 - check whether Kale needs a GitHub approval step
 
+If Codex is starting from scratch, tell it whether this should be a pure static site or a Worker app.
+
 ## 4. Approve GitHub once
 
 If Codex gives you a GitHub link or setup page:

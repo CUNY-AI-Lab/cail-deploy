@@ -16,7 +16,7 @@ Dynamic Workers and Sandboxes are useful for code previews and generated-code ex
 
 For the first version:
 
-- published apps live as Workers for Platforms user Workers
+- published apps live either as Workers for Platforms user Workers or as certified shared-static deployments served through the gateway
 - the gateway routes traffic by project slug
 - the control plane provisions bindings and uploads the built Worker artifact
 
@@ -32,7 +32,7 @@ The deploy service owns:
 - webhook idempotency and build job tracking
 - bounded rollback archival in R2
 - project name registration
-- per-project D1 creation
+- repo-scoped D1 creation
 - user Worker upload to the dispatch namespace
 - runner dispatch through Cloudflare Queues and callback handling
 
@@ -67,7 +67,7 @@ Avoid treating KV as the source of truth for deployment state.
 The assistant layer should:
 
 - scaffold compatible projects
-- steer code generation toward Hono and Workers-compatible patterns
+- steer code generation toward the lightest Worker-compatible shape that fits the project
 - encode the runtime constraints that reduce deploy failures
 
 The assistant layer should not be the only place the platform contract exists.

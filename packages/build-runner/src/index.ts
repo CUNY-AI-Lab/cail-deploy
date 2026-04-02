@@ -27,6 +27,8 @@ import { parse as parseJsonc } from "jsonc-parser";
 import * as mime from "mime-types";
 import { parse as parseToml } from "smol-toml";
 
+import { detectRuntimeEvidence } from "./runtime-evidence";
+
 const DEFAULT_BATCH_SIZE = 1;
 const DEFAULT_IDLE_POLL_DELAY_MS = 5_000;
 const DEFAULT_VISIBILITY_TIMEOUT_MS = 60 * 60 * 1000;
@@ -239,6 +241,7 @@ type PreparedArtifact = {
   workerFiles: Array<{ name: string; file: File }>;
   mainModule: string;
   description?: string;
+  runtimeEvidence: Awaited<ReturnType<typeof detectRuntimeEvidence>>;
   staticAssets?: StaticAssetUpload;
   allFiles: Array<{ name: string; file: File }>;
   workerUpload: WorkerUploadMetadata;
@@ -1196,11 +1199,20 @@ async function prepareArtifact(
       ? { observability: { enabled: buildPlan.observabilityEnabled } }
       : {})
   };
+  const runtimeEvidence = await detectRuntimeEvidence({
+    projectRoot,
+    packageJson,
+    requestedBindings: buildPlan.requestedBindings,
+    staticAssets,
+    assetsConfig: buildPlan.assetsConfig,
+    assetsDirectory: buildPlan.assetsDirectory
+  });
 
   return {
     workerFiles,
     mainModule,
     description: packageJson?.description,
+    runtimeEvidence,
     staticAssets,
     allFiles,
     workerUpload
@@ -1465,6 +1477,7 @@ async function postBuildSuccess(
     deployment: {
       projectName: request.deployment.suggestedProjectName,
       ...(artifact.description ? { description: artifact.description } : {}),
+      runtimeEvidence: artifact.runtimeEvidence,
       workerUpload: artifact.workerUpload,
       ...(artifact.staticAssets ? { staticAssets: artifact.staticAssets } : {})
     }

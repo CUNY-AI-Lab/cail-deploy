@@ -1,0 +1,7 @@
+{
+  "name": "next-export",
+  "private": true,
+  "dependencies": {
+    "next": "^16.0.0"
+  }
+}

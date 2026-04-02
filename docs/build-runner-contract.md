@@ -6,7 +6,7 @@ The current implementation lives in `packages/build-runner`.
 
 ## Decision
 
-Builds run on a CAIL-owned runner and are delivered through Cloudflare Queues.
+Builds run on a Kale-owned runner and are delivered through Cloudflare Queues.
 
 - Students should not need to maintain GitHub Actions workflow files just to deploy.
 - The GitHub App webhook remains the single product entrypoint.
@@ -18,8 +18,8 @@ Builds run on a CAIL-owned runner and are delivered through Cloudflare Queues.
 1. GitHub sends a `push` webhook to `packages/deploy-service` for the repository default branch.
 2. The deploy service verifies the webhook, records the delivery in control-plane D1, creates a GitHub check run, stores a build job, and publishes a queue message.
 3. The runner consumes the queue message and calls `GET /internal/build-jobs/:jobId/source` to lease a fresh GitHub installation token for the exact commit.
-4. The runner builds the Worker bundle and reports `start` / `complete` back to the deploy service.
-5. On success, the deploy service keeps a bounded rollback bundle in R2, uploads any static assets through the Cloudflare direct-upload flow, provisions D1 if needed, uploads the Worker into Workers for Platforms, stores deployment history, and completes the check run with the live URL.
+4. The runner builds the deployable bundle, emits runtime evidence, and reports `start` / `complete` back to the deploy service.
+5. On success, the deploy service keeps a bounded rollback bundle in R2, uploads any static assets through the Cloudflare direct-upload flow, provisions D1 if needed, either promotes a certified pure static build onto the shared-static lane or uploads the dedicated Worker into Workers for Platforms, stores deployment history, and completes the check run with the live URL.
 6. On failure, the deploy service completes the check run with a failure conclusion, preserves the job record, and may retain only a short-lived manifest instead of a full artifact bundle.
 
 ## Repository Expectations
@@ -29,6 +29,7 @@ Builds run on a CAIL-owned runner and are delivered through Cloudflare Queues.
 - The runner installs dependencies, runs `build` when a `package.json` script exists, and then runs `wrangler deploy --dry-run --outdir ...`.
 - If a repo does not have a Wrangler config, the runner only supports a narrow fallback for simple Worker entrypoints at `src/index.ts`, `src/index.js`, `index.ts`, or `index.js`.
 - If the Wrangler config defines static assets, the runner reads `assets.directory`, respects `.assetsignore`, and forwards `html_handling`, `not_found_handling`, and `run_worker_first`.
+- If the repository declares Kale project metadata, the runner uses that plus framework signals to classify the build as shared-static-eligible, dedicated-only, or unknown.
 - The runner does not forward student-defined production bindings. The deploy service remains the source of truth for D1 and Workers for Platforms bindings.
 
 ## Runner Environment

@@ -24,6 +24,12 @@ The same check also runs from GitHub Actions every hour:
 - workflow: `.github/workflows/kale-healthcheck.yml`
 - triggers: manual and scheduled
 
+There is also a deeper lifecycle smoke workflow:
+
+- workflow: `.github/workflows/kale-lifecycle-smoke.yml`
+- triggers: manual and scheduled
+- scope: pushes a worker fixture to a dedicated smoke repo, redeploys it as worker, promotes it to `shared_static`, redeploys it again as `shared_static`, demotes it back to worker, deletes it from Kale, verifies public unpublish, then re-registers and restores it
+
 Required GitHub repository secrets:
 
 - `KALE_AWS_ACCESS_KEY_ID`
@@ -33,11 +39,26 @@ Optional GitHub repository secret:
 
 - `KALE_AWS_SESSION_TOKEN`
 
+Required GitHub repository secrets for the lifecycle smoke workflow:
+
+- `KALE_LIFECYCLE_SMOKE_GITHUB_TOKEN`
+- `KALE_LIFECYCLE_SMOKE_KALE_TOKEN`
+
+Required GitHub repository variable for the lifecycle smoke workflow:
+
+- `KALE_LIFECYCLE_SMOKE_REPOSITORY`
+
+Optional GitHub repository variable:
+
+- `KALE_LIFECYCLE_SMOKE_DEFAULT_BRANCH`
+
 Notes:
 
 - the scheduled GitHub Actions healthcheck currently checks the EC2 instance state, not the runner `readyz` endpoint over SSH
 - keep the SSH-based `readyz` check for local/manual operator use
 - if you later grant `ssm:SendCommand`, the GitHub workflow can be extended to check the runner process from inside the instance without opening SSH
+- the lifecycle smoke runner talks to the public `/mcp` tool surface, not the Access-gated JSON API
+- the lifecycle smoke token should be a fresh `kale_pat_*` token from `/connect`, and it must belong to a user who already linked GitHub admin access for the smoke repo, because the delete step uses the same project-admin authorization as the live product
 
 If you want the script to check the runner over SSH too:
 
@@ -47,12 +68,22 @@ export KALE_RUNNER_SSH_KEY=/Users/stephenzweibel/.ssh/kale-build-runner-us-east-
 npm run ops:healthcheck
 ```
 
+To run the full lifecycle smoke locally:
+
+```bash
+export KALE_SMOKE_REPOSITORY=owner/repo
+export KALE_SMOKE_GITHUB_TOKEN=github_pat_or_app_token
+export KALE_SMOKE_KALE_TOKEN=fresh_kale_pat_from_connect
+npm run ops:lifecycle-smoke
+```
+
 ## Current Production Shape
 
 - deploy-service runs on Cloudflare Workers behind `https://cuny.qzz.io/kale`
 - project traffic runs on Cloudflare Workers behind `https://<project>.cuny.qzz.io`
 - the build runner runs on AWS EC2 as one dispatcher container that launches disposable per-build containers
 - GitHub is the source of truth for repository changes
+- `GATEWAY_PREVIEW_TOKEN` must be set on both `packages/deploy-service` and `packages/gateway-worker` for automatic `shared_static` cutover to stay enabled
 
 ## First Checks
 
@@ -145,6 +176,7 @@ If the project host is broken but the control plane is healthy:
 1. Check the latest deployment status for that project.
 2. Confirm the project host still resolves.
 3. Confirm the gateway health endpoint still returns `ok`.
+4. If the problem is subtle or lane-related, run the lifecycle smoke workflow against the dedicated smoke repo.
 
 ## Common Failure Shapes
 

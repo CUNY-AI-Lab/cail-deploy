@@ -1,6 +1,6 @@
 # Support Matrix
 
-CAIL Deploy is not meant to run every kind of software project.
+Kale Deploy is not meant to run every kind of software project.
 
 The supported category is:
 
@@ -12,8 +12,9 @@ This matrix is the practical guide.
 
 These are good fits and should usually deploy cleanly.
 
-- Hono apps
-- static sites with a small API
+- pure static publishing sites
+- Worker apps with a small API
+- Hono apps when route composition or middleware actually helps
 - Worker-first TypeScript or JavaScript apps
 - D1-backed forms, guestbooks, catalogs, and small data apps
 - projects that use `request.formData()` and render HTML directly
@@ -86,7 +87,9 @@ Supported:
 
 Preferred:
 
-- Hono
+- choose the lightest Worker-compatible shape that fits the project
+- static-first publishing projects
+- Hono when the project really needs request-time routing or middleware
 - server-rendered HTML
 - small JSON APIs
 
@@ -112,7 +115,7 @@ Do not assume:
 
 Important:
 
-- `DB`, `FILES`, and `CACHE` are self-service production bindings today because Kale provisions one isolated D1 database, R2 bucket, and KV namespace per project when needed.
+- `DB`, `FILES`, and `CACHE` are self-service production bindings today because Kale provisions one repo-scoped D1 database, R2 bucket, and KV namespace when needed.
 - `AI`, `VECTORIZE`, and `ROOMS` require approval because they create billable or always-on platform resources.
 
 ## URL And Hosting Rules
@@ -139,4 +142,4 @@ Ask:
 
 - “Can this run as a Cloudflare Worker?”
 
-If the answer is not clearly yes, start from `CAIL-init` and port only the pieces you need.
+If the answer is not clearly yes, start from `kale-init --shape static` or `kale-init --shape worker` and port only the pieces you need.

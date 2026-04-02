@@ -1,0 +1,7 @@
+{
+  "name": "hono-worker",
+  "private": true,
+  "dependencies": {
+    "hono": "^4.12.9"
+  }
+}
