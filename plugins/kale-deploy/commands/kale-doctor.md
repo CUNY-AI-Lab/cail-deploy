@@ -10,6 +10,7 @@ Follow this sequence:
 2. Prefer running the bundled script directly:
    - `node plugins/kale-deploy/scripts/kale-doctor.mjs`
    - if the user wants machine-readable output, use `--json`
+   - the script now also checks the live Kale wrapper freshness automatically; use `--harness claude|codex|gemini` to narrow that check if needed
 3. Report the detected project name and shape (`static` or `worker`).
 4. Call out whether the repo has the minimum Kale files:
    - `package.json`
@@ -22,6 +23,7 @@ Follow this sequence:
 6. For Worker projects, check whether `src/index.ts` appears to expose `GET /api/health`.
 7. Summarize the result as pass, warn, or fail.
 8. If the repo is missing Kale structure, recommend `kale-adapt` rather than rebuilding the project from scratch.
+9. If the script reports a stale local wrapper, tell the user the exact update command it returned.
 
 When you finish, give the user:
 

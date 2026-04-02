@@ -25,6 +25,7 @@ This local skill is only the bootstrap layer.
 
 - If Kale tools are already available, call `get_runtime_manifest` and read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` before trusting any local install or update guidance.
 - Use `test_connection` for the live `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` fields.
+- When the harness can identify its own local bundle version, pass `harness` and `localBundleVersion` to `test_connection` so Kale can warn about stale local wrapper copy.
 - If the live runtime manifest disagrees with this skill, follow the live runtime manifest.
 - Treat the local skill as the fallback path for first connection, not the long-term source of truth.
 
@@ -38,7 +39,7 @@ This local skill is only the bootstrap layer.
    - tell the user: "I need to connect to Kale Deploy. Please visit this link, sign in with your CUNY email, generate a token, and paste it back here."
    - give them: `https://cuny.qzz.io/kale/connect`
    - once they paste a token starting with `kale_pat_`, configure the Kale server with a static Bearer header if the agent supports that path
-4. After Kale is configured, call `get_runtime_manifest` and `test_connection`, then use the live `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` fields to decide what to do next.
+4. After Kale is configured, call `get_runtime_manifest` and `test_connection`, then use the live `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` fields to decide what to do next. If you can determine the local harness id and bundle version from the installed wrapper metadata, include them in `test_connection`.
 5. Confirm that `register_project` is available.
 6. Explain GitHub status honestly. GitHub App approval is repository-specific, so if no repository has been chosen yet, do not claim every future repo is already approved. Instead, say whether the environment looks ready for the next GitHub-backed step and what handoff will happen later.
 

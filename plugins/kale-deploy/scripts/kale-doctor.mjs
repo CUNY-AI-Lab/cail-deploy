@@ -3,17 +3,27 @@
 import path from "node:path";
 import process from "node:process";
 import {
+  detectLocalBundleVersion,
   fileExists,
+  fetchConnectionHealth,
   inferProjectName,
   readJsonFileIfExists,
   readJsoncFileIfExists,
-  readTextFileIfExists
+  readTextFileIfExists,
+  resolveHarnessArguments,
+  resolveServiceBaseUrlArgument
 } from "./kale-plugin-lib.mjs";
 
 const root = process.cwd();
+const args = process.argv.slice(2);
 const jsonMode = process.argv.includes("--json");
+const serviceBaseUrl = resolveServiceBaseUrlArgument(args);
+const harnesses = resolveHarnessArguments(args);
 
-const report = await buildReport(root);
+const report = await buildReport(root, {
+  serviceBaseUrl,
+  harnesses
+});
 
 if (jsonMode) {
   console.log(JSON.stringify(report, null, 2));
@@ -23,7 +33,7 @@ if (jsonMode) {
 printReport(report);
 process.exit(report.summary.failCount > 0 ? 1 : 0);
 
-async function buildReport(cwd) {
+async function buildReport(cwd, options) {
   const packageJsonPath = path.join(cwd, "package.json");
   const wranglerPath = path.join(cwd, "wrangler.jsonc");
   const kaleProjectPath = path.join(cwd, "kale.project.json");
@@ -138,6 +148,39 @@ async function buildReport(cwd) {
     ));
   }
 
+  const bundle = await detectLocalBundleVersion();
+  if (bundle.bundleVersion) {
+    checks.push(makeCheck(
+      "local-bundle-version",
+      bundle.consistent ? "pass" : "warn",
+      "Local wrapper bundle",
+      bundle.consistent
+        ? `Local Kale wrapper bundle version is ${bundle.bundleVersion}.`
+        : `Local Kale wrapper versions disagree across manifests: ${bundle.manifests.map((entry) => `${entry.label}=${entry.version}`).join(", ")}.`
+    ));
+  } else {
+    checks.push(makeCheck(
+      "local-bundle-version",
+      "warn",
+      "Local wrapper bundle",
+      "Could not detect a local Kale wrapper bundle version from plugin metadata."
+    ));
+  }
+
+  const liveWrapperStatuses = await loadLiveWrapperStatuses({
+    bundleVersion: bundle.bundleVersion,
+    harnesses: options.harnesses,
+    serviceBaseUrl: options.serviceBaseUrl
+  });
+  for (const status of liveWrapperStatuses) {
+    checks.push(makeCheck(
+      `wrapper-${status.harnessId}`,
+      status.warning ? "warn" : "pass",
+      `${status.harnessLabel} wrapper freshness`,
+      status.summary
+    ));
+  }
+
   const nextSteps = [];
   if (!kaleProject || !wrangler || !packageJson) {
     nextSteps.push(`Run 'node plugins/kale-deploy/scripts/kale-adapt.mjs --shape ${shape}' to normalize this repo for Kale.`);
@@ -148,18 +191,63 @@ async function buildReport(cwd) {
   if (shape === "worker" && !entrySource?.includes("/api/health")) {
     nextSteps.push("Add a GET /api/health route before relying on worker-shape lifecycle checks.");
   }
+  for (const status of liveWrapperStatuses) {
+    if (status.warning && status.updateCommand) {
+      nextSteps.push(`${status.harnessLabel}: run '${status.updateCommand}' to refresh the local wrapper.`);
+    }
+  }
 
   const summary = summarizeChecks(checks);
   return {
     root: cwd,
+    serviceBaseUrl: options.serviceBaseUrl,
     projectName,
     shape,
     declaredShape: declaredShape ?? null,
     inferredShape: inferredShape ?? null,
+    localBundleVersion: bundle.bundleVersion ?? null,
+    liveWrapperStatuses,
     checks,
     nextSteps,
     summary
   };
+}
+
+async function loadLiveWrapperStatuses(input) {
+  if (!input.bundleVersion) {
+    return [];
+  }
+
+  const statuses = [];
+  for (const harnessId of input.harnesses) {
+    try {
+      const response = await fetchConnectionHealth({
+        serviceBaseUrl: input.serviceBaseUrl,
+        harnessId,
+        localBundleVersion: input.bundleVersion
+      });
+      if (response?.localWrapperStatus) {
+        statuses.push({
+          harnessId,
+          harnessLabel: harnessLabel(harnessId),
+          warning: Boolean(response.localWrapperStatus.warning),
+          summary: response.localWrapperStatus.summary,
+          updateCommand: response.localWrapperStatus.updateCommand
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      statuses.push({
+        harnessId,
+        harnessLabel: harnessLabel(harnessId),
+        warning: true,
+        summary: `Could not check live wrapper status: ${message}`,
+        updateCommand: undefined
+      });
+    }
+  }
+
+  return statuses;
 }
 
 function shapeFromManifest(kaleProject) {
@@ -204,6 +292,9 @@ function relativeLabel(root, absolutePath) {
 function printReport(report) {
   console.log(`Kale doctor for ${report.projectName}`);
   console.log(`Shape: ${report.shape}${report.declaredShape ? ` (declared: ${report.declaredShape})` : ""}`);
+  if (report.localBundleVersion) {
+    console.log(`Local bundle: ${report.localBundleVersion}`);
+  }
   console.log("");
 
   for (const check of report.checks) {
@@ -216,6 +307,19 @@ function printReport(report) {
     for (const step of report.nextSteps) {
       console.log(`- ${step}`);
     }
+  }
+}
+
+function harnessLabel(harnessId) {
+  switch (harnessId) {
+    case "claude":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "gemini":
+      return "Gemini CLI";
+    default:
+      return harnessId;
   }
 }
 

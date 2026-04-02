@@ -9,7 +9,9 @@ output over any stale local install or update lore in the plugin copy. In
 practice that means reading `dynamic_skill_policy`, `client_update_policy`, and
 `agent_harnesses` from `get_runtime_manifest`, then using `dynamicSkillPolicy`,
 `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` from
-`test_connection` as the live source of truth.
+`test_connection` as the live source of truth. When the harness can determine
+its wrapper metadata, it should also pass `harness` and `localBundleVersion` to
+`test_connection`.
 
 The bundled commands are:
 
@@ -17,6 +19,10 @@ The bundled commands are:
 - `kale-init`: scaffold a new Kale starter with an explicit `static` or `worker` shape
 - `kale-doctor`: inspect the current repo and report whether it is ready for Kale
 - `kale-adapt`: bring an existing repo into Kale shape without rebuilding it from scratch
+
+`kale-doctor` now checks the live Kale connection-health endpoint with the
+local wrapper bundle version and reports any stale-wrapper warning alongside the
+repo readiness checks.
 
 When `kale-init` is used, it now requires an explicit starter shape:
 

@@ -1,8 +1,15 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const DEFAULT_COMPATIBILITY_DATE = "2026-03-26";
+export const DEFAULT_KALE_SERVICE_BASE_URL = "https://cuny.qzz.io/kale";
+export const SUPPORTED_HARNESSES = ["claude", "codex", "gemini"];
 export const SUPPORTED_SHAPES = new Set(["static", "worker"]);
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = path.resolve(SCRIPT_DIR, "..");
+const REPOSITORY_ROOT = path.resolve(PLUGIN_ROOT, "..", "..");
 
 export function resolveShapeArgument(args) {
   for (let index = 0; index < args.length; index += 1) {
@@ -21,6 +28,47 @@ export function resolveShapeArgument(args) {
   }
 
   return undefined;
+}
+
+export function resolveOptionArgument(args, flagName) {
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (!value) {
+      continue;
+    }
+
+    if (value === flagName) {
+      return args[index + 1];
+    }
+
+    if (value.startsWith(`${flagName}=`)) {
+      return value.slice(flagName.length + 1);
+    }
+  }
+
+  return undefined;
+}
+
+export function resolveServiceBaseUrlArgument(args) {
+  return resolveOptionArgument(args, "--service-base-url") ?? DEFAULT_KALE_SERVICE_BASE_URL;
+}
+
+export function resolveHarnessArguments(args) {
+  const raw = resolveOptionArgument(args, "--harness");
+  if (!raw) {
+    return [...SUPPORTED_HARNESSES];
+  }
+
+  const harnesses = raw
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (harnesses.length === 0 || harnesses.some((value) => !SUPPORTED_HARNESSES.includes(value))) {
+    throw new Error(`Harness must be one of: ${SUPPORTED_HARNESSES.join(", ")}.`);
+  }
+
+  return Array.from(new Set(harnesses));
 }
 
 export function assertSupportedShape(shape) {
@@ -98,6 +146,68 @@ export async function readJsoncFileIfExists(filePath) {
   }
 
   return parseJsonc(content);
+}
+
+export async function detectLocalBundleVersion() {
+  const manifestCandidates = [
+    {
+      label: "Claude plugin",
+      path: path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json")
+    },
+    {
+      label: "Codex add-on",
+      path: path.join(PLUGIN_ROOT, ".codex-plugin", "plugin.json")
+    },
+    {
+      label: "Gemini extension",
+      path: path.join(REPOSITORY_ROOT, "gemini-extension.json")
+    }
+  ];
+
+  const manifests = [];
+  for (const candidate of manifestCandidates) {
+    const manifest = await readJsonFileIfExists(candidate.path);
+    if (manifest?.version) {
+      manifests.push({
+        label: candidate.label,
+        path: candidate.path,
+        version: String(manifest.version)
+      });
+    }
+  }
+
+  const versions = Array.from(new Set(manifests.map((entry) => entry.version)));
+  return {
+    bundleVersion: versions[0] ?? undefined,
+    consistent: versions.length <= 1,
+    manifests,
+    notes: versions.length <= 1
+      ? []
+      : [`Local Kale wrapper versions disagree: ${versions.join(", ")}.`]
+  };
+}
+
+export async function fetchConnectionHealth(input = {}) {
+  const normalizedBaseUrl = normalizeServiceBaseUrl(input.serviceBaseUrl);
+  const url = new URL(".well-known/kale-connection.json", normalizedBaseUrl);
+  if (input.harnessId) {
+    url.searchParams.set("harness", input.harnessId);
+  }
+  if (input.localBundleVersion) {
+    url.searchParams.set("localBundleVersion", input.localBundleVersion);
+  }
+
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(5_000)
+  });
+  if (!response.ok) {
+    throw new Error(`Kale connection health request failed with ${response.status}.`);
+  }
+  return response.json();
+}
+
+function normalizeServiceBaseUrl(serviceBaseUrl = DEFAULT_KALE_SERVICE_BASE_URL) {
+  return serviceBaseUrl.endsWith("/") ? serviceBaseUrl : `${serviceBaseUrl}/`;
 }
 
 export function parseJsonc(value) {

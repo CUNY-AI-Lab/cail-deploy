@@ -16,6 +16,7 @@ This local skill is a bootstrap layer, not the final source of truth.
 
 - If Kale MCP tools are already available, call `get_runtime_manifest` early and read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses`.
 - If `test_connection` is available, use `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` instead of assuming the local auth flow notes are still current.
+- If the local wrapper metadata is available, pass `harness` and `localBundleVersion` to `test_connection` so Kale can warn about stale local bundle copy.
 - Use the local plugin guidance mainly to get Kale connected the first time or when the MCP server is not reachable yet.
 
 ## What Kale Deploy is
@@ -176,8 +177,9 @@ Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. Th
       For other agents, set the `Authorization: Bearer <the-token>` header in the agent's MCP server config.
    e. The user may need to start a new conversation for the tools to appear.
 6. After the tools appear, call `get_runtime_manifest` so `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` come from Kale itself rather than the local plugin copy.
-7. Call `register_project` to determine the canonical project slug and install state.
-8. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`. That GitHub approval is a browser handoff.
+7. When calling `test_connection`, include `harness` and `localBundleVersion` when you can determine them from the installed wrapper metadata.
+8. Call `register_project` to determine the canonical project slug and install state.
+9. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`. That GitHub approval is a browser handoff.
 
 ### Phase 4: Validate and deploy
 
