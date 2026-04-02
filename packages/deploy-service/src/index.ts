@@ -2510,14 +2510,22 @@ async function deployArtifact(
       files,
       deploymentId,
       {
-        attempts: resolvePositiveInteger(env.SHARED_STATIC_VALIDATION_ATTEMPTS) ?? 30,
+        attempts: resolvePositiveInteger(env.SHARED_STATIC_VALIDATION_ATTEMPTS) ?? 120,
         retryMs: resolvePositiveInteger(env.SHARED_STATIC_VALIDATION_RETRY_MS) ?? 1000
       }
     );
     if (validation.matches) {
+      if (validation.attemptsUsed > 1) {
+        console.info(
+          `Shared static validation matched after ${validation.attemptsUsed} attempts for ${metadata.projectName}.`
+        );
+      }
       currentRuntimeLane = "shared_static";
     } else {
-      console.warn("Shared static validation kept the deployment on a dedicated Worker.", validation.reason);
+      console.warn(
+        `Shared static validation kept the deployment on a dedicated Worker after ${validation.attemptsUsed} attempts.`,
+        validation.reason
+      );
     }
   }
 
@@ -2795,10 +2803,11 @@ async function validateSharedStaticCandidate(
     attempts: number;
     retryMs: number;
   }
-): Promise<{ matches: boolean; reason?: string }> {
-  let lastFailure: { matches: boolean; reason?: string } = {
+): Promise<{ matches: boolean; reason?: string; attemptsUsed: number }> {
+  let lastFailure: { matches: boolean; reason?: string; attemptsUsed: number } = {
     matches: false,
-    reason: "Shared static validation did not run."
+    reason: "Shared static validation did not run.",
+    attemptsUsed: 0
   };
 
   for (let attempt = 0; attempt < options.attempts; attempt += 1) {
@@ -2809,10 +2818,16 @@ async function validateSharedStaticCandidate(
       `${cacheBustKey}-${attempt}`
     );
     if (result.matches) {
-      return result;
+      return {
+        ...result,
+        attemptsUsed: attempt + 1
+      };
     }
 
-    lastFailure = result;
+    lastFailure = {
+      ...result,
+      attemptsUsed: attempt + 1
+    };
     if (attempt < options.attempts - 1 && options.retryMs > 0) {
       await delay(options.retryMs);
     }

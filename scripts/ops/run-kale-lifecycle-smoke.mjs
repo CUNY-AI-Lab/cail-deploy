@@ -280,6 +280,18 @@ async function waitForLiveProject(projectName, projectUrl, options) {
       lastSummary = summary;
     }
 
+    if (
+      status.status === "live"
+      && options.expectedRuntimeLane === "shared_static"
+      && status.runtime_lane === "dedicated_worker"
+      && status.recommended_runtime_lane === "shared_static"
+      && await isServingExpectedStaticContent(projectUrl, options)
+    ) {
+      throw new Error(
+        `${projectName} is serving the expected static content, but Kale kept runtime_lane=dedicated_worker instead of promoting to shared_static.`
+      );
+    }
+
     if (status.status !== "live" || status.runtime_lane !== options.expectedRuntimeLane) {
       return false;
     }
@@ -311,6 +323,25 @@ async function waitForLiveProject(projectName, projectUrl, options) {
       return false;
     }
   }, `Timed out waiting for ${projectName} to serve ${options.expectedMarker} as ${options.expectedRuntimeLane}.`);
+}
+
+async function isServingExpectedStaticContent(projectUrl, options) {
+  if (options.checkWorkerHealth || !options.expectedStaticAssetPath) {
+    return false;
+  }
+
+  try {
+    const assetUrl = new URL(options.expectedStaticAssetPath, ensureTrailingSlash(projectUrl)).toString();
+    const assetBody = await fetchText(assetUrl);
+    if (!assetBody.includes(options.expectedMarker)) {
+      return false;
+    }
+
+    const rootBody = await fetchText(projectUrl);
+    return rootBody.includes(options.expectedMarker);
+  } catch {
+    return false;
+  }
 }
 
 async function waitForKaleCheckRun(repositoryFullName, sha) {
