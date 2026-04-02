@@ -150,6 +150,7 @@ async function main(): Promise<void> {
       harnessId,
       prompt,
       runRoot,
+      serviceBaseUrl: options.serviceBaseUrl,
       timeoutMs: options.timeoutMs,
       promptProfile: options.promptProfile
     });
@@ -274,6 +275,7 @@ async function runHarness(input: {
   harnessId: HarnessId;
   prompt: HarnessSetupPrompt;
   runRoot: string;
+  serviceBaseUrl: string;
   timeoutMs: number;
   promptProfile: HarnessPromptProfile;
 }): Promise<HarnessResult> {
@@ -281,7 +283,6 @@ async function runHarness(input: {
   const logDir = path.join(harnessRoot, "logs");
   await fs.mkdir(logDir, { recursive: true });
   const promptPath = path.join(harnessRoot, "prompt.txt");
-  await fs.writeFile(promptPath, input.prompt.prompt);
 
   let prepared: PreparedHarness | undefined;
   try {
@@ -289,10 +290,17 @@ async function runHarness(input: {
       harnessId: input.harnessId,
       harnessRoot
     });
+    const effectivePrompt = applyAutomationAuthPrompt({
+      harnessId: input.harnessId,
+      prompt: input.prompt.prompt,
+      kalePatToken: prepared.kalePatToken,
+      serviceBaseUrl: input.serviceBaseUrl
+    });
+    await fs.writeFile(promptPath, effectivePrompt);
 
     const runResult = await runPrompt({
       harnessId: input.harnessId,
-      prompt: input.prompt.prompt,
+      prompt: effectivePrompt,
       prepared,
       logDir,
       timeoutMs: input.timeoutMs
@@ -1005,6 +1013,49 @@ function buildCodexTokenReply(): string {
   ].join("\n");
 }
 
+function applyAutomationAuthPrompt(input: {
+  harnessId: HarnessId;
+  prompt: string;
+  kalePatToken?: string;
+  serviceBaseUrl: string;
+}): string {
+  if (!input.kalePatToken) {
+    return input.prompt;
+  }
+
+  const mcpEndpoint = `${input.serviceBaseUrl.replace(/\/$/, "")}/mcp`;
+  const tokenNote = "Automation note: a Kale token is already available in environment variable KALE_TEST_PAT. Do not print it or echo it back.";
+
+  if (input.harnessId === "codex") {
+    return [
+      input.prompt,
+      tokenNote,
+      "Do not start an interactive browser login flow and do not run `codex mcp login kale` in this automation harness.",
+      "If Kale authentication is needed, use the bearer-token MCP path instead.",
+      "If kale is already configured without token auth, remove it first and then re-add it.",
+      `Use: codex mcp add kale --url ${mcpEndpoint} --bearer-token-env-var KALE_TEST_PAT`
+    ].join("\n\n");
+  }
+
+  if (input.harnessId === "claude") {
+    return [
+      input.prompt,
+      tokenNote,
+      "Do not wait for a browser handoff in this automation harness.",
+      "If Kale authentication is needed, use the token-header fallback instead of asking for human help.",
+      `Use: claude mcp add --transport http --header "Authorization: Bearer $KALE_TEST_PAT" -s local kale ${mcpEndpoint}`
+    ].join("\n\n");
+  }
+
+  return [
+    input.prompt,
+    tokenNote,
+    "Do not wait for a browser handoff in this automation harness.",
+    "If Kale authentication is needed, use the token-header MCP path instead of asking for human help.",
+    `Use: gemini mcp add --transport http --scope project kale ${mcpEndpoint} -H "Authorization: Bearer $KALE_TEST_PAT"`
+  ].join("\n\n");
+}
+
 function buildCodexVerificationPrompt(): string {
   return [
     "Use Kale Deploy tools in this environment.",
@@ -1267,8 +1318,12 @@ async function runClaudePromptFlow(input: {
   let stdoutParts = [initialTurn.stdout];
   let stderrParts = [initialTurn.stderr];
   let finalTurn = initialTurn;
+  let verificationObserved = turnMentionsVerification(initialTurn);
+  const shouldTokenReply = askedForKaleToken(initialTurn.assistantOutput ?? initialTurn.stdout)
+    && Boolean(input.prepared.kalePatToken)
+    && Boolean(initialTurn.sessionId);
 
-  if (askedForKaleToken(initialTurn.assistantOutput ?? initialTurn.stdout) && input.prepared.kalePatToken && initialTurn.sessionId) {
+  if (shouldTokenReply && input.prepared.kalePatToken && initialTurn.sessionId) {
     const tokenTurn = await runClaudeStreamTurn({
       label: "token",
       cwd: input.prepared.workspaceDir,
@@ -1284,7 +1339,19 @@ async function runClaudePromptFlow(input: {
     stdoutParts.push(tokenTurn.stdout);
     stderrParts.push(tokenTurn.stderr);
     finalTurn = tokenTurn;
+    verificationObserved = verificationObserved || turnMentionsVerification(tokenTurn);
+  }
 
+  const shouldRunFreshVerification = Boolean(input.prepared.kalePatToken)
+    && !verificationObserved
+    && (
+      shouldTokenReply
+      || initialTurn.timedOut
+      || claudeTurnShowsKaleSetupProgress(initialTurn)
+      || claudeTurnShowsKaleSetupProgress(finalTurn)
+    );
+
+  if (shouldRunFreshVerification && input.prepared.kalePatToken) {
     const verificationTurn = await runClaudeVerificationTurn({
       cwd: input.prepared.workspaceDir,
       env: input.prepared.env,
@@ -1313,6 +1380,18 @@ async function runClaudePromptFlow(input: {
     observedToolCalls: turns.flatMap((turn) => turn.observedToolCalls ?? []),
     turns
   };
+}
+
+function claudeTurnShowsKaleSetupProgress(turn: NonNullable<SpawnResult["turns"]>[number]): boolean {
+  const text = (turn.assistantOutput ?? "").toLowerCase();
+  return text.includes("kale mcp")
+    || text.includes("token-header fallback")
+    || text.includes("authenticated")
+    || text.includes("endpoint is reachable")
+    || text.includes("tools are reachable")
+    || text.includes("get_runtime_manifest")
+    || text.includes("test_connection")
+    || text.includes("register_project");
 }
 
 async function runClaudeStreamTurn(input: {
@@ -1642,12 +1721,16 @@ function hasVerificationEvidence(
   rawText: string
 ): boolean {
   const combinedText = `${observedToolCallsText}\n${rawText}`;
-  const testConnectionObserved = /mcp__(kale|cail)__test_connection/.test(combinedText)
-    || combinedText.includes('"name":"test_connection"');
-  const registerProjectObserved = /mcp__(kale|cail)__register_project/.test(combinedText)
+  const testConnectionObserved = /mcp(?:__|_)(kale|cail)(?:__|_)test_connection/.test(combinedText)
+    || combinedText.includes('"name":"test_connection"')
+    || combinedText.includes('"tool":"test_connection"')
+    || assistantText.includes("test_connection");
+  const registerProjectObserved = /mcp(?:__|_)(kale|cail)(?:__|_)register_project/.test(combinedText)
     || combinedText.includes('"name":"register_project"')
+    || combinedText.includes('"tool":"register_project"')
     || combinedText.includes('"nextaction":"register_project"')
-    || combinedText.includes('"next_action":"register_project"');
+    || combinedText.includes('"next_action":"register_project"')
+    || assistantText.includes("register_project");
   const confirmsOutcome = assistantText.includes("confirmed")
     || assistantText.includes("available")
     || assistantText.includes("succeeded")

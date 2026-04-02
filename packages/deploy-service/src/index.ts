@@ -49,6 +49,7 @@ import {
 } from "./project-control-controller";
 import {
   buildConnectionClientUpdatePolicy,
+  buildConnectionLocalWrapperStatus,
   buildConnectionDynamicSkillPolicy,
   buildConnectionHarnessCatalog,
   buildHarnessInstallInstructions,
@@ -352,7 +353,15 @@ deployServiceApp.get("/.well-known/kale-runtime.json", (c) => {
 
 deployServiceApp.get("/.well-known/kale-connection.json", (c) => {
   const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  return c.json(buildConnectionHealthPayload(c.env, serviceBaseUrl), 200, {
+  return c.json(buildConnectionHealthPayload(
+    c.env,
+    serviceBaseUrl,
+    undefined,
+    {
+      harnessId: c.req.query("harness") ?? undefined,
+      localBundleVersion: c.req.query("localBundleVersion") ?? undefined
+    }
+  ), 200, {
     "cache-control": "public, max-age=300"
   });
 });
@@ -362,7 +371,15 @@ deployServiceApp.get("/mcp/ping", async (c) => {
 
   try {
     const identity = await requireMcpRequestIdentity(c.req.raw, c.env);
-    return c.json(buildConnectionHealthPayload(c.env, serviceBaseUrl, identity));
+    return c.json(buildConnectionHealthPayload(
+      c.env,
+      serviceBaseUrl,
+      identity,
+      {
+        harnessId: c.req.query("harness") ?? undefined,
+        localBundleVersion: c.req.query("localBundleVersion") ?? undefined
+      }
+    ));
   } catch (error) {
     const httpError = asHttpError(error);
     return oauthUnauthorizedResponse(c, c.env, httpError, readBearerToken(c.req.raw) ?? undefined);
@@ -668,6 +685,40 @@ deployServiceApp.get("/", async (c) => {
     serviceBaseUrl,
     mcpEndpoint
   });
+  const renderAgentInstallPanel = (agent: ReturnType<typeof buildHarnessInstallInstructions>[number], index: number) => {
+    const notesHtml = agent.installNotes.length > 0
+      ? `<ul class="install-notes">${agent.installNotes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>`
+      : "";
+
+    if (agent.installMode === "app_ui") {
+      const fallbackHtml = agent.manualFallback
+        ? `
+          <div class="install-fallback">
+            <p class="install-fallback-label">Manual fallback</p>
+            <div class="prompt-block" data-prompt="${escapeHtml(agent.manualFallback.instruction)}">${escapeHtml(agent.manualFallback.instruction)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div>
+            <p class="tab-hint">${escapeHtml(agent.manualFallback.hint)}</p>
+            ${agent.manualFallback.notes.length > 0 ? `<ul class="install-notes install-notes-subtle">${agent.manualFallback.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>` : ""}
+          </div>
+        `
+        : "";
+
+      return `<div class="tab-panel${index === 0 ? " active" : ""}" data-idx="${index}" role="tabpanel">
+        <div class="install-ui-card">
+          <p class="install-ui-label">Primary path</p>
+          <p class="install-ui-copy">${escapeHtml(agent.instruction)}</p>
+        </div>
+        <p class="tab-hint">${escapeHtml(agent.hint)}</p>
+        ${notesHtml}
+        ${fallbackHtml}
+      </div>`;
+    }
+
+    return `<div class="tab-panel${index === 0 ? " active" : ""}" data-idx="${index}" role="tabpanel">
+      <div class="prompt-block" data-prompt="${escapeHtml(agent.instruction)}">${escapeHtml(agent.instruction)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div>
+      <p class="tab-hint">${escapeHtml(agent.hint)}</p>
+      ${notesHtml}
+    </div>`;
+  };
 
   const clipboardSvg = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="6" height="3" rx="1"/><path d="M5 3H3.5A1.5 1.5 0 0 0 2 4.5v9A1.5 1.5 0 0 0 3.5 15h9a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 12.5 3H11"/></svg>`;
   const checkSvg = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4"/></svg>`;
@@ -863,6 +914,49 @@ deployServiceApp.get("/", async (c) => {
       .tab-panel .prompt-block {
         margin: 0;
         border-radius: 0;
+      }
+      .install-ui-card {
+        margin: 0;
+        padding: 14px 14px 10px;
+        background: linear-gradient(180deg, rgba(59, 107, 204, 0.06), rgba(23, 162, 184, 0.04));
+        border-bottom: 1px solid var(--border);
+      }
+      .install-ui-label,
+      .install-fallback-label {
+        margin: 0 0 0.45rem;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--teal);
+      }
+      .install-ui-copy {
+        margin: 0;
+        font-size: 0.92rem;
+        line-height: 1.6;
+        color: var(--ink);
+      }
+      .install-fallback {
+        margin: 8px 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.82);
+        padding: 10px 10px 8px;
+      }
+      .install-fallback .prompt-block {
+        margin: 0;
+        border-radius: 8px;
+      }
+      .install-notes {
+        margin: 0;
+        padding: 0 24px 12px 28px;
+        color: var(--muted);
+        font-size: 0.76rem;
+        line-height: 1.55;
+      }
+      .install-notes-subtle {
+        padding: 0 0 0 18px;
+        font-size: 0.72rem;
       }
 
       /* ── Prompt blocks (shared) ── */
@@ -1099,7 +1193,7 @@ deployServiceApp.get("/", async (c) => {
           <div class="tab-bar" role="tablist">
             ${agents.map((agent, i) => `<button class="tab-btn${i === 0 ? " active" : ""}" data-idx="${i}" role="tab" aria-selected="${i === 0 ? "true" : "false"}"><span class="tab-ico">${escapeHtml(agent.letter)}</span>${escapeHtml(agent.name)}</button>`).join("")}
           </div>
-          ${agents.map((agent, i) => `<div class="tab-panel${i === 0 ? " active" : ""}" data-idx="${i}" role="tabpanel"><div class="prompt-block" data-prompt="${escapeHtml(agent.instruction)}">${escapeHtml(agent.instruction)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div><p class="tab-hint">${escapeHtml(agent.hint)}</p></div>`).join("")}
+          ${agents.map((agent, i) => renderAgentInstallPanel(agent, i)).join("")}
         </div>
       </section>
 
@@ -1153,6 +1247,9 @@ deployServiceApp.get("/", async (c) => {
     document.querySelectorAll('.prompt-block').forEach(block => {
       const copyBtn = block.querySelector('.copy-btn');
       const promptText = block.dataset.prompt;
+      if (!copyBtn || !promptText) {
+        return;
+      }
 
       function doCopy() {
         navigator.clipboard.writeText(promptText).then(() => {
@@ -4060,7 +4157,15 @@ function buildProtectedAgentApiAuthErrorPayload(env: Env, serviceBaseUrl: string
   };
 }
 
-function buildConnectionHealthPayload(env: Env, serviceBaseUrl: string, identity?: AgentRequestIdentity) {
+function buildConnectionHealthPayload(
+  env: Env,
+  serviceBaseUrl: string,
+  identity?: AgentRequestIdentity,
+  wrapperCheck?: {
+    harnessId?: string;
+    localBundleVersion?: string;
+  }
+) {
   const oauthBaseUrl = resolveMcpOauthBaseUrl(env, serviceBaseUrl);
   const appSlug = resolveGitHubAppSlug(env);
   const appName = resolveGitHubAppName(env);
@@ -4070,6 +4175,19 @@ function buildConnectionHealthPayload(env: Env, serviceBaseUrl: string, identity
     serviceBaseUrl,
     mcpEndpoint: `${serviceBaseUrl}/mcp`
   };
+
+  const wrapperStatus = buildConnectionLocalWrapperStatus(
+    harnessPromptContext,
+    wrapperCheck?.harnessId,
+    wrapperCheck?.localBundleVersion
+  );
+
+  const summary = authenticated
+    ? "Kale Deploy is connected and authenticated. Register a repository or test a specific repo next."
+    : "Kale Deploy is reachable. Connect the MCP endpoint, complete the browser login flow, and then verify the connection before deploying.";
+  const summaryWithWarning = wrapperStatus?.warning
+    ? `${summary} ${wrapperStatus.summary}`
+    : summary;
 
   return {
     ok: true,
@@ -4087,12 +4205,11 @@ function buildConnectionHealthPayload(env: Env, serviceBaseUrl: string, identity
     dynamicSkillPolicy: buildConnectionDynamicSkillPolicy(),
     clientUpdatePolicy: buildConnectionClientUpdatePolicy(),
     harnesses: buildConnectionHarnessCatalog(harnessPromptContext),
+    localWrapperStatus: wrapperStatus,
     nextAction: authenticated ? "register_project" : "connect_mcp_or_complete_browser_login",
     deploymentTrigger: "github_push_to_default_branch",
     localFolderUploadSupported: false,
-    summary: authenticated
-      ? "Kale Deploy is connected and authenticated. Register a repository or test a specific repo next."
-      : "Kale Deploy is reachable. Connect the MCP endpoint, complete the browser login flow, and then verify the connection before deploying."
+    summary: summaryWithWarning
   };
 }
 
@@ -4527,7 +4644,15 @@ function createDeployServiceMcpServer(
     identityType: identity.type,
     maxProjectNameLength: MAX_PROJECT_NAME_LENGTH,
     getRuntimeManifest: () => buildRuntimeManifest(env, serviceBaseUrl),
-    getConnectionHealth: () => buildConnectionHealthPayload(env, serviceBaseUrl, identity),
+    getConnectionHealth: (input) => buildConnectionHealthPayload(
+      env,
+      serviceBaseUrl,
+      identity,
+      {
+        harnessId: input?.harness,
+        localBundleVersion: input?.localBundleVersion
+      }
+    ),
     getRepositoryLifecycle: async (repository, projectName) =>
       (await buildRepositoryLifecycleState(env, requestUrl, repository, projectName)).payload,
     queueValidation: async (input) => queueValidationJob(env, requestUrl, input),

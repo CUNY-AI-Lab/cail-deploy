@@ -47,6 +47,11 @@ Agents should prefer the structured control-plane endpoints over scraping GitHub
 - `DELETE /api/projects/<project-name>/secrets/<SECRET_NAME>`: remove one project secret
 - `DELETE /api/projects/<project-name>`: permanently delete the Kale project and its Kale-managed resources after confirming the slug in the request body
 
+Connection-health version checks:
+
+- `GET /.well-known/kale-connection.json?harness=<id>&localBundleVersion=<x.y.z>` can return `localWrapperStatus` when a reported local add-on, plugin, skill, or extension bundle looks stale.
+- `test_connection` accepts the same optional `harness` and `localBundleVersion` inputs for harnesses that want the warning over MCP instead of a public JSON fetch.
+
 The intended auth model is now:
 
 - `/mcp` is a standard OAuth-protected MCP resource
@@ -75,6 +80,7 @@ Dynamic skill policy:
 
 - The local skill or plugin bundle is bootstrap-only.
 - Agents should read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` from `get_runtime_manifest`.
+- `dynamic_skill_policy.wrapper_check_query_parameters` lists the public query fields for stale-wrapper checks.
 - Agents should use `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` from `test_connection` as the live source of truth after connection.
 - When the local bundle and the live service disagree, the live service wins.
 

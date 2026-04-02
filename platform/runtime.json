@@ -49,6 +49,10 @@
       "nextAction",
       "summary"
     ],
+    "wrapper_check_query_parameters": [
+      "harness",
+      "localBundleVersion"
+    ],
     "refresh_points": [
       "When Kale tools first appear, call get_runtime_manifest before following local install guidance.",
       "After authentication succeeds, call get_runtime_manifest and test_connection again before continuing.",

@@ -15,6 +15,7 @@ export type RuntimeDynamicSkillPolicy = {
   authoritative_tools: string[];
   runtime_manifest_fields: string[];
   test_connection_fields: string[];
+  wrapper_check_query_parameters: string[];
   refresh_points: string[];
   notes: string[];
 };
@@ -24,7 +25,41 @@ export type ConnectionDynamicSkillPolicy = {
   authoritativeTools: string[];
   runtimeManifestFields: string[];
   testConnectionFields: string[];
+  wrapperCheckQueryParameters: string[];
   refreshPoints: string[];
+  notes: string[];
+};
+
+export type WrapperStatusKind =
+  | "current"
+  | "stale"
+  | "ahead"
+  | "unparseable"
+  | "unknown_harness";
+
+export type RuntimeLocalWrapperStatus = {
+  harness_id: HarnessId | string;
+  status: WrapperStatusKind;
+  warning: boolean;
+  local_bundle_version: string;
+  expected_bundle_version?: string;
+  summary: string;
+  update_mode?: HarnessUpdateMode;
+  update_command?: string;
+  restart_required_after_update?: boolean;
+  notes: string[];
+};
+
+export type ConnectionLocalWrapperStatus = {
+  harnessId: HarnessId | string;
+  status: WrapperStatusKind;
+  warning: boolean;
+  localBundleVersion: string;
+  expectedBundleVersion?: string;
+  summary: string;
+  updateMode?: HarnessUpdateMode;
+  updateCommand?: string;
+  restartRequiredAfterUpdate?: boolean;
   notes: string[];
 };
 
@@ -32,8 +67,15 @@ export type HarnessInstallInstruction = {
   id: HarnessId;
   name: string;
   letter: string;
+  installMode: HarnessInstallMode;
   instruction: string;
   hint: string;
+  installNotes: string[];
+  manualFallback?: {
+    instruction: string;
+    hint: string;
+    notes: string[];
+  };
 };
 
 export type HarnessSetupPrompt = {
@@ -128,12 +170,19 @@ export type ConnectionHarnessCatalogEntry = {
 };
 
 export function buildHarnessInstallInstructions(input: HarnessPromptContext): HarnessInstallInstruction[] {
-  return buildHarnessCatalog(input).map(({ id, name, letter, instruction, hint }) => ({
+  return buildHarnessCatalog(input).map(({ id, name, letter, installMode, instruction, hint, installNotes, manualFallback }) => ({
     id,
     name,
     letter,
+    installMode,
     instruction,
-    hint
+    hint,
+    installNotes,
+    manualFallback: manualFallback ? {
+      instruction: manualFallback.instruction,
+      hint: manualFallback.hint,
+      notes: manualFallback.notes
+    } : undefined
   }));
 }
 
@@ -237,6 +286,10 @@ export function buildRuntimeDynamicSkillPolicy(): RuntimeDynamicSkillPolicy {
       "nextAction",
       "summary"
     ],
+    wrapper_check_query_parameters: [
+      "harness",
+      "localBundleVersion"
+    ],
     refresh_points: [
       "When Kale tools first appear, call get_runtime_manifest before following local install guidance.",
       "After authentication succeeds, call get_runtime_manifest and test_connection again before continuing.",
@@ -268,6 +321,10 @@ export function buildConnectionDynamicSkillPolicy(): ConnectionDynamicSkillPolic
       "nextAction",
       "summary"
     ],
+    wrapperCheckQueryParameters: [
+      "harness",
+      "localBundleVersion"
+    ],
     refreshPoints: [
       "When Kale tools first appear, call get_runtime_manifest before following local install guidance.",
       "After authentication succeeds, call get_runtime_manifest and test_connection again before continuing.",
@@ -279,6 +336,38 @@ export function buildConnectionDynamicSkillPolicy(): ConnectionDynamicSkillPolic
       "Use test_connection for the current next step and repository-specific readiness."
     ]
   };
+}
+
+export function buildRuntimeLocalWrapperStatus(
+  input: HarnessPromptContext,
+  harnessId: string | undefined,
+  localBundleVersion: string | undefined
+): RuntimeLocalWrapperStatus | undefined {
+  const status = evaluateLocalWrapperStatus(input, harnessId, localBundleVersion);
+  if (!status) {
+    return undefined;
+  }
+
+  return {
+    harness_id: status.harnessId,
+    status: status.status,
+    warning: status.warning,
+    local_bundle_version: status.localBundleVersion,
+    expected_bundle_version: status.expectedBundleVersion,
+    summary: status.summary,
+    update_mode: status.updateMode,
+    update_command: status.updateCommand,
+    restart_required_after_update: status.restartRequiredAfterUpdate,
+    notes: status.notes
+  };
+}
+
+export function buildConnectionLocalWrapperStatus(
+  input: HarnessPromptContext,
+  harnessId: string | undefined,
+  localBundleVersion: string | undefined
+): ConnectionLocalWrapperStatus | undefined {
+  return evaluateLocalWrapperStatus(input, harnessId, localBundleVersion);
 }
 
 export function buildHarnessSetupPrompts(
@@ -395,6 +484,119 @@ function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[]
       }
     }
   ];
+}
+
+function evaluateLocalWrapperStatus(
+  input: HarnessPromptContext,
+  harnessId: string | undefined,
+  localBundleVersion: string | undefined
+): ConnectionLocalWrapperStatus | undefined {
+  const normalizedHarnessId = harnessId?.trim().toLowerCase();
+  const normalizedBundleVersion = localBundleVersion?.trim();
+  if (!normalizedHarnessId || !normalizedBundleVersion) {
+    return undefined;
+  }
+
+  const harness = buildHarnessCatalog(input).find((entry) => entry.id === normalizedHarnessId);
+  if (!harness) {
+    return {
+      harnessId: normalizedHarnessId,
+      status: "unknown_harness",
+      warning: true,
+      localBundleVersion: normalizedBundleVersion,
+      summary: `Kale does not recognize the local harness '${normalizedHarnessId}', so it cannot verify whether the wrapper is current.`,
+      notes: [
+        "Report one of the supported harness ids: claude, codex, or gemini."
+      ]
+    };
+  }
+
+  const comparison = compareBundleVersions(normalizedBundleVersion, harness.localWrapper.bundleVersion);
+  if (comparison === null) {
+    return {
+      harnessId: harness.id,
+      status: "unparseable",
+      warning: true,
+      localBundleVersion: normalizedBundleVersion,
+      expectedBundleVersion: harness.localWrapper.bundleVersion,
+      updateMode: harness.localWrapper.updateMode,
+      updateCommand: harness.localWrapper.updateCommand,
+      restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
+      summary: `${harness.name} reported local bundle version '${normalizedBundleVersion}', which Kale could not compare with the current bundle '${harness.localWrapper.bundleVersion}'.`,
+      notes: [
+        "Use a simple dotted version such as 0.2.0 when reporting local wrapper versions.",
+        ...harness.localWrapper.notes
+      ]
+    };
+  }
+
+  if (comparison < 0) {
+    return {
+      harnessId: harness.id,
+      status: "stale",
+      warning: true,
+      localBundleVersion: normalizedBundleVersion,
+      expectedBundleVersion: harness.localWrapper.bundleVersion,
+      updateMode: harness.localWrapper.updateMode,
+      updateCommand: harness.localWrapper.updateCommand,
+      restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
+      summary: `${harness.name} reported local bundle version ${normalizedBundleVersion}, but Kale currently publishes ${harness.localWrapper.bundleVersion}. Refresh or update the local wrapper before relying on stale local guidance.`,
+      notes: harness.localWrapper.notes
+    };
+  }
+
+  if (comparison > 0) {
+    return {
+      harnessId: harness.id,
+      status: "ahead",
+      warning: false,
+      localBundleVersion: normalizedBundleVersion,
+      expectedBundleVersion: harness.localWrapper.bundleVersion,
+      updateMode: harness.localWrapper.updateMode,
+      updateCommand: harness.localWrapper.updateCommand,
+      restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
+      summary: `${harness.name} reported local bundle version ${normalizedBundleVersion}, which is newer than the currently published Kale bundle ${harness.localWrapper.bundleVersion}.`,
+      notes: harness.localWrapper.notes
+    };
+  }
+
+  return {
+    harnessId: harness.id,
+    status: "current",
+    warning: false,
+    localBundleVersion: normalizedBundleVersion,
+    expectedBundleVersion: harness.localWrapper.bundleVersion,
+    updateMode: harness.localWrapper.updateMode,
+    updateCommand: harness.localWrapper.updateCommand,
+    restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
+    summary: `${harness.name} reported the current Kale bundle version ${normalizedBundleVersion}.`,
+    notes: harness.localWrapper.notes
+  };
+}
+
+function compareBundleVersions(left: string, right: string): number | null {
+  const leftParts = parseBundleVersion(left);
+  const rightParts = parseBundleVersion(right);
+  if (!leftParts || !rightParts) {
+    return null;
+  }
+
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const delta = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (delta !== 0) {
+      return delta;
+    }
+  }
+
+  return 0;
+}
+
+function parseBundleVersion(version: string): number[] | null {
+  if (!/^\d+(?:\.\d+)*$/.test(version)) {
+    return null;
+  }
+  return version.split(".").map((segment) => Number(segment));
 }
 
 function buildInstalledHarnessSetupPrompts(input: HarnessPromptContext): HarnessSetupPrompt[] {

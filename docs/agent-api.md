@@ -37,6 +37,7 @@ Important current manifest fields:
 - `dynamic_skill_policy`
 - `client_update_policy`
 - `agent_harnesses`
+- `dynamic_skill_policy.wrapper_check_query_parameters`
 
 For dynamic harness behavior, agents should:
 
@@ -104,6 +105,11 @@ Public connection-health document:
 
 - `GET https://cuny.qzz.io/kale/.well-known/kale-connection.json`
 
+Optional stale-wrapper check query parameters:
+
+- `harness=claude|codex|gemini`
+- `localBundleVersion=<x.y.z>`
+
 Use this when you want one machine-readable answer to:
 
 - is Kale reachable?
@@ -116,6 +122,7 @@ Notes:
 - the MCP layer is an adapter over the existing deploy-service API, not a separate control plane
 - `guidedInstallUrl` still represents a human GitHub browser handoff step
 - the MCP server also exposes runtime resources at `kale://runtime/manifest` and `kale://runtime/auth`
+- `test_connection` now also accepts optional `harness` and `localBundleVersion` inputs and can return `localWrapperStatus` when an installed local wrapper looks stale
 
 ## Repository lifecycle status
 

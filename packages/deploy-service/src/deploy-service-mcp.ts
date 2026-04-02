@@ -10,6 +10,13 @@ type McpStatusResponse = {
   body: McpPayload;
 };
 
+type ConnectionHealthPayload = McpPayload & {
+  localWrapperStatus?: {
+    warning?: boolean;
+    summary?: string;
+  };
+};
+
 type RepositoryLifecyclePayload = McpPayload & {
   summary: string;
   nextAction?: string;
@@ -20,7 +27,10 @@ export function createDeployServiceMcpServer(input: {
   identityType: string;
   maxProjectNameLength: number;
   getRuntimeManifest: () => McpPayload;
-  getConnectionHealth: () => McpPayload;
+  getConnectionHealth: (input?: {
+    harness?: string;
+    localBundleVersion?: string;
+  }) => ConnectionHealthPayload;
   getRepositoryLifecycle: (
     repository: { owner: string; repo: string },
     projectName?: string
@@ -75,18 +85,23 @@ export function createDeployServiceMcpServer(input: {
       description: "Confirm that Kale Deploy is authenticated and return the next step, optionally for a specific repository.",
       inputSchema: {
         repository: z.string().optional().describe("Optional GitHub repository as owner/repo or a full GitHub URL."),
-        projectName: z.string().optional().describe("Optional requested project slug override.")
+        projectName: z.string().optional().describe("Optional requested project slug override."),
+        harness: z.string().optional().describe("Optional local harness id, such as claude, codex, or gemini."),
+        localBundleVersion: z.string().optional().describe("Optional local Kale wrapper bundle version for stale-wrapper checks.")
       }
     },
-    async ({ repository, projectName }) => {
+    async ({ repository, projectName, harness, localBundleVersion }) => {
+      const connectionHealth = input.getConnectionHealth({ harness, localBundleVersion });
       if (repository) {
         const lifecycle = await input.getRepositoryLifecycle(parseRepositoryInput(repository), projectName);
         return createMcpToolResult(
           `Kale Deploy is connected and authenticated. ${lifecycle.summary}`,
           {
-            ...input.getConnectionHealth(),
+            ...connectionHealth,
             nextAction: lifecycle.nextAction,
-            summary: `Kale Deploy is connected and authenticated. ${lifecycle.summary}`,
+            summary: connectionHealth.localWrapperStatus?.warning
+              ? `Kale Deploy is connected and authenticated. ${lifecycle.summary} ${connectionHealth.localWrapperStatus.summary}`
+              : `Kale Deploy is connected and authenticated. ${lifecycle.summary}`,
             repositoryStatus: lifecycle
           }
         );
@@ -95,9 +110,11 @@ export function createDeployServiceMcpServer(input: {
       return createMcpToolResult(
         "Kale Deploy is connected and authenticated.",
         {
-          ...input.getConnectionHealth(),
+          ...connectionHealth,
           nextAction: "register_project",
-          summary: "Kale Deploy is connected and authenticated. Call register_project for the repository you want to deploy next."
+          summary: connectionHealth.localWrapperStatus?.warning
+            ? `Kale Deploy is connected and authenticated. Call register_project for the repository you want to deploy next. ${connectionHealth.localWrapperStatus.summary}`
+            : "Kale Deploy is connected and authenticated. Call register_project for the repository you want to deploy next."
         }
       );
     }

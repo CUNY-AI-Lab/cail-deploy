@@ -83,3 +83,21 @@ npm run harness:onboarding -- --scenario-file /absolute/path/to/overrides.json
 ```
 
 That lets you compare current app directions against a proposed simpler flow before changing the product.
+
+## Recurring Regression Workflow
+
+The repo now includes:
+
+- [.github/workflows/kale-harness-onboarding.yml](/Users/stephenzweibel/Apps/CAIL-deploy/.github/workflows/kale-harness-onboarding.yml)
+
+That workflow is intentionally self-hosted. It assumes the runner already has:
+
+- `codex`, `claude`, and `gemini` installed
+- those harnesses already logged in locally
+- a `KALE_TEST_PAT` GitHub Actions secret for the Kale token handoff
+
+The scheduled run stays off until the repository variable below is enabled:
+
+- `KALE_HARNESS_ONBOARDING_ENABLED=true`
+
+Without a self-hosted runner and that variable, use the local `npm run harness:onboarding` path instead of expecting GitHub-hosted runners to produce a meaningful signal.

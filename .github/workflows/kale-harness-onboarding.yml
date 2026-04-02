@@ -1,0 +1,93 @@
+name: Kale Harness Onboarding
+
+on:
+  workflow_dispatch:
+    inputs:
+      harness:
+        description: "Optional harness subset (claude,codex,gemini)"
+        required: false
+        type: string
+      prompt_profile:
+        description: "Prompt profile to use"
+        required: false
+        default: "current"
+        type: choice
+        options:
+          - current
+          - skill-first
+      timeout_ms:
+        description: "Per-harness timeout in milliseconds"
+        required: false
+        default: "180000"
+        type: string
+  schedule:
+    - cron: "0 14 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kale-harness-onboarding
+  cancel-in-progress: false
+
+jobs:
+  onboarding:
+    if: github.event_name == 'workflow_dispatch' || vars.KALE_HARNESS_ONBOARDING_ENABLED == 'true'
+    runs-on: self-hosted
+    timeout-minutes: 30
+    env:
+      KALE_TEST_PAT: ${{ secrets.KALE_TEST_PAT }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify harness CLIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          codex --help >/dev/null
+          claude --help >/dev/null
+          gemini --help >/dev/null
+
+      - name: Verify Kale PAT is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${KALE_TEST_PAT:-}" ]; then
+            echo "KALE_TEST_PAT secret is required for the harness onboarding workflow." >&2
+            exit 1
+          fi
+
+      - name: Run harness onboarding lab
+        shell: bash
+        env:
+          HARNESS_INPUT: ${{ github.event.inputs.harness }}
+          PROMPT_PROFILE_INPUT: ${{ github.event.inputs.prompt_profile }}
+          TIMEOUT_MS_INPUT: ${{ github.event.inputs.timeout_ms }}
+        run: |
+          set -euo pipefail
+          mkdir -p tmp/harness-onboarding/latest
+          HARNESS="${HARNESS_INPUT:-}"
+          PROMPT_PROFILE="${PROMPT_PROFILE_INPUT:-current}"
+          TIMEOUT_MS="${TIMEOUT_MS_INPUT:-180000}"
+          ARGS=(--out-dir tmp/harness-onboarding/latest --prompt-profile "$PROMPT_PROFILE" --timeout-ms "$TIMEOUT_MS")
+          if [ -n "$HARNESS" ]; then
+            ARGS+=(--harness "$HARNESS")
+          fi
+          npm run harness:onboarding -- "${ARGS[@]}"
+
+      - name: Upload onboarding lab output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kale-harness-onboarding
+          path: tmp/harness-onboarding/latest
