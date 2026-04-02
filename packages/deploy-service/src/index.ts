@@ -48,7 +48,13 @@ import {
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
 import {
-  buildHarnessInstallInstructions
+  buildConnectionClientUpdatePolicy,
+  buildConnectionDynamicSkillPolicy,
+  buildConnectionHarnessCatalog,
+  buildHarnessInstallInstructions,
+  buildRuntimeClientUpdatePolicy,
+  buildRuntimeDynamicSkillPolicy,
+  buildRuntimeHarnessCatalog
 } from "./harness-onboarding";
 import {
   ensurePrimaryProjectDomainLabel
@@ -1087,7 +1093,7 @@ deployServiceApp.get("/", async (c) => {
         <div class="step-header">
           <span class="step-badge">Step 1</span>
           <h2>Add Kale to your agent</h2>
-          <p class="step-desc">Paste this command into your AI agent once. After that, it can build and deploy apps for you.</p>
+          <p class="step-desc">Use this install step once in your AI agent. After that, it can build and deploy apps for you.</p>
         </div>
         <div class="agent-tabs">
           <div class="tab-bar" role="tablist">
@@ -4059,6 +4065,11 @@ function buildConnectionHealthPayload(env: Env, serviceBaseUrl: string, identity
   const appSlug = resolveGitHubAppSlug(env);
   const appName = resolveGitHubAppName(env);
   const authenticated = Boolean(identity && identity.type !== "anonymous");
+  const harnessPromptContext = {
+    marketingName: "Kale Deploy",
+    serviceBaseUrl,
+    mcpEndpoint: `${serviceBaseUrl}/mcp`
+  };
 
   return {
     ok: true,
@@ -4073,6 +4084,9 @@ function buildConnectionHealthPayload(env: Env, serviceBaseUrl: string, identity
     authenticated,
     identityType: identity?.type,
     email: identity && "email" in identity ? identity.email : undefined,
+    dynamicSkillPolicy: buildConnectionDynamicSkillPolicy(),
+    clientUpdatePolicy: buildConnectionClientUpdatePolicy(),
+    harnesses: buildConnectionHarnessCatalog(harnessPromptContext),
     nextAction: authenticated ? "register_project" : "connect_mcp_or_complete_browser_login",
     deploymentTrigger: "github_push_to_default_branch",
     localFolderUploadSupported: false,
@@ -4313,6 +4327,11 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
   const oauthBaseUrl = resolveMcpOauthBaseUrl(env, serviceBaseUrl);
   const oauthAuthorizationMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-authorization-server`;
   const oauthProtectedResourceMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`;
+  const harnessPromptContext = {
+    marketingName: "Kale Deploy",
+    serviceBaseUrl,
+    mcpEndpoint: `${serviceBaseUrl}/mcp`
+  };
   return {
     name: "kale-runtime",
     version: 1,
@@ -4339,6 +4358,9 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     static_project_assets_directory_hint: "public",
     static_project_request_time_logic_key: "requestTimeLogic",
     static_project_request_time_logic_value: "none",
+    dynamic_skill_policy: buildRuntimeDynamicSkillPolicy(),
+    client_update_policy: buildRuntimeClientUpdatePolicy(),
+    agent_harnesses: buildRuntimeHarnessCatalog(harnessPromptContext),
     agent_build_guidance: [
       "Pick a starter shape explicitly: static for pure publishing sites, worker for projects that need request-time behavior.",
       "If the project is mostly content or simple publishing, prefer a pure static project with kale.project.json, a Wrangler assets directory, and no request-time Worker routes, response headers, _headers file, or _redirects file.",

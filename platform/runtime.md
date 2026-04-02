@@ -57,9 +57,26 @@ The intended auth model is now:
 
 Current harness note:
 
-- The public setup page now shows short per-agent install commands for the `kale-deploy` add-on, then a plain-language build prompt.
-- Codex can usually stay on the direct MCP OAuth path
+- The public setup page now shows short per-agent install instructions for the `kale-deploy` add-on, then a plain-language build prompt.
+- Codex normally uses the Kale add-on install path. The direct `codex mcp add` plus `codex mcp login` flow is the manual fallback.
 - Claude Code is currently more reliable through `GET /connect`, where the user generates a Kale token and the harness re-adds `/mcp` with `Authorization: Bearer kale_pat_*`
+- Gemini CLI can install Kale as an extension, and the preferred public path uses `--auto-update`
+
+Harness update policy:
+
+- Remote Kale MCP and runtime changes apply immediately.
+- Local add-on, plugin, skill, or extension updates are harness-specific.
+- The runtime manifest should be treated as the source of truth when local wrapper copy drifts.
+- Claude has an explicit plugin update command.
+- Gemini has explicit extension update commands and also supports `--auto-update` at install time.
+- Codex does not currently expose add-on update commands in the CLI, so stale local add-ons may need an app-level refresh or reinstall.
+
+Dynamic skill policy:
+
+- The local skill or plugin bundle is bootstrap-only.
+- Agents should read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` from `get_runtime_manifest`.
+- Agents should use `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` from `test_connection` as the live source of truth after connection.
+- When the local bundle and the live service disagree, the live service wins.
 
 The JSON endpoints above still exist, but for agent harnesses the preferred path is now MCP first.
 

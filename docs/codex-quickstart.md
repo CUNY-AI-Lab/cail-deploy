@@ -2,20 +2,28 @@
 
 Use this when you want one clean Codex-first path for Kale Deploy.
 
-## 1. Connect Kale in Codex
+## 1. Install or connect Kale in Codex
 
-Run:
+The normal path is to install the Kale add-on shown on the Kale homepage or in
+the Codex app.
+
+If you need the manual fallback, run:
 
 ```bash
 codex mcp add kale --url https://cuny.qzz.io/kale/mcp
 codex mcp login kale
 ```
 
-Codex will open a browser sign-in flow for Kale Deploy. Finish that sign-in, then come back to Codex.
+Codex will open a browser sign-in flow for Kale Deploy. Finish that sign-in,
+then come back to Codex.
 
 ## 2. Confirm the connection
 
 Ask Codex to confirm that Kale is connected and ready.
+
+Once Kale tools are visible, Codex should call `get_runtime_manifest` and read
+`dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses`, then use
+`test_connection` for the live `nextAction` and `summary`.
 
 You want Codex to be able to say something definite like:
 

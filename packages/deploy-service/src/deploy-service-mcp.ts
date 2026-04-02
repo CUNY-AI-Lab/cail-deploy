@@ -48,6 +48,7 @@ export function createDeployServiceMcpServer(input: {
     {
       instructions: [
         "Use register_project to determine the canonical slug and guided GitHub install URL.",
+        "Use get_runtime_manifest for dynamic_skill_policy, current harness install policy, and update policy if local add-on guidance looks stale.",
         "Use validate_project for a build-only check before asking the user to go live.",
         "If guidedInstallUrl is present, the next step still requires a human browser handoff to GitHub.",
         "Kale Deploy uses standard MCP OAuth on /mcp; let your harness open the browser login flow automatically.",

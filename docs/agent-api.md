@@ -34,6 +34,14 @@ Important current manifest fields:
 - `worker_project_shape_value: "worker_app"`
 - `static_project_request_time_logic_key: "requestTimeLogic"`
 - `static_project_request_time_logic_value: "none"`
+- `dynamic_skill_policy`
+- `client_update_policy`
+- `agent_harnesses`
+
+For dynamic harness behavior, agents should:
+
+- read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` from `get_runtime_manifest`
+- use `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` from `test_connection` as the live source of truth once Kale is connected
 
 Current shape policy:
 
@@ -490,6 +498,12 @@ Today, the strongest loop is:
 10. poll `get_build_job_status` or `get_project_status` until the state is terminal
 
 If the GitHub App is already installed for all repositories in the owner account, the agent can usually do the whole loop without pausing after repo creation.
+
+Harness update note:
+
+- Remote MCP behavior updates immediately.
+- Local plugin, add-on, skill, or extension updates are harness-specific.
+- Agents should prefer the live runtime manifest for current install and update guidance when local wrapper copy looks stale.
 
 ## Local preflight before push
 

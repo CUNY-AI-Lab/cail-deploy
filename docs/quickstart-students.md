@@ -35,7 +35,7 @@ Choose your agent and run the install instruction shown on the page:
 - Codex
 - Gemini CLI
 
-Paste that install instruction into the app you use.
+Follow that install instruction in the app you use.
 
 The install step is meant to be global for that agent, not just for one folder.
 
@@ -48,6 +48,19 @@ Current Claude note:
 - In practice, that plugin guidance usually leads Claude to send you to [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), do the token handoff, and then verify that Kale tools are really available.
 - If you use Kale from more than one computer, reuse the same Claude token on both machines for now. Generating a new one at `/connect` currently revokes the previous active token.
 - Do not use Claude's interactive `/mcp` screen for Kale right now.
+
+Current Codex note:
+
+- Codex normally uses the Kale add-on install path shown on the homepage or in the Codex app.
+- If that add-on path is unavailable, the manual fallback is the direct Kale MCP connection.
+- Remote Kale behavior updates immediately, but local add-on refresh behavior is harness-specific.
+- When a connected agent wants the current install/update truth, it should read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` from the runtime manifest, then use `test_connection` for the live next step.
+
+Current Gemini note:
+
+- Gemini CLI can install Kale as an extension.
+- The preferred public install path uses `--auto-update` so the extension stays current.
+- Gemini also supports explicit extension updates later if needed.
 
 ### 2. Ask the agent to build the app
 

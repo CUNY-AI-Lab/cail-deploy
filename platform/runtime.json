@@ -29,6 +29,140 @@
   "static_project_assets_directory_hint": "public",
   "static_project_request_time_logic_key": "requestTimeLogic",
   "static_project_request_time_logic_value": "none",
+  "dynamic_skill_policy": {
+    "local_bundle_role": "bootstrap_only",
+    "authoritative_tools": [
+      "get_runtime_manifest",
+      "test_connection"
+    ],
+    "runtime_manifest_fields": [
+      "dynamic_skill_policy",
+      "client_update_policy",
+      "agent_harnesses",
+      "agent_build_guidance",
+      "agent_api.auth.human_handoff_rules"
+    ],
+    "test_connection_fields": [
+      "dynamicSkillPolicy",
+      "clientUpdatePolicy",
+      "harnesses",
+      "nextAction",
+      "summary"
+    ],
+    "refresh_points": [
+      "When Kale tools first appear, call get_runtime_manifest before following local install guidance.",
+      "After authentication succeeds, call get_runtime_manifest and test_connection again before continuing.",
+      "When the local bundle and the live service disagree, prefer the live service fields."
+    ],
+    "notes": [
+      "The checked-in plugin, command, and skill copy is a bootstrap layer.",
+      "Use the runtime manifest for install, update, and handoff policy.",
+      "Use test_connection for the current next step and repository-specific readiness."
+    ]
+  },
+  "client_update_policy": {
+    "remote_mcp_update_mode": "automatic",
+    "local_wrapper_update_mode": "harness_specific",
+    "runtime_manifest_preferred": true,
+    "notes": [
+      "Remote Kale MCP and runtime changes apply immediately.",
+      "Local add-on, plugin, skill, or extension updates depend on the harness install surface.",
+      "When the local wrapper and the runtime manifest disagree, prefer the runtime manifest."
+    ]
+  },
+  "agent_harnesses": [
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "letter": "C",
+      "install_surface": "plugin_marketplace",
+      "install_mode": "command",
+      "install_instruction": "/plugin marketplace add CUNY-AI-Lab/CAIL-deploy\n/plugin install kale-deploy@cuny-ai-lab",
+      "install_hint": "Paste inside Claude Code",
+      "install_notes": [
+        "Claude installs Kale as a local plugin bundle.",
+        "The plugin install is separate from Kale MCP authentication."
+      ],
+      "manual_fallback": {
+        "auth_mode": "token_header",
+        "instruction": "claude mcp remove kale -s local 2>/dev/null\nclaude mcp remove kale -s user 2>/dev/null\nclaude mcp add --transport http --header \"Authorization: Bearer THE_TOKEN\" -s local kale https://cuny.qzz.io/kale/mcp",
+        "hint": "Use this only if the normal browser flow stalls",
+        "notes": [
+          "Claude Code is currently most reliable through the token bridge when OAuth does not complete cleanly.",
+          "Generate THE_TOKEN from https://cuny.qzz.io/kale/connect."
+        ]
+      },
+      "local_wrapper": {
+        "kind": "plugin",
+        "package_name": "kale-deploy@cuny-ai-lab",
+        "bundle_version": "0.2.0",
+        "update_mode": "manual",
+        "update_command": "claude plugins update kale-deploy@cuny-ai-lab -s local",
+        "restart_required_after_update": true,
+        "notes": [
+          "Claude supports plugin updates directly.",
+          "Local plugin updates require a restart to apply."
+        ]
+      }
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "letter": "X",
+      "install_surface": "app_add_on",
+      "install_mode": "app_ui",
+      "install_instruction": "Install the Kale Deploy add-on in the Codex app or from the Kale homepage.\n\nIf you need the manual fallback:\ncodex mcp add kale --url https://cuny.qzz.io/kale/mcp\ncodex mcp login kale",
+      "install_hint": "Use the add-on installer first; the MCP commands are the fallback",
+      "install_notes": [
+        "Codex uses the Kale add-on as the normal install surface.",
+        "The Codex CLI exposes MCP management, not plugin management."
+      ],
+      "manual_fallback": {
+        "auth_mode": "oauth_browser",
+        "instruction": "codex mcp add kale --url https://cuny.qzz.io/kale/mcp\ncodex mcp login kale",
+        "hint": "Use this when you need the direct MCP path",
+        "notes": [
+          "The browser OAuth flow should open automatically from codex mcp login.",
+          "Remote MCP changes update immediately even if the local add-on is stale."
+        ]
+      },
+      "local_wrapper": {
+        "kind": "add_on",
+        "package_name": "kale-deploy",
+        "bundle_version": "0.2.0",
+        "update_mode": "unknown",
+        "notes": [
+          "Codex CLI does not currently expose add-on update commands.",
+          "If the add-on looks stale, refresh or reinstall it in the Codex app."
+        ]
+      }
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "letter": "G",
+      "install_surface": "extension",
+      "install_mode": "command",
+      "install_instruction": "/extensions install https://github.com/CUNY-AI-Lab/CAIL-deploy --auto-update",
+      "install_hint": "Paste inside Gemini CLI",
+      "install_notes": [
+        "Gemini installs Kale as an extension.",
+        "The --auto-update flag keeps the extension on the latest published version."
+      ],
+      "local_wrapper": {
+        "kind": "extension",
+        "package_name": "kale-deploy",
+        "bundle_version": "0.2.0",
+        "update_mode": "manual",
+        "update_command": "gemini extensions update kale-deploy",
+        "notes": [
+          "Gemini extensions support explicit update commands.",
+          "Using --auto-update at install time is the preferred public path.",
+          "Gemini also supports linking local skills, which reflect source changes immediately."
+        ]
+      }
+    }
+  ],
   "agent_build_guidance": [
     "Pick a starter shape explicitly: static for pure publishing sites, worker for projects that need request-time behavior.",
     "If the project is mostly content or simple publishing, prefer a pure static project with kale.project.json, a Wrangler assets directory, and no request-time Worker routes, response headers, _headers file, or _redirects file.",

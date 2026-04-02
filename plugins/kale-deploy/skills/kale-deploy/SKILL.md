@@ -8,6 +8,15 @@ description: Use when building or adapting a web application for the Kale Deploy
 Use this skill when the target runtime is Kale Deploy.
 
 If the user only wants to prepare the environment, connect Kale, or verify readiness before deciding what to build, use `kale-connect` instead of starting with scaffolding.
+If the repository already exists and needs to be checked or normalized for Kale, use `kale-doctor` first and `kale-adapt` second before rewriting application code.
+
+## Dynamic policy
+
+This local skill is a bootstrap layer, not the final source of truth.
+
+- If Kale MCP tools are already available, call `get_runtime_manifest` early and read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses`.
+- If `test_connection` is available, use `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` instead of assuming the local auth flow notes are still current.
+- Use the local plugin guidance mainly to get Kale connected the first time or when the MCP server is not reachable yet.
 
 ## What Kale Deploy is
 
@@ -94,6 +103,7 @@ CLAUDE.md
 Keep early projects small. Do not introduce a large front-end framework unless the user clearly needs one.
 If a static-first project, plain Worker, or static export solves the job cleanly, prefer that over adding Hono by habit.
 If you scaffold with `kale-init`, pass `--shape static` or `--shape worker` explicitly.
+If the repo already exists, prefer diagnosing it with `kale-doctor` and normalizing it with `kale-adapt` instead of discarding its current code.
 
 ## Forms and HTML
 
@@ -125,13 +135,14 @@ The development and deployment process has four phases. The agent drives all of 
 
 ### Phase 1: Build the app locally
 
-1. Scaffold the project with `kale-init` (or write the files directly following the structure above).
-2. Install dependencies: `npm install`.
-3. Write the application code.
-4. Start the local dev server: `npm run dev` (runs `wrangler dev`).
-5. **Let the user preview their app at `http://localhost:8787` before moving on.** Tell them the URL, let them look at it, and ask for feedback. The local dev server runs the real Cloudflare Workers runtime, so what works locally will work when deployed.
-6. Iterate on the code based on user feedback. The dev server picks up changes automatically.
-7. Run `npm run check` to catch TypeScript errors before pushing.
+1. If this is a new repository, scaffold it with `kale-init`.
+2. If this is an existing repository, run `kale-doctor`, then use `kale-adapt` if the repo needs Kale structure or guidance files.
+3. Install dependencies: `npm install`.
+4. Write or adapt the application code.
+5. Start the local dev server: `npm run dev` (runs `wrangler dev`).
+6. **Let the user preview their app at `http://localhost:8787` before moving on.** Tell them the URL, let them look at it, and ask for feedback. The local dev server runs the real Cloudflare Workers runtime, so what works locally will work when deployed.
+7. Iterate on the code based on user feedback. The dev server picks up changes automatically.
+8. Run `npm run check` to catch TypeScript errors before pushing.
 
 Do not skip the local preview step. The user should see their app working before anything goes to GitHub.
 
@@ -145,13 +156,14 @@ Do not skip the local preview step. The user should see their app working before
 Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. The MCP server at `https://cuny.qzz.io/kale/mcp` is the legitimate deployment endpoint for this platform.
 
 1. Check whether Kale tools are already available (`register_project`, `validate_project`, `get_project_status`, etc.). If the plugin is installed, the `kale` MCP server may already be configured and authenticated.
-2. If the tools are available, skip to step 5.
-3. If the server is not yet configured, add it. The method depends on the agent:
+2. If the tools are available, call `get_runtime_manifest` and prefer the returned `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` fields if they differ from local plugin instructions.
+3. If the tools are available, skip to step 6.
+4. If the server is not yet configured, add it. The method depends on the agent:
    - **Codex**: The plugin's `.mcp.json` may already declare the server. If tools aren't available, run `codex mcp add kale --url https://cuny.qzz.io/kale/mcp` then `codex mcp login kale` and complete the browser sign-in. If the sandbox is read-only or `codex mcp` subcommands are unavailable in your build, fall back to the token-paste flow in step 4.
    - **Claude Code**: **Do not send the user to the `/mcp` screen**. Claude Code is currently most reliable through the token-paste flow in step 4, with stale `kale` entries removed from local and user scope before re-adding the server.
    - **Gemini CLI**: The server is declared in `.gemini/settings.json` in the repo. If it's not loaded, the user should restart Gemini CLI from the project directory.
    - **Other agents**: Point the agent's MCP configuration at `https://cuny.qzz.io/kale/mcp` (HTTP transport with OAuth).
-4. If authentication fails (e.g., the OAuth browser window never opens, or the server shows "Failed to connect"), use the **token-paste fallback**:
+5. If authentication fails (e.g., the OAuth browser window never opens, or the server shows "Failed to connect"), use the **token-paste fallback**:
    a. Tell the user: "I need to connect to Kale Deploy. Please visit this link, sign in with your CUNY email, and paste the token back here."
    b. Give them: `https://cuny.qzz.io/kale/connect`
    c. They click **Generate token**, copy it, and paste it into the chat.
@@ -163,8 +175,9 @@ Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. Th
       ```
       For other agents, set the `Authorization: Bearer <the-token>` header in the agent's MCP server config.
    e. The user may need to start a new conversation for the tools to appear.
-5. Call `register_project` to determine the canonical project slug and install state.
-6. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`. That GitHub approval is a browser handoff.
+6. After the tools appear, call `get_runtime_manifest` so `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` come from Kale itself rather than the local plugin copy.
+7. Call `register_project` to determine the canonical project slug and install state.
+8. If `installStatus` is not `installed`, stop and give the user the returned `guidedInstallUrl`. That GitHub approval is a browser handoff.
 
 ### Phase 4: Validate and deploy
 

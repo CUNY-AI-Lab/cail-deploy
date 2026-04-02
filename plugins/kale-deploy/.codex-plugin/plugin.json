@@ -1,13 +1,13 @@
 {
   "name": "kale-deploy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Kale Deploy assistant adapter for building Kale-compatible Cloudflare apps.",
   "author": {
     "name": "CUNY AI Lab",
     "email": "hello@ailab.gc.cuny.edu",
     "url": "https://github.com/CUNY-AI-Lab"
   },
-  "homepage": "https://deploy.ailab.gc.cuny.edu",
+  "homepage": "https://cuny.qzz.io/kale",
   "repository": "https://github.com/CUNY-AI-Lab/cail-deploy",
   "license": "MIT",
   "keywords": [
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "Kale Deploy",
     "shortDescription": "Build and deploy apps that fit the Kale runtime.",
-    "longDescription": "A Codex plugin that teaches the Kale Deploy runtime, bundles the remote Kale MCP server, and provides a kale-init command prompt for scaffolding and shipping new projects.",
+    "longDescription": "A Codex plugin that teaches the Kale Deploy runtime, bundles the remote Kale MCP server, and provides command surfaces for scaffolding, diagnosing, and adapting Kale-compatible projects.",
     "developerName": "CUNY AI Lab",
     "category": "Developer Tools",
     "capabilities": [
@@ -31,13 +31,15 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://cail-deploy-service.ailab-452.workers.dev",
+    "websiteURL": "https://cuny.qzz.io/kale",
     "privacyPolicyURL": "https://cail-deploy-service.ailab-452.workers.dev/privacy",
     "termsOfServiceURL": "https://cail-deploy-service.ailab-452.workers.dev/terms",
     "defaultPrompt": [
       "Use Kale Deploy to build me a small web app.",
       "Scaffold and deploy a Kale-compatible survey tool.",
-      "Make this Worker fit Kale Deploy and push it live."
+      "Make this Worker fit Kale Deploy and push it live.",
+      "Inspect this repo for Kale readiness and fix what is missing.",
+      "Adapt this existing project so it fits Kale Deploy without rebuilding it."
     ],
     "brandColor": "#c2410c"
   }

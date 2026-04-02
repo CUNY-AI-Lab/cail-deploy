@@ -31,6 +31,37 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     static_project_assets_directory_hint: string;
     static_project_request_time_logic_key: string;
     static_project_request_time_logic_value: string;
+    dynamic_skill_policy: {
+      local_bundle_role: string;
+      authoritative_tools: string[];
+      runtime_manifest_fields: string[];
+      test_connection_fields: string[];
+      refresh_points: string[];
+      notes: string[];
+    };
+    client_update_policy: {
+      remote_mcp_update_mode: string;
+      local_wrapper_update_mode: string;
+      runtime_manifest_preferred: boolean;
+      notes: string[];
+    };
+    agent_harnesses: Array<{
+      id: string;
+      install_surface: string;
+      install_mode: string;
+      install_instruction: string;
+      local_wrapper: {
+        kind: string;
+        bundle_version: string;
+        update_mode: string;
+        update_command?: string;
+        restart_required_after_update?: boolean;
+      };
+      manual_fallback?: {
+        auth_mode: string;
+        instruction: string;
+      };
+    }>;
     agent_build_guidance: string[];
     reserved_project_names: string[];
     good_fit_project_types: string[];
@@ -85,6 +116,43 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.equal(body.static_project_assets_directory_hint, "public");
   assert.equal(body.static_project_request_time_logic_key, "requestTimeLogic");
   assert.equal(body.static_project_request_time_logic_value, "none");
+  assert.equal(body.dynamic_skill_policy.local_bundle_role, "bootstrap_only");
+  assert.deepEqual(body.dynamic_skill_policy.authoritative_tools, ["get_runtime_manifest", "test_connection"]);
+  assert.deepEqual(body.dynamic_skill_policy.runtime_manifest_fields, [
+    "dynamic_skill_policy",
+    "client_update_policy",
+    "agent_harnesses",
+    "agent_build_guidance",
+    "agent_api.auth.human_handoff_rules"
+  ]);
+  assert.deepEqual(body.dynamic_skill_policy.test_connection_fields, [
+    "dynamicSkillPolicy",
+    "clientUpdatePolicy",
+    "harnesses",
+    "nextAction",
+    "summary"
+  ]);
+  assert.match(body.dynamic_skill_policy.refresh_points[0] ?? "", /When Kale tools first appear/i);
+  assert.match(body.dynamic_skill_policy.notes[0] ?? "", /bootstrap layer/i);
+  assert.equal(body.client_update_policy.remote_mcp_update_mode, "automatic");
+  assert.equal(body.client_update_policy.local_wrapper_update_mode, "harness_specific");
+  assert.equal(body.client_update_policy.runtime_manifest_preferred, true);
+  assert.match(body.client_update_policy.notes[0] ?? "", /Remote Kale MCP and runtime changes apply immediately/i);
+  assert.equal(body.agent_harnesses.length, 3);
+  assert.deepEqual(body.agent_harnesses.map((entry) => entry.id), ["claude", "codex", "gemini"]);
+  assert.equal(body.agent_harnesses[0]?.local_wrapper.bundle_version, "0.2.0");
+  assert.equal(body.agent_harnesses[0]?.local_wrapper.update_mode, "manual");
+  assert.equal(body.agent_harnesses[0]?.local_wrapper.update_command, "claude plugins update kale-deploy@cuny-ai-lab -s local");
+  assert.equal(body.agent_harnesses[0]?.local_wrapper.restart_required_after_update, true);
+  assert.equal(body.agent_harnesses[1]?.install_surface, "app_add_on");
+  assert.equal(body.agent_harnesses[1]?.install_mode, "app_ui");
+  assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /Install the Kale Deploy add-on in the Codex app/i);
+  assert.equal(body.agent_harnesses[1]?.local_wrapper.update_mode, "unknown");
+  assert.equal(body.agent_harnesses[1]?.manual_fallback?.auth_mode, "oauth_browser");
+  assert.match(body.agent_harnesses[1]?.manual_fallback?.instruction ?? "", /codex mcp login kale/i);
+  assert.equal(body.agent_harnesses[2]?.install_surface, "extension");
+  assert.match(body.agent_harnesses[2]?.install_instruction ?? "", /--auto-update/);
+  assert.equal(body.agent_harnesses[2]?.local_wrapper.update_command, "gemini extensions update kale-deploy");
   assert.match(body.agent_build_guidance[0] ?? "", /pick a starter shape explicitly/i);
   assert.match(body.agent_build_guidance[1] ?? "", /prefer a pure static project/i);
   assert.match(body.agent_build_guidance[2] ?? "", /Hono is the preferred Worker framework/i);
@@ -215,6 +283,30 @@ test("public connection health explains the MCP auth handoff", async () => {
     authorizationUrl: string;
     deploymentTrigger: string;
     localFolderUploadSupported: boolean;
+    dynamicSkillPolicy: {
+      localBundleRole: string;
+      authoritativeTools: string[];
+      runtimeManifestFields: string[];
+      testConnectionFields: string[];
+      refreshPoints: string[];
+      notes: string[];
+    };
+    clientUpdatePolicy: {
+      remoteMcpUpdateMode: string;
+      localWrapperUpdateMode: string;
+      runtimeManifestPreferred: boolean;
+      notes: string[];
+    };
+    harnesses: Array<{
+      id: string;
+      installSurface: string;
+      installMode: string;
+      installInstruction: string;
+      localWrapper: {
+        updateMode: string;
+        updateCommand?: string;
+      };
+    }>;
   };
 
   assert.equal(body.serviceName, "Kale Deploy");
@@ -226,6 +318,30 @@ test("public connection health explains the MCP auth handoff", async () => {
   assert.equal(body.authorizationUrl, "https://deploy.example/api/oauth/authorize");
   assert.equal(body.deploymentTrigger, "github_push_to_default_branch");
   assert.equal(body.localFolderUploadSupported, false);
+  assert.equal(body.dynamicSkillPolicy.localBundleRole, "bootstrap_only");
+  assert.deepEqual(body.dynamicSkillPolicy.authoritativeTools, ["get_runtime_manifest", "test_connection"]);
+  assert.deepEqual(body.dynamicSkillPolicy.runtimeManifestFields, [
+    "dynamic_skill_policy",
+    "client_update_policy",
+    "agent_harnesses",
+    "agent_build_guidance",
+    "agent_api.auth.human_handoff_rules"
+  ]);
+  assert.deepEqual(body.dynamicSkillPolicy.testConnectionFields, [
+    "dynamicSkillPolicy",
+    "clientUpdatePolicy",
+    "harnesses",
+    "nextAction",
+    "summary"
+  ]);
+  assert.match(body.dynamicSkillPolicy.refreshPoints[1] ?? "", /After authentication succeeds/i);
+  assert.equal(body.clientUpdatePolicy.remoteMcpUpdateMode, "automatic");
+  assert.equal(body.clientUpdatePolicy.localWrapperUpdateMode, "harness_specific");
+  assert.equal(body.clientUpdatePolicy.runtimeManifestPreferred, true);
+  assert.deepEqual(body.harnesses.map((entry) => entry.id), ["claude", "codex", "gemini"]);
+  assert.equal(body.harnesses[0]?.localWrapper.updateCommand, "claude plugins update kale-deploy@cuny-ai-lab -s local");
+  assert.equal(body.harnesses[1]?.installMode, "app_ui");
+  assert.equal(body.harnesses[2]?.localWrapper.updateCommand, "gemini extensions update kale-deploy");
 });
 
 test("landing page presents the agent-first flow and live project social proof", async () => {
@@ -253,11 +369,13 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Codex/);
   assert.match(html, /Gemini CLI/);
   assert.match(html, /Install once/);
-  assert.match(html, /Paste this command into your AI agent once/i);
+  assert.match(html, /Use this install step once in your AI agent/i);
   assert.match(html, /\/plugin marketplace add CUNY-AI-Lab\/CAIL-deploy/);
   assert.match(html, /\/plugin install kale-deploy@cuny-ai-lab/);
-  assert.match(html, /codex mcp add kale-deploy --url https:\/\/deploy\.example\/mcp/);
-  assert.match(html, /\/extensions install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy/);
+  assert.match(html, /Install the Kale Deploy add-on in the Codex app/);
+  assert.match(html, /codex mcp add kale --url https:\/\/deploy\.example\/mcp/);
+  assert.match(html, /codex mcp login kale/);
+  assert.match(html, /\/extensions install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy --auto-update/);
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app with Kale Deploy and put it online so I can see it live/);
   assert.match(html, /smoke-test/);
@@ -467,12 +585,41 @@ test("mcp handles preflight and returns tools when authorized with OAuth", async
         authenticated: boolean;
         nextAction: string;
         summary: string;
+        dynamicSkillPolicy: {
+          localBundleRole: string;
+          authoritativeTools: string[];
+          testConnectionFields: string[];
+        };
+        clientUpdatePolicy: {
+          remoteMcpUpdateMode: string;
+          localWrapperUpdateMode: string;
+        };
+        harnesses: Array<{
+          id: string;
+          localWrapper: {
+            updateMode: string;
+            updateCommand?: string;
+          };
+        }>;
       };
     };
   };
   assert.equal(testConnectionResult.result.structuredContent.authenticated, true);
   assert.equal(testConnectionResult.result.structuredContent.nextAction, "register_project");
   assert.match(testConnectionResult.result.structuredContent.summary, /connected and authenticated/i);
+  assert.equal(testConnectionResult.result.structuredContent.dynamicSkillPolicy.localBundleRole, "bootstrap_only");
+  assert.deepEqual(testConnectionResult.result.structuredContent.dynamicSkillPolicy.authoritativeTools, ["get_runtime_manifest", "test_connection"]);
+  assert.deepEqual(testConnectionResult.result.structuredContent.dynamicSkillPolicy.testConnectionFields, [
+    "dynamicSkillPolicy",
+    "clientUpdatePolicy",
+    "harnesses",
+    "nextAction",
+    "summary"
+  ]);
+  assert.equal(testConnectionResult.result.structuredContent.clientUpdatePolicy.remoteMcpUpdateMode, "automatic");
+  assert.equal(testConnectionResult.result.structuredContent.clientUpdatePolicy.localWrapperUpdateMode, "harness_specific");
+  assert.equal(testConnectionResult.result.structuredContent.harnesses[0]?.localWrapper.updateMode, "manual");
+  assert.equal(testConnectionResult.result.structuredContent.harnesses[0]?.localWrapper.updateCommand, "claude plugins update kale-deploy@cuny-ai-lab -s local");
 });
 
 test("oauth metadata, registration, authorization, and token exchange work for remote MCP", async (t) => {
