@@ -33,6 +33,7 @@
     "CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS": "cuny.edu",
     "MCP_OAUTH_BASE_URL": "https://cuny.qzz.io/kale",
     "MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS": "86400",
+    "MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS": "2592000",
     "WFP_NAMESPACE": "cail-production",
     "PROJECT_BASE_URL": "https://cail-gateway.ailab-452.workers.dev",
     "PROJECT_HOST_SUFFIX": "cuny.qzz.io",

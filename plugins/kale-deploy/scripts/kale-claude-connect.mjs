@@ -95,6 +95,93 @@ function buildHeadersHelperCommand(options) {
   return `${shellQuote(process.execPath)} ${shellQuote(SCRIPT_PATH)} headers --auth-root ${shellQuote(options.authRoot)} --mcp-endpoint ${shellQuote(options.mcpEndpoint)}`;
 }
 
+function buildTokenEndpoint(mcpEndpoint) {
+  const endpointBase = mcpEndpoint.replace(/\/mcp$/u, "");
+  return `${endpointBase}/oauth/token`;
+}
+
+function isTokenStillValid(expiresAtEpochSeconds, graceSeconds = TOKEN_EXPIRY_GRACE_SECONDS) {
+  return typeof expiresAtEpochSeconds === "number" && expiresAtEpochSeconds > Math.floor(Date.now() / 1000) + graceSeconds;
+}
+
+function normalizeTokenMetadata(token, payload) {
+  const resource = typeof payload?.resource === "string" ? payload.resource : undefined;
+  const issuer = typeof payload?.iss === "string" ? payload.iss : undefined;
+  const expiresAtEpochSeconds = typeof payload?.exp === "number" ? payload.exp : undefined;
+  const expiresAt = typeof expiresAtEpochSeconds === "number"
+    ? new Date(expiresAtEpochSeconds * 1000).toISOString()
+    : undefined;
+  const clientId = typeof payload?.client_id === "string" ? payload.client_id : undefined;
+
+  return {
+    accessToken: token,
+    resource,
+    issuer,
+    expiresAtEpochSeconds,
+    expiresAt,
+    clientId
+  };
+}
+
+function isMatchingKaleToken(metadata, mcpEndpoint) {
+  const endpointBase = mcpEndpoint.replace(/\/mcp$/u, "");
+  return metadata.resource === mcpEndpoint && metadata.issuer === endpointBase;
+}
+
+async function refreshTokenFile({ tokenFilePath, tokens, refreshTokenMetadata, mcpEndpoint }) {
+  if (!refreshTokenMetadata.clientId) {
+    return undefined;
+  }
+
+  const response = await fetch(buildTokenEndpoint(mcpEndpoint), {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded"
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: refreshTokenMetadata.clientId,
+      refresh_token: tokens.refresh_token
+    }).toString()
+  });
+
+  if (!response.ok) {
+    return undefined;
+  }
+
+  const refreshed = await response.json();
+  if (typeof refreshed?.access_token !== "string" || refreshed.access_token.length === 0) {
+    return undefined;
+  }
+
+  const nextTokens = {
+    ...tokens,
+    ...refreshed
+  };
+  await writeFile(tokenFilePath, `${JSON.stringify(nextTokens, null, 2)}\n`, "utf8");
+
+  const accessTokenMetadata = normalizeTokenMetadata(
+    nextTokens.access_token,
+    parseJwtPayload(nextTokens.access_token)
+  );
+  if (!isMatchingKaleToken(accessTokenMetadata, mcpEndpoint) || !isTokenStillValid(accessTokenMetadata.expiresAtEpochSeconds)) {
+    return undefined;
+  }
+
+  const tokenType = typeof nextTokens.token_type === "string" ? nextTokens.token_type : "Bearer";
+
+  return {
+    filePath: tokenFilePath,
+    accessToken: nextTokens.access_token,
+    authorizationHeader: `${tokenType} ${nextTokens.access_token}`,
+    resource: accessTokenMetadata.resource,
+    issuer: accessTokenMetadata.issuer,
+    expiresAt: accessTokenMetadata.expiresAt,
+    expiresAtEpochSeconds: accessTokenMetadata.expiresAtEpochSeconds,
+    clientId: accessTokenMetadata.clientId
+  };
+}
+
 async function findTokenFiles(root) {
   const candidates = [];
   let authRoots = [];
@@ -140,9 +227,6 @@ async function findTokenFiles(root) {
 
 async function loadLatestToken({ authRoot, mcpEndpoint }) {
   const tokenFiles = await findTokenFiles(authRoot);
-  const endpointBase = mcpEndpoint.replace(/\/mcp$/u, "");
-  const minimumExpiryEpochSeconds = Math.floor(Date.now() / 1000) + TOKEN_EXPIRY_GRACE_SECONDS;
-  const matches = [];
 
   for (const candidate of tokenFiles) {
     let raw;
@@ -163,36 +247,48 @@ async function loadLatestToken({ authRoot, mcpEndpoint }) {
       continue;
     }
 
-    const payload = parseJwtPayload(tokens.access_token);
-    const resource = typeof payload?.resource === "string" ? payload.resource : undefined;
-    const issuer = typeof payload?.iss === "string" ? payload.iss : undefined;
+    const accessTokenMetadata = normalizeTokenMetadata(
+      tokens.access_token,
+      parseJwtPayload(tokens.access_token)
+    );
     const tokenType = typeof tokens.token_type === "string" ? tokens.token_type : "Bearer";
-    const expiresAtEpochSeconds = typeof payload?.exp === "number" ? payload.exp : undefined;
-    const expiresAt = typeof payload?.exp === "number"
-      ? new Date(payload.exp * 1000).toISOString()
-      : undefined;
-    const resourceMatches = resource === mcpEndpoint;
-    const issuerMatches = issuer === endpointBase;
-    const isExpired = typeof expiresAtEpochSeconds !== "number" || expiresAtEpochSeconds <= minimumExpiryEpochSeconds;
 
-    if (!resourceMatches || !issuerMatches || isExpired) {
+    if (isMatchingKaleToken(accessTokenMetadata, mcpEndpoint) && isTokenStillValid(accessTokenMetadata.expiresAtEpochSeconds)) {
+      return {
+        filePath: candidate.filePath,
+        accessToken: tokens.access_token,
+        authorizationHeader: `${tokenType} ${tokens.access_token}`,
+        resource: accessTokenMetadata.resource,
+        issuer: accessTokenMetadata.issuer,
+        expiresAt: accessTokenMetadata.expiresAt,
+        expiresAtEpochSeconds: accessTokenMetadata.expiresAtEpochSeconds,
+        clientId: accessTokenMetadata.clientId
+      };
+    }
+
+    if (typeof tokens.refresh_token !== "string" || tokens.refresh_token.length === 0) {
       continue;
     }
 
-    matches.push({
-      filePath: candidate.filePath,
-      mtimeMs: candidate.mtimeMs,
-      accessToken: tokens.access_token,
-      authorizationHeader: `${tokenType} ${tokens.access_token}`,
-      resource,
-      issuer,
-      expiresAt,
-      expiresAtEpochSeconds
-    });
-  }
+    const refreshTokenMetadata = normalizeTokenMetadata(
+      tokens.refresh_token,
+      parseJwtPayload(tokens.refresh_token)
+    );
+    if (!isMatchingKaleToken(refreshTokenMetadata, mcpEndpoint) || !isTokenStillValid(refreshTokenMetadata.expiresAtEpochSeconds, 0)) {
+      continue;
+    }
 
-  matches.sort((left, right) => right.mtimeMs - left.mtimeMs);
-  return matches[0];
+    const refreshed = await refreshTokenFile({
+      tokenFilePath: candidate.filePath,
+      tokens,
+      refreshTokenMetadata,
+      mcpEndpoint
+    });
+    if (refreshed) {
+      return refreshed;
+    }
+  }
+  return undefined;
 }
 
 async function readClaudeConfig(configPath) {

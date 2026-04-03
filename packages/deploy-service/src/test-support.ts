@@ -58,6 +58,7 @@ export type TestEnv = {
   DEPLOY_API_TOKEN?: string;
   MCP_OAUTH_TOKEN_SECRET?: string;
   MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
+  MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS?: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_CLIENT_ID?: string;
   GITHUB_APP_CLIENT_SECRET?: string;
@@ -93,6 +94,7 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
     DEPLOY_SERVICE_BASE_URL: "https://deploy.example",
     MCP_OAUTH_BASE_URL: "https://auth.example",
     MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS: "86400",
+    MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS: "2592000",
     DEPLOY_API_TOKEN: "deploy-token",
     MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
     GITHUB_APP_ID: "3196468",
@@ -444,6 +446,7 @@ export class FakeD1Database {
   private readonly projectSecrets = new Map<string, Record<string, unknown>>();
   private readonly projectDomains = new Map<string, Record<string, unknown>>();
   private readonly usedOauthGrants = new Set<string>();
+  private readonly usedOauthRefreshTokens = new Set<string>();
 
   withSession(): this {
     return this;
@@ -1133,6 +1136,15 @@ export class FakeD1Database {
     this.usedOauthGrants.add(jti);
     return true;
   }
+
+  consumeOauthRefreshToken(jti: string): boolean {
+    if (this.usedOauthRefreshTokens.has(jti)) {
+      return false;
+    }
+
+    this.usedOauthRefreshTokens.add(jti);
+    return true;
+  }
 }
 
 class FakePreparedStatement {
@@ -1219,6 +1231,11 @@ class FakePreparedStatement {
 
     if (normalized.includes("insert into oauth_used_grants")) {
       const consumed = this.db.consumeOauthGrant(String(this.params[0]));
+      return consumed ? ({ jti: String(this.params[0]) } as T) : null;
+    }
+
+    if (normalized.includes("insert into oauth_used_refresh_tokens")) {
+      const consumed = this.db.consumeOauthRefreshToken(String(this.params[0]));
       return consumed ? ({ jti: String(this.params[0]) } as T) : null;
     }
 

@@ -64,7 +64,8 @@ Important:
 After `mcp-remote` finishes OAuth, replace the temporary bridge with one direct
 HTTP `kale` entry by running the installed helper from the plugin cache. The
 helper configures `headersHelper`, so Claude reads the latest valid Kale OAuth
-token each time it connects:
+token each time it connects and refreshes it automatically when a cached
+refresh token is available:
 
 ```bash
 KALE_PLUGIN_PATH="$(claude plugins list --json | node -e 'const fs = require("node:fs"); const plugins = JSON.parse(fs.readFileSync(0, "utf8")); const plugin = plugins.find((entry) => entry.id === "kale-deploy@cuny-ai-lab"); if (!plugin?.installPath) { process.stderr.write("Kale plugin is not installed.\n"); process.exit(1); } process.stdout.write(plugin.installPath);')"
@@ -74,8 +75,8 @@ node "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint htt
 If Claude still does not surface the Kale tools in the current conversation,
 restart Claude Code once and start a fresh session.
 
-If the helper later reports that no valid Kale OAuth token exists, rerun the
-bootstrap and sync steps above.
+If the helper later reports that no valid Kale OAuth or refresh token exists,
+rerun the bootstrap and sync steps above.
 
 ## 6. Use the token bridge only if `mcp-remote` fails
 

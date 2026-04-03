@@ -99,7 +99,8 @@
           "Use mcp-remote only long enough to complete the OAuth browser flow.",
           "After OAuth succeeds, immediately rewrite Claude to one direct HTTP kale server with the installed kale-claude-connect helper.",
           "The direct HTTP entry uses headersHelper to read the latest valid Kale mcp-remote OAuth token at connection time.",
-          "When that OAuth token expires, rerun the mcp-remote bootstrap and sync steps.",
+          "If the cached access token is stale but a valid refresh token exists, the helper refreshes it automatically.",
+          "Only rerun the mcp-remote bootstrap if the helper reports that no valid Kale OAuth or refresh token is available.",
           "Do not leave the temporary stdio bridge as the long-term Claude connection.",
           "If mcp-remote itself fails, fall back to the token bridge from https://cuny.qzz.io/kale/connect.",
           "Last-resort token bridge:\nclaude mcp remove kale -s local 2>/dev/null\nclaude mcp remove kale -s user 2>/dev/null\nclaude mcp add --transport http --header \"Authorization: Bearer THE_TOKEN\" -s user kale https://cuny.qzz.io/kale/mcp",
@@ -109,7 +110,7 @@
       "local_wrapper": {
         "kind": "plugin",
         "package_name": "kale-deploy@cuny-ai-lab",
-        "bundle_version": "0.2.8",
+        "bundle_version": "0.2.9",
         "update_mode": "manual",
         "update_command": "claude plugins update kale-deploy@cuny-ai-lab -s user",
         "restart_required_after_update": true,
@@ -143,7 +144,7 @@
       "local_wrapper": {
         "kind": "add_on",
         "package_name": "kale-deploy",
-        "bundle_version": "0.2.8",
+        "bundle_version": "0.2.9",
         "update_mode": "unknown",
         "notes": [
           "Codex CLI does not currently expose add-on update commands.",
@@ -166,7 +167,7 @@
       "local_wrapper": {
         "kind": "extension",
         "package_name": "kale-deploy",
-        "bundle_version": "0.2.8",
+        "bundle_version": "0.2.9",
         "update_mode": "manual",
         "update_command": "gemini extensions update kale-deploy",
         "notes": [

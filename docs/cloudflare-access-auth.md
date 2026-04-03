@@ -56,6 +56,7 @@ Worker secret:
 Optional:
 
 - `MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS`
+- `MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS`
 
 Example local values are in [packages/deploy-service/.dev.vars.example](/Users/stephenzweibel/Apps/CAIL-deploy/packages/deploy-service/.dev.vars.example).
 

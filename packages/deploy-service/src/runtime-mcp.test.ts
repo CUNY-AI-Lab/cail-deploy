@@ -148,7 +148,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.match(body.client_update_policy.notes[0] ?? "", /Remote Kale MCP and runtime changes apply immediately/i);
   assert.equal(body.agent_harnesses.length, 3);
   assert.deepEqual(body.agent_harnesses.map((entry) => entry.id), ["claude", "codex", "gemini"]);
-  assert.equal(body.agent_harnesses[0]?.local_wrapper.bundle_version, "0.2.8");
+  assert.equal(body.agent_harnesses[0]?.local_wrapper.bundle_version, "0.2.9");
   assert.equal(body.agent_harnesses[0]?.local_wrapper.update_mode, "manual");
   assert.equal(body.agent_harnesses[0]?.local_wrapper.update_command, "claude plugins update kale-deploy@cuny-ai-lab -s user");
   assert.equal(body.agent_harnesses[0]?.local_wrapper.restart_required_after_update, true);
@@ -161,7 +161,8 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.match(body.agent_harnesses[0]?.manual_fallback?.instruction ?? "", /kale-claude-connect\.mjs/);
   assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Use mcp-remote only long enough to complete the OAuth browser flow/i.test(note)));
   assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /headersHelper to read the latest valid Kale mcp-remote OAuth token/i.test(note)));
-  assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /rerun the mcp-remote bootstrap and sync steps/i.test(note)));
+  assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /refreshes it automatically/i.test(note)));
+  assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Only rerun the mcp-remote bootstrap if the helper reports that no valid Kale OAuth or refresh token is available/i.test(note)));
   assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Last-resort token bridge:/i.test(note)));
   assert.equal(body.agent_harnesses[1]?.install_surface, "app_add_on");
   assert.equal(body.agent_harnesses[1]?.install_mode, "app_ui");
@@ -719,7 +720,7 @@ test("connection health reports a stale local wrapper when the harness version i
   assert.equal(body.localWrapperStatus?.status, "stale");
   assert.equal(body.localWrapperStatus?.warning, true);
   assert.equal(body.localWrapperStatus?.localBundleVersion, "0.1.0");
-  assert.equal(body.localWrapperStatus?.expectedBundleVersion, "0.2.8");
+  assert.equal(body.localWrapperStatus?.expectedBundleVersion, "0.2.9");
   assert.equal(body.localWrapperStatus?.updateMode, "manual");
   assert.equal(body.localWrapperStatus?.updateCommand, "gemini extensions update kale-deploy");
   assert.match(body.localWrapperStatus?.summary ?? "", /Refresh or update the local wrapper/i);
@@ -777,7 +778,7 @@ test("mcp test_connection reports a stale local wrapper when the harness version
   assert.equal(body.result.structuredContent.localWrapperStatus?.status, "stale");
   assert.equal(body.result.structuredContent.localWrapperStatus?.warning, true);
   assert.equal(body.result.structuredContent.localWrapperStatus?.localBundleVersion, "0.1.0");
-  assert.equal(body.result.structuredContent.localWrapperStatus?.expectedBundleVersion, "0.2.8");
+  assert.equal(body.result.structuredContent.localWrapperStatus?.expectedBundleVersion, "0.2.9");
   assert.equal(body.result.structuredContent.localWrapperStatus?.updateMode, "unknown");
   assert.match(body.result.structuredContent.summary, /Codex reported local bundle version 0.1.0/i);
 });
@@ -815,11 +816,13 @@ test("oauth metadata, registration, authorization, and token exchange work for r
     authorization_endpoint: string;
     token_endpoint: string;
     registration_endpoint: string;
+    grant_types_supported: string[];
   };
   assert.equal(metadata.issuer, "https://auth.example");
   assert.equal(metadata.authorization_endpoint, "https://deploy.example/api/oauth/authorize");
   assert.equal(metadata.token_endpoint, "https://deploy.example/oauth/token");
   assert.equal(metadata.registration_endpoint, "https://deploy.example/oauth/register");
+  assert.deepEqual(metadata.grant_types_supported, ["authorization_code", "refresh_token"]);
 
   for (const aliasPath of [
     "/.well-known/openid-configuration",
@@ -900,11 +903,56 @@ test("oauth metadata, registration, authorization, and token exchange work for r
     access_token: string;
     token_type: string;
     expires_in: number;
+    refresh_token: string;
+    refresh_token_expires_in: number;
     scope: string;
   };
   assert.equal(tokenBody.token_type, "Bearer");
   assert.equal(tokenBody.scope, "cail:deploy");
   assert.ok(tokenBody.access_token);
+  assert.ok(tokenBody.refresh_token);
+  assert.ok(tokenBody.refresh_token_expires_in > tokenBody.expires_in);
+
+  const refreshResponse = await fetchRaw(
+    new Request("https://auth.example/oauth/token", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: client.client_id,
+        refresh_token: tokenBody.refresh_token
+      }).toString()
+    }),
+    env
+  );
+  assert.equal(refreshResponse.status, 200);
+  const refreshBody = await refreshResponse.json() as {
+    access_token: string;
+    refresh_token: string;
+    token_type: string;
+  };
+  assert.equal(refreshBody.token_type, "Bearer");
+  assert.ok(refreshBody.access_token);
+  assert.ok(refreshBody.refresh_token);
+  assert.notEqual(refreshBody.refresh_token, tokenBody.refresh_token);
+
+  const reusedRefreshResponse = await fetchRaw(
+    new Request("https://auth.example/oauth/token", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: client.client_id,
+        refresh_token: tokenBody.refresh_token
+      }).toString()
+    }),
+    env
+  );
+  assert.equal(reusedRefreshResponse.status, 400);
 });
 
 test("mcp validate_project returns structured install guidance instead of a protocol error", async (t) => {

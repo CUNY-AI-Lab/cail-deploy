@@ -86,8 +86,9 @@ node "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint htt
 
 The real success condition is one user-scope direct HTTP `kale` server that can
 surface tools in fresh Claude sessions and whose `headersHelper` can still read
-a valid Kale OAuth token. If that token expires, rerun the bootstrap and sync
-steps.
+a valid Kale OAuth token. If a valid refresh token is cached, the helper
+refreshes automatically. Only rerun the bootstrap and sync steps if the helper
+reports that no valid Kale OAuth or refresh token exists.
 
 If `mcp-remote` fails, use the token fallback below:
 

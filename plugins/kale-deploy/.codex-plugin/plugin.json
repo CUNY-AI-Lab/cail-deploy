@@ -1,6 +1,6 @@
 {
   "name": "kale-deploy",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Kale Deploy assistant adapter for building Kale-compatible Cloudflare apps.",
   "author": {
     "name": "CUNY AI Lab",

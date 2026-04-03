@@ -1403,6 +1403,21 @@ export async function consumeOauthGrant(
   return Boolean(row?.jti);
 }
 
+export async function consumeOauthRefreshToken(
+  db: D1Database,
+  jti: string,
+  usedAt: string
+): Promise<boolean> {
+  const row = await db.prepare(`
+    INSERT INTO oauth_used_refresh_tokens (jti, used_at)
+    VALUES (?, ?)
+    ON CONFLICT(jti) DO NOTHING
+    RETURNING jti
+  `).bind(jti, usedAt).first<OauthUsedGrantRow>();
+
+  return Boolean(row?.jti);
+}
+
 function toProjectRecord(row: ProjectRow): ProjectRecord {
   return {
     projectName: row.project_name,

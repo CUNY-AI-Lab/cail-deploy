@@ -91,6 +91,7 @@ import {
   countActiveBuildJobsForRepository,
   countBuildJobsForRepositoryOnDate,
   consumeOauthGrant,
+  consumeOauthRefreshToken,
   deleteGitHubUserAuthByGitHubUserId,
   ensureProjectPolicy,
   getBuildJob,
@@ -128,11 +129,13 @@ import {
 import {
   createAuthorizationCode,
   mintMcpAccessToken,
+  mintMcpRefreshToken,
   normalizeRedirectUri,
   registerPublicOAuthClient,
   validatePkceS256,
   verifyAuthorizationCode,
   verifyMcpAccessToken,
+  verifyMcpRefreshToken,
   verifyRegisteredOAuthClient
 } from "./lib/mcp-oauth";
 import type {
@@ -188,6 +191,7 @@ type Env = {
   MCP_OAUTH_BASE_URL?: string;
   MCP_OAUTH_TOKEN_SECRET?: string;
   MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
+  MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS?: string;
   WFP_NAMESPACE: string;
   PROJECT_BASE_URL: string;
   PROJECT_HOST_SUFFIX?: string;
@@ -512,72 +516,152 @@ function isLoopbackRedirectUri(url: URL): boolean {
   );
 }
 
+async function mintMcpOauthTokenPair(input: {
+  env: Env;
+  oauthBaseUrl: string;
+  clientId: string;
+  email: string;
+  subject: string;
+  scope?: string;
+  resource?: string;
+}) {
+  const secret = resolveMcpOauthSecret(input.env);
+  const accessToken = await mintMcpAccessToken({
+    secret,
+    issuer: input.oauthBaseUrl,
+    clientId: input.clientId,
+    email: input.email,
+    subject: input.subject,
+    scope: input.scope,
+    resource: input.resource,
+    ttlSeconds: parsePositiveInteger(input.env.MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS, 24 * 60 * 60)
+  });
+  const refreshToken = await mintMcpRefreshToken({
+    secret,
+    issuer: input.oauthBaseUrl,
+    clientId: input.clientId,
+    email: input.email,
+    subject: input.subject,
+    scope: input.scope,
+    resource: input.resource,
+    ttlSeconds: parsePositiveInteger(input.env.MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS, 30 * 24 * 60 * 60)
+  });
+
+  return {
+    accessToken,
+    refreshToken
+  };
+}
+
 deployServiceApp.post("/oauth/token", async (c) => {
   try {
     const secret = resolveMcpOauthSecret(c.env);
     const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
     const form = await c.req.formData();
     const grantType = getRequiredOauthFormField(form, "grant_type");
-    if (grantType !== "authorization_code") {
-      throw new HttpError(400, "Kale Deploy currently supports only the authorization_code grant.");
-    }
-
     const clientId = getRequiredOauthFormField(form, "client_id");
-    const redirectUri = normalizeRedirectUri(getRequiredOauthFormField(form, "redirect_uri"));
-    const code = getRequiredOauthFormField(form, "code");
-    const codeVerifier = getRequiredOauthFormField(form, "code_verifier");
     const client = await verifyRegisteredOAuthClient({
       clientId,
       secret,
       issuer: oauthBaseUrl
     });
 
-    if (!client.redirectUris.includes(redirectUri)) {
-      throw new HttpError(400, "OAuth redirect URI is not registered for this client.");
+    if (grantType === "authorization_code") {
+      const redirectUri = normalizeRedirectUri(getRequiredOauthFormField(form, "redirect_uri"));
+      const code = getRequiredOauthFormField(form, "code");
+      const codeVerifier = getRequiredOauthFormField(form, "code_verifier");
+
+      if (!client.redirectUris.includes(redirectUri)) {
+        throw new HttpError(400, "OAuth redirect URI is not registered for this client.");
+      }
+
+      const authorizationCode = await verifyAuthorizationCode({
+        code,
+        secret,
+        issuer: oauthBaseUrl
+      });
+
+      if (authorizationCode.clientId !== client.clientId || authorizationCode.redirectUri !== redirectUri) {
+        throw new HttpError(400, "OAuth authorization code did not match this client or redirect URI.");
+      }
+
+      const pkceValid = await validatePkceS256(codeVerifier, authorizationCode.codeChallenge);
+      if (!pkceValid) {
+        throw new HttpError(400, "OAuth PKCE verification failed.");
+      }
+
+      const used = await consumeOauthGrant(
+        c.env.CONTROL_PLANE_DB,
+        authorizationCode.jti,
+        "authorization_code",
+        new Date().toISOString()
+      );
+      if (!used) {
+        throw new HttpError(400, "OAuth authorization code has already been used.");
+      }
+
+      const { accessToken, refreshToken } = await mintMcpOauthTokenPair({
+        env: c.env,
+        oauthBaseUrl,
+        clientId: client.clientId,
+        email: authorizationCode.email,
+        subject: authorizationCode.subject,
+        scope: authorizationCode.scope,
+        resource: authorizationCode.resource
+      });
+
+      return c.json({
+        access_token: accessToken.accessToken,
+        token_type: "Bearer",
+        expires_in: accessToken.expiresIn,
+        refresh_token: refreshToken.refreshToken,
+        refresh_token_expires_in: refreshToken.expiresIn,
+        scope: authorizationCode.scope
+      });
     }
 
-    const authorizationCode = await verifyAuthorizationCode({
-      code,
-      secret,
-      issuer: oauthBaseUrl
-    });
+    if (grantType === "refresh_token") {
+      const refreshToken = getRequiredOauthFormField(form, "refresh_token");
+      const refreshTokenPayload = await verifyMcpRefreshToken({
+        token: refreshToken,
+        secret,
+        issuer: oauthBaseUrl
+      });
 
-    if (authorizationCode.clientId !== client.clientId || authorizationCode.redirectUri !== redirectUri) {
-      throw new HttpError(400, "OAuth authorization code did not match this client or redirect URI.");
+      if (refreshTokenPayload.clientId !== client.clientId) {
+        throw new HttpError(400, "OAuth refresh token did not match this client.");
+      }
+
+      const used = await consumeOauthRefreshToken(
+        c.env.CONTROL_PLANE_DB,
+        refreshTokenPayload.jti,
+        new Date().toISOString()
+      );
+      if (!used) {
+        throw new HttpError(400, "OAuth refresh token has already been used.");
+      }
+
+      const { accessToken, refreshToken: rotatedRefreshToken } = await mintMcpOauthTokenPair({
+        env: c.env,
+        oauthBaseUrl,
+        clientId: client.clientId,
+        email: refreshTokenPayload.email,
+        subject: refreshTokenPayload.subject,
+        scope: refreshTokenPayload.scope,
+        resource: refreshTokenPayload.resource
+      });
+
+      return c.json({
+        access_token: accessToken.accessToken,
+        token_type: "Bearer",
+        expires_in: accessToken.expiresIn,
+        refresh_token: rotatedRefreshToken.refreshToken,
+        refresh_token_expires_in: rotatedRefreshToken.expiresIn,
+        scope: refreshTokenPayload.scope
+      });
     }
 
-    const pkceValid = await validatePkceS256(codeVerifier, authorizationCode.codeChallenge);
-    if (!pkceValid) {
-      throw new HttpError(400, "OAuth PKCE verification failed.");
-    }
-
-    const used = await consumeOauthGrant(
-      c.env.CONTROL_PLANE_DB,
-      authorizationCode.jti,
-      "authorization_code",
-      new Date().toISOString()
-    );
-    if (!used) {
-      throw new HttpError(400, "OAuth authorization code has already been used.");
-    }
-
-    const accessToken = await mintMcpAccessToken({
-      secret,
-      issuer: oauthBaseUrl,
-      clientId: client.clientId,
-      email: authorizationCode.email,
-      subject: authorizationCode.subject,
-      scope: authorizationCode.scope,
-      resource: authorizationCode.resource,
-      ttlSeconds: parsePositiveInteger(c.env.MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS, 24 * 60 * 60)
-    });
-
-    return c.json({
-      access_token: accessToken.accessToken,
-      token_type: "Bearer",
-      expires_in: accessToken.expiresIn,
-      scope: authorizationCode.scope
-    });
+    throw new HttpError(400, "Kale Deploy currently supports only the authorization_code and refresh_token grants.");
   } catch (error) {
     const httpError = asHttpError(error);
     return c.json({
@@ -4044,7 +4128,7 @@ function buildOauthAuthorizationServerMetadata(oauthBaseUrl: string, serviceBase
     token_endpoint: `${serviceBaseUrl}/oauth/token`,
     registration_endpoint: `${serviceBaseUrl}/oauth/register`,
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
     token_endpoint_auth_methods_supported: ["none"],
     code_challenge_methods_supported: ["S256"],
     scopes_supported: [MCP_REQUIRED_SCOPE],

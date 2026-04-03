@@ -1,6 +1,6 @@
 {
   "name": "kale-deploy",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Kale Deploy plugin for scaffolding, diagnosing, adapting, and connecting Kale-compatible web apps.",
   "author": {
     "name": "CUNY AI Lab",

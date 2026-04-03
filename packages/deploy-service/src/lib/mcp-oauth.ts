@@ -3,8 +3,10 @@ import { SignJWT, base64url, jwtVerify } from "jose";
 const REGISTERED_CLIENT_AUDIENCE = "cail-mcp-oauth-client";
 const AUTHORIZATION_CODE_AUDIENCE = "cail-mcp-oauth-code";
 const ACCESS_TOKEN_AUDIENCE = "cail-mcp";
+const REFRESH_TOKEN_AUDIENCE = "cail-mcp-refresh";
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60;
 const DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS = 5 * 60;
+const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 export type RegisteredOAuthClient = {
   clientId: string;
@@ -34,6 +36,10 @@ export type McpAccessTokenPayload = {
   clientId: string;
   scope?: string;
   resource?: string;
+};
+
+export type McpRefreshTokenPayload = McpAccessTokenPayload & {
+  jti: string;
 };
 
 export async function registerPublicOAuthClient(input: {
@@ -226,6 +232,47 @@ export async function mintMcpAccessToken(input: {
   };
 }
 
+export async function mintMcpRefreshToken(input: {
+  secret: string;
+  issuer: string;
+  clientId: string;
+  email: string;
+  subject: string;
+  scope?: string;
+  resource?: string;
+  now?: Date;
+  ttlSeconds?: number;
+}): Promise<{ refreshToken: string; expiresAt: string; expiresIn: number; jti: string }> {
+  const now = input.now ?? new Date();
+  const issuedAt = Math.floor(now.getTime() / 1000);
+  const ttlSeconds = input.ttlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
+  const expiresAt = new Date(now.getTime() + ttlSeconds * 1000);
+  const jti = crypto.randomUUID();
+
+  const refreshToken = await new SignJWT({
+    email: input.email,
+    client_id: input.clientId,
+    scope: input.scope,
+    resource: input.resource,
+    auth_source: "mcp_oauth"
+  })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setIssuer(normalizeIssuer(input.issuer))
+    .setAudience(REFRESH_TOKEN_AUDIENCE)
+    .setSubject(input.subject)
+    .setJti(jti)
+    .setIssuedAt(issuedAt)
+    .setExpirationTime(Math.floor(expiresAt.getTime() / 1000))
+    .sign(encodeSecret(input.secret));
+
+  return {
+    refreshToken,
+    expiresAt: expiresAt.toISOString(),
+    expiresIn: ttlSeconds,
+    jti
+  };
+}
+
 export async function verifyMcpAccessToken(input: {
   token: string;
   secret: string;
@@ -248,6 +295,35 @@ export async function verifyMcpAccessToken(input: {
     email,
     subject,
     clientId,
+    scope: typeof payload.scope === "string" && payload.scope ? payload.scope : undefined,
+    resource: typeof payload.resource === "string" && payload.resource ? payload.resource : undefined
+  };
+}
+
+export async function verifyMcpRefreshToken(input: {
+  token: string;
+  secret: string;
+  issuer: string;
+}): Promise<McpRefreshTokenPayload> {
+  const { payload } = await jwtVerify(input.token, encodeSecret(input.secret), {
+    issuer: normalizeIssuer(input.issuer),
+    audience: REFRESH_TOKEN_AUDIENCE
+  });
+
+  const email = typeof payload.email === "string" && payload.email ? payload.email.toLowerCase() : undefined;
+  const subject = typeof payload.sub === "string" && payload.sub ? payload.sub : undefined;
+  const clientId = typeof payload.client_id === "string" && payload.client_id ? payload.client_id : undefined;
+  const jti = typeof payload.jti === "string" && payload.jti ? payload.jti : undefined;
+
+  if (!email || !subject || !clientId || !jti) {
+    throw new Error("Refresh token payload was incomplete.");
+  }
+
+  return {
+    email,
+    subject,
+    clientId,
+    jti,
     scope: typeof payload.scope === "string" && payload.scope ? payload.scope : undefined,
     resource: typeof payload.resource === "string" && payload.resource ? payload.resource : undefined
   };
