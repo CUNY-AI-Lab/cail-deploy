@@ -135,8 +135,8 @@ Current harness note:
 
 - The public setup page now shows short per-agent install instructions for the `kale-deploy` add-on, then a plain-language build prompt.
 - Codex normally uses the Kale add-on install path; direct `codex mcp add` plus `codex mcp login` is the manual fallback.
-- Claude Code is more reliable today through the `/connect` token bridge plus `claude mcp add --transport http --header "Authorization: Bearer ..."` rather than the interactive `/mcp` screen.
-- Claude has an explicit local plugin update command: `claude plugins update kale-deploy@cuny-ai-lab -s local`.
+- Claude Code should use `mcp-remote` only to complete OAuth, then finalize to one direct HTTP `kale` server with the installed `kale-claude-connect.mjs` helper; the `/connect` token bridge is the last resort.
+- Claude has an explicit user-scope plugin update command: `claude plugins update kale-deploy@cuny-ai-lab -s user`.
 - Gemini CLI supports extension updates directly, and the preferred public install path now uses `--auto-update`.
 - The runtime manifest is the source of truth for harness-specific install and update policy if local plugin copy drifts.
 - Agents should read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` from `get_runtime_manifest`, then use `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` from `test_connection` as the live source of truth.

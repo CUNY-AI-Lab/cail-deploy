@@ -393,10 +393,11 @@ deployServiceApp.get("/mcp/.well-known/oauth-protected-resource", serveOauthProt
 deployServiceApp.get("/.well-known/oauth-authorization-server", serveOauthAuthorizationServerMetadata);
 deployServiceApp.get("/.well-known/oauth-authorization-server/mcp", serveOauthAuthorizationServerMetadata);
 deployServiceApp.get("/mcp/.well-known/oauth-authorization-server", serveOauthAuthorizationServerMetadata);
+deployServiceApp.get("/.well-known/openid-configuration", serveOauthAuthorizationServerMetadata);
 deployServiceApp.get("/.well-known/openid-configuration/mcp", serveOauthAuthorizationServerMetadata);
 deployServiceApp.get("/mcp/.well-known/openid-configuration", serveOauthAuthorizationServerMetadata);
 
-deployServiceApp.post("/oauth/register", async (c) => {
+async function handleOauthClientRegistration(c: Context<{ Bindings: Env }>) {
   try {
     const secret = resolveMcpOauthSecret(c.env);
     const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
@@ -434,7 +435,11 @@ deployServiceApp.post("/oauth/register", async (c) => {
       error_description: httpError.message
     }, { status: httpError.status });
   }
-});
+}
+
+deployServiceApp.post("/oauth/register", handleOauthClientRegistration);
+// Compatibility alias for clients that ignore registration_endpoint and post to /register.
+deployServiceApp.post("/register", handleOauthClientRegistration);
 
 deployServiceApp.get("/api/oauth/authorize", async (c) => {
   try {
@@ -1839,6 +1844,13 @@ deployServiceApp.all("/mcp", async (c) => {
     return c.body(null, 204);
   }
   if (c.req.method === "GET") {
+    try {
+      await requireMcpRequestIdentity(c.req.raw, c.env);
+    } catch (error) {
+      const httpError = asHttpError(error);
+      return oauthUnauthorizedResponse(c, c.env, httpError, readBearerToken(c.req.raw) ?? undefined);
+    }
+
     return c.json({ error: "SSE streaming is not supported in stateless mode." }, 405);
   }
 

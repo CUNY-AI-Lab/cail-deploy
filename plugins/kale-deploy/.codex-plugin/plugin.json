@@ -1,6 +1,6 @@
 {
   "name": "kale-deploy",
-  "version": "0.2.0",
+  "version": "0.2.7",
   "description": "Kale Deploy assistant adapter for building Kale-compatible Cloudflare apps.",
   "author": {
     "name": "CUNY AI Lab",
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "Kale Deploy",
     "shortDescription": "Build and deploy apps that fit the Kale runtime.",
-    "longDescription": "A Codex plugin that teaches the Kale Deploy runtime, bundles the remote Kale MCP server, and provides command surfaces for scaffolding, diagnosing, and adapting Kale-compatible projects.",
+    "longDescription": "A Codex plugin that teaches the Kale Deploy runtime and provides command surfaces for scaffolding, diagnosing, adapting, and connecting Kale-compatible projects.",
     "developerName": "CUNY AI Lab",
     "category": "Developer Tools",
     "capabilities": [

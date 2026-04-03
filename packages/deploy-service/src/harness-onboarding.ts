@@ -1,12 +1,12 @@
 export const HARNESS_IDS = ["claude", "codex", "gemini"] as const;
 export const HARNESS_PROMPT_PROFILES = ["current", "skill-first"] as const;
-export const KALE_AGENT_BUNDLE_VERSION = "0.2.0";
+export const KALE_AGENT_BUNDLE_VERSION = "0.2.7";
 
 export type HarnessId = typeof HARNESS_IDS[number];
 export type HarnessPromptProfile = typeof HARNESS_PROMPT_PROFILES[number];
 export type HarnessInstallSurface = "plugin_marketplace" | "app_add_on" | "extension";
 export type HarnessInstallMode = "command" | "app_ui";
-export type HarnessAuthMode = "oauth_browser" | "token_header";
+export type HarnessAuthMode = "oauth_browser" | "oauth_bridge_to_http" | "stdio_oauth_bridge" | "token_header";
 export type HarnessUpdateMode = "automatic" | "manual" | "unknown";
 export type HarnessWrapperKind = "plugin" | "add_on" | "extension";
 
@@ -390,6 +390,8 @@ export function buildSkillFirstHarnessSetupPrompts(input: HarnessPromptContext):
 
 function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[] {
   const connectUrl = `${input.serviceBaseUrl.replace(/\/$/, "")}/connect`;
+  const claudeBootstrapCommand = `claude mcp remove kale -s local 2>/dev/null\nclaude mcp remove kale -s user 2>/dev/null\nclaude mcp add -s user kale -- npx -y mcp-remote ${input.mcpEndpoint} --transport http-only`;
+  const claudeFinalizeCommand = `KALE_PLUGIN_PATH="$(claude plugins list --json | node -e 'const fs = require(\"node:fs\"); const plugins = JSON.parse(fs.readFileSync(0, \"utf8\")); const plugin = plugins.find((entry) => entry.id === \"kale-deploy@cuny-ai-lab\"); if (!plugin?.installPath) { process.stderr.write(\"Kale plugin is not installed.\\\\n\"); process.exit(1); } process.stdout.write(plugin.installPath);')"\nnode "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint ${input.mcpEndpoint}`;
 
   return [
     {
@@ -401,15 +403,23 @@ function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[]
       instruction: `/plugin marketplace add CUNY-AI-Lab/CAIL-deploy\n/plugin install kale-deploy@cuny-ai-lab`,
       hint: "Paste inside Claude Code",
       installNotes: [
-        "Claude installs Kale as a local plugin bundle.",
-        "The plugin install is separate from Kale MCP authentication."
+        "Claude installs Kale as a user-scope plugin bundle.",
+        "The plugin install provides Kale skills and the Claude finalization helper.",
+        "In Claude Code, do not search the MCP registry first when the local Kale plugin is installed. Start with the installed plugin and claude mcp list.",
+        "Use mcp-remote only to complete the OAuth browser flow, then replace the temporary bridge with one direct HTTP kale entry.",
+        "The steady-state Claude ready state is a single user-scope kale HTTP server at the Kale MCP endpoint.",
+        "Do not invent claude mcp auth, login, or authenticate commands."
       ],
       manualFallback: {
-        authMode: "token_header",
-        instruction: `claude mcp remove kale -s local 2>/dev/null\nclaude mcp remove kale -s user 2>/dev/null\nclaude mcp add --transport http --header "Authorization: Bearer THE_TOKEN" -s local kale ${input.mcpEndpoint}`,
-        hint: "Use this only if the normal browser flow stalls",
+        authMode: "oauth_bridge_to_http",
+        instruction: `${claudeBootstrapCommand}\n# complete the browser OAuth flow, then replace the temporary bridge:\n${claudeFinalizeCommand}`,
+        hint: "Current recommended Claude bootstrap and finalize path",
         notes: [
-          "Claude Code is currently most reliable through the token bridge when OAuth does not complete cleanly.",
+          "Use mcp-remote only long enough to complete the OAuth browser flow.",
+          "After OAuth succeeds, immediately rewrite Claude to one direct HTTP kale server with the installed kale-claude-connect helper.",
+          "Do not leave the temporary stdio bridge as the steady-state Claude connection.",
+          `If mcp-remote itself fails, fall back to the token bridge from ${connectUrl}.`,
+          `Last-resort token bridge:\nclaude mcp remove kale -s local 2>/dev/null\nclaude mcp remove kale -s user 2>/dev/null\nclaude mcp add --transport http --header "Authorization: Bearer THE_TOKEN" -s user kale ${input.mcpEndpoint}`,
           `Generate THE_TOKEN from ${connectUrl}.`
         ]
       },
@@ -418,7 +428,7 @@ function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[]
         packageName: "kale-deploy@cuny-ai-lab",
         bundleVersion: KALE_AGENT_BUNDLE_VERSION,
         updateMode: "manual",
-        updateCommand: "claude plugins update kale-deploy@cuny-ai-lab -s local",
+        updateCommand: "claude plugins update kale-deploy@cuny-ai-lab -s user",
         restartRequiredAfterUpdate: true,
         notes: [
           "Claude supports plugin updates directly.",
@@ -524,7 +534,7 @@ function evaluateLocalWrapperStatus(
       restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
       summary: `${harness.name} reported local bundle version '${normalizedBundleVersion}', which Kale could not compare with the current bundle '${harness.localWrapper.bundleVersion}'.`,
       notes: [
-        "Use a simple dotted version such as 0.2.0 when reporting local wrapper versions.",
+        "Use a simple dotted version such as 0.2.4 when reporting local wrapper versions.",
         ...harness.localWrapper.notes
       ]
     };
@@ -603,7 +613,7 @@ function buildInstalledHarnessSetupPrompts(input: HarnessPromptContext): Harness
   const connectUrl = `${input.serviceBaseUrl.replace(/\/$/, "")}/connect`;
   const { marketingName } = input;
   const livePolicyInstruction = "When Kale tools appear, call get_runtime_manifest and read dynamic_skill_policy, client_update_policy, and agent_harnesses before trusting any local guidance. Then call test_connection and use dynamicSkillPolicy, clientUpdatePolicy, harnesses, nextAction, and summary as the live source of truth.";
-  const claudeSetupPrompt = `Prepare this Claude Code environment for future ${marketingName} work. The official \`kale-deploy\` plugin is already installed. Use the installed \`kale-deploy:kale-connect\` command or the plugin's \`kale-connect\` guidance to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. ${livePolicyInstruction} If Kale authentication is needed, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, confirm register_project is available.`;
+  const claudeSetupPrompt = `Prepare this Claude Code environment for future ${marketingName} work. The official \`kale-deploy\` plugin is already installed. Use the installed \`kale-deploy:kale-connect\` command or the plugin's \`kale-connect\` guidance to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. ${livePolicyInstruction} In Claude Code, do not search the MCP registry first when the local Kale plugin is installed. Start with the installed plugin guidance and \`claude mcp list\`. Use \`mcp-remote\` only to complete the browser OAuth flow: \`claude mcp remove kale -s local 2>/dev/null && claude mcp remove kale -s user 2>/dev/null && claude mcp add -s user kale -- npx -y mcp-remote ${input.mcpEndpoint} --transport http-only\`. After OAuth succeeds, replace that temporary bridge with one direct HTTP \`kale\` server by running the installed \`kale-claude-connect.mjs\` helper from the plugin cache. The ready state is one user-scope \`kale\` HTTP server at ${input.mcpEndpoint}. Do not invent \`claude mcp auth\`, \`claude mcp login\`, or \`claude mcp authenticate\` commands. Only if \`mcp-remote\` also fails, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, confirm register_project is available.`;
   const codexSetupPrompt = `Prepare this Codex environment for future ${marketingName} work. The official \`kale-deploy\` add-on or bundled Kale skills are already installed. Use the installed \`kale-connect\` guidance to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. ${livePolicyInstruction} If Kale authentication is needed, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, confirm register_project is available.`;
   const geminiSetupPrompt = `Prepare this Gemini CLI environment for future ${marketingName} work. The official \`kale-deploy\` extension or skills are already installed, and the Kale MCP server is already declared at \`.gemini/settings.json\` in the current project. Use the installed \`kale-connect\` skill to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. ${livePolicyInstruction} If Kale authentication is needed, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, confirm register_project is available.`;
 

@@ -96,7 +96,7 @@ npx wrangler deploy --config packages/gateway-worker/wrangler.jsonc
 
 - The current public front door is `https://cuny.qzz.io/kale`. The lower-level Workers still exist behind it.
 - Ordinary Kale deploys only need the shared GitHub App installation. The second GitHub user-auth step appears only for sensitive project-admin actions such as secrets.
-- Current harness install and update policy is published in the runtime manifest at `https://runtime.cuny.qzz.io/.well-known/kale-runtime.json`, especially `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses`.
+- Current harness install and update policy is published in the runtime manifest at `https://runtime.cuny.qzz.io/.well-known/kale-runtime.json`, especially `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses`. For Claude Code, the current steady state is one direct HTTP `kale` MCP server; `mcp-remote` is only the OAuth bootstrap.
 - Project secret management requires `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, and `CONTROL_PLANE_ENCRYPTION_KEY`. Those are not part of the ordinary deploy path, but they must be configured before secrets will work.
 - If the CUNY AI Lab front page later becomes the public entry point, update `DEPLOY_SERVICE_BASE_URL`, `PROJECT_BASE_URL`, and the GitHub App URLs together. A draft checklist is in [friendly-url-rollout.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/friendly-url-rollout.md).
 - The deploy-service also exposes:

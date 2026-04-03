@@ -486,7 +486,7 @@ async function prepareHarness(input: {
   const notes: string[] = ["Backed up live Claude config and plugins for restore after the run."];
   notes.push(kalePatToken
     ? "Found a live Kale PAT for automated full-process Claude testing."
-    : "No live Kale PAT was available, so Claude full-process testing may stop at the token handoff.");
+    : "No live Kale PAT was available, so Claude full-process testing may stop at the browser or token handoff.");
 
   for (const serverName of KALE_SERVER_NAMES) {
     await runCommand({
@@ -1043,7 +1043,7 @@ function applyAutomationAuthPrompt(input: {
       tokenNote,
       "Do not wait for a browser handoff in this automation harness.",
       "If Kale authentication is needed, use the token-header fallback instead of asking for human help.",
-      `Use: claude mcp add --transport http --header "Authorization: Bearer $KALE_TEST_PAT" -s local kale ${mcpEndpoint}`
+      `Use: claude mcp add --transport http --header "Authorization: Bearer $KALE_TEST_PAT" -s user kale ${mcpEndpoint}`
     ].join("\n\n");
   }
 

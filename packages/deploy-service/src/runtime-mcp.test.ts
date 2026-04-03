@@ -51,6 +51,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
       install_surface: string;
       install_mode: string;
       install_instruction: string;
+      install_notes: string[];
       local_wrapper: {
         kind: string;
         bundle_version: string;
@@ -61,6 +62,8 @@ test("runtime manifest advertises the agent API without duplicate well-known key
       manual_fallback?: {
         auth_mode: string;
         instruction: string;
+        hint: string;
+        notes: string[];
       };
     }>;
     agent_build_guidance: string[];
@@ -145,10 +148,19 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.match(body.client_update_policy.notes[0] ?? "", /Remote Kale MCP and runtime changes apply immediately/i);
   assert.equal(body.agent_harnesses.length, 3);
   assert.deepEqual(body.agent_harnesses.map((entry) => entry.id), ["claude", "codex", "gemini"]);
-  assert.equal(body.agent_harnesses[0]?.local_wrapper.bundle_version, "0.2.0");
+  assert.equal(body.agent_harnesses[0]?.local_wrapper.bundle_version, "0.2.7");
   assert.equal(body.agent_harnesses[0]?.local_wrapper.update_mode, "manual");
-  assert.equal(body.agent_harnesses[0]?.local_wrapper.update_command, "claude plugins update kale-deploy@cuny-ai-lab -s local");
+  assert.equal(body.agent_harnesses[0]?.local_wrapper.update_command, "claude plugins update kale-deploy@cuny-ai-lab -s user");
   assert.equal(body.agent_harnesses[0]?.local_wrapper.restart_required_after_update, true);
+  assert.ok(body.agent_harnesses[0]?.install_notes.some((note) => /do not search the MCP registry first/i.test(note)));
+  assert.ok(body.agent_harnesses[0]?.install_notes.some((note) => /Use mcp-remote only to complete the OAuth browser flow/i.test(note)));
+  assert.ok(body.agent_harnesses[0]?.install_notes.some((note) => /single user-scope kale HTTP server/i.test(note)));
+  assert.equal(body.agent_harnesses[0]?.manual_fallback?.auth_mode, "oauth_bridge_to_http");
+  assert.match(body.agent_harnesses[0]?.manual_fallback?.hint ?? "", /Current recommended Claude bootstrap and finalize path/i);
+  assert.match(body.agent_harnesses[0]?.manual_fallback?.instruction ?? "", /mcp-remote/);
+  assert.match(body.agent_harnesses[0]?.manual_fallback?.instruction ?? "", /kale-claude-connect\.mjs/);
+  assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Use mcp-remote only long enough to complete the OAuth browser flow/i.test(note)));
+  assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Last-resort token bridge:/i.test(note)));
   assert.equal(body.agent_harnesses[1]?.install_surface, "app_add_on");
   assert.equal(body.agent_harnesses[1]?.install_mode, "app_ui");
   assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /Install the Kale Deploy add-on in the Codex app/i);
@@ -360,7 +372,7 @@ test("public connection health explains the MCP auth handoff", async () => {
   assert.equal(body.clientUpdatePolicy.runtimeManifestPreferred, true);
   assert.equal(body.localWrapperStatus, undefined);
   assert.deepEqual(body.harnesses.map((entry) => entry.id), ["claude", "codex", "gemini"]);
-  assert.equal(body.harnesses[0]?.localWrapper.updateCommand, "claude plugins update kale-deploy@cuny-ai-lab -s local");
+  assert.equal(body.harnesses[0]?.localWrapper.updateCommand, "claude plugins update kale-deploy@cuny-ai-lab -s user");
   assert.equal(body.harnesses[1]?.installMode, "app_ui");
   assert.equal(body.harnesses[2]?.localWrapper.updateCommand, "gemini extensions update kale-deploy");
 });
@@ -410,28 +422,32 @@ test("mcp advertises OAuth metadata when unauthorized", async () => {
     MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
   });
 
-  const response = await fetchApp(
-    "POST",
-    "/mcp",
-    env,
-    {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/list",
-      params: {}
-    },
-    {
-      accept: "application/json, text/event-stream",
-      "mcp-protocol-version": "2025-03-26"
-    }
-  );
+  for (const method of ["GET", "POST"] as const) {
+    const response = await fetchApp(
+      method,
+      "/mcp",
+      env,
+      method === "POST"
+        ? {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/list",
+            params: {}
+          }
+        : undefined,
+      {
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": "2025-03-26"
+      }
+    );
 
-  assert.equal(response.status, 401);
-  assert.match(response.headers.get("www-authenticate") ?? "", /resource_metadata="https:\/\/deploy\.example\/.well-known\/oauth-protected-resource\/mcp"/);
-  assert.deepEqual(await response.json(), {
-    error: "invalid_token",
-    error_description: "A valid MCP OAuth access token is required."
-  });
+    assert.equal(response.status, 401, method);
+    assert.match(response.headers.get("www-authenticate") ?? "", /resource_metadata="https:\/\/deploy\.example\/.well-known\/oauth-protected-resource\/mcp"/, method);
+    assert.deepEqual(await response.json(), {
+      error: "invalid_token",
+      error_description: "A valid MCP OAuth access token is required."
+    }, method);
+  }
 });
 
 test("mcp returns an actionable PAT expiry error", async () => {
@@ -520,6 +536,22 @@ test("mcp handles preflight and returns tools when authorized with OAuth", async
   );
   assert.equal(preflight.status, 204);
   assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+
+  const authenticatedGet = await fetchApp(
+    "GET",
+    "/mcp",
+    env,
+    undefined,
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(authenticatedGet.status, 405);
+  assert.deepEqual(await authenticatedGet.json(), {
+    error: "SSE streaming is not supported in stateless mode."
+  });
 
   const listResponse = await fetchApp(
     "POST",
@@ -658,7 +690,7 @@ test("mcp handles preflight and returns tools when authorized with OAuth", async
   assert.equal(testConnectionResult.result.structuredContent.clientUpdatePolicy.remoteMcpUpdateMode, "automatic");
   assert.equal(testConnectionResult.result.structuredContent.clientUpdatePolicy.localWrapperUpdateMode, "harness_specific");
   assert.equal(testConnectionResult.result.structuredContent.harnesses[0]?.localWrapper.updateMode, "manual");
-  assert.equal(testConnectionResult.result.structuredContent.harnesses[0]?.localWrapper.updateCommand, "claude plugins update kale-deploy@cuny-ai-lab -s local");
+  assert.equal(testConnectionResult.result.structuredContent.harnesses[0]?.localWrapper.updateCommand, "claude plugins update kale-deploy@cuny-ai-lab -s user");
 });
 
 test("connection health reports a stale local wrapper when the harness version is older", async () => {
@@ -685,7 +717,7 @@ test("connection health reports a stale local wrapper when the harness version i
   assert.equal(body.localWrapperStatus?.status, "stale");
   assert.equal(body.localWrapperStatus?.warning, true);
   assert.equal(body.localWrapperStatus?.localBundleVersion, "0.1.0");
-  assert.equal(body.localWrapperStatus?.expectedBundleVersion, "0.2.0");
+  assert.equal(body.localWrapperStatus?.expectedBundleVersion, "0.2.7");
   assert.equal(body.localWrapperStatus?.updateMode, "manual");
   assert.equal(body.localWrapperStatus?.updateCommand, "gemini extensions update kale-deploy");
   assert.match(body.localWrapperStatus?.summary ?? "", /Refresh or update the local wrapper/i);
@@ -743,7 +775,7 @@ test("mcp test_connection reports a stale local wrapper when the harness version
   assert.equal(body.result.structuredContent.localWrapperStatus?.status, "stale");
   assert.equal(body.result.structuredContent.localWrapperStatus?.warning, true);
   assert.equal(body.result.structuredContent.localWrapperStatus?.localBundleVersion, "0.1.0");
-  assert.equal(body.result.structuredContent.localWrapperStatus?.expectedBundleVersion, "0.2.0");
+  assert.equal(body.result.structuredContent.localWrapperStatus?.expectedBundleVersion, "0.2.7");
   assert.equal(body.result.structuredContent.localWrapperStatus?.updateMode, "unknown");
   assert.match(body.result.structuredContent.summary, /Codex reported local bundle version 0.1.0/i);
 });
@@ -788,6 +820,7 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   assert.equal(metadata.registration_endpoint, "https://deploy.example/oauth/register");
 
   for (const aliasPath of [
+    "/.well-known/openid-configuration",
     "/.well-known/oauth-authorization-server/mcp",
     "/mcp/.well-known/oauth-authorization-server",
     "/.well-known/openid-configuration/mcp",
@@ -809,6 +842,16 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   const client = await registerResponse.json() as { client_id: string; redirect_uris: string[] };
   assert.ok(client.client_id);
   assert.deepEqual(client.redirect_uris, ["http://127.0.0.1:43123/callback"]);
+
+  const registerAliasResponse = await fetchApp("POST", "/register", env, {
+    client_name: "Claude Code",
+    redirect_uris: ["http://localhost:43123/callback"],
+    token_endpoint_auth_method: "none"
+  });
+  assert.equal(registerAliasResponse.status, 200);
+  const aliasClient = await registerAliasResponse.json() as { client_id: string; redirect_uris: string[] };
+  assert.ok(aliasClient.client_id);
+  assert.deepEqual(aliasClient.redirect_uris, ["http://localhost:43123/callback"]);
 
   const codeVerifier = "test-code-verifier-123456789";
   const codeChallenge = await createPkceChallenge(codeVerifier);

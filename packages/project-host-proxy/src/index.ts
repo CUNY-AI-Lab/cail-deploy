@@ -21,6 +21,14 @@ export default {
       return proxyRuntimeManifest(env.RUNTIME_MANIFEST_URL);
     }
 
+    const rootDeployServiceAliasPath = resolveRootDeployServiceAliasPath(request, env);
+    if (rootDeployServiceAliasPath) {
+      return proxyToDeployService(request, env, {
+        upstreamPath: rootDeployServiceAliasPath,
+        publicPathPrefix: ""
+      });
+    }
+
     if (isDeployServiceRequest(request, env)) {
       return proxyToDeployService(request, env);
     }
@@ -44,6 +52,11 @@ export default {
   }
 };
 
+type DeployServiceProxyOptions = {
+  upstreamPath?: string;
+  publicPathPrefix?: string;
+};
+
 function isDeployServiceRequest(request: Request, env: Env): boolean {
   const url = new URL(request.url);
   const hostname = url.hostname.toLowerCase();
@@ -53,12 +66,17 @@ function isDeployServiceRequest(request: Request, env: Env): boolean {
   return hostname === suffix && (url.pathname === prefix || url.pathname.startsWith(`${prefix}/`));
 }
 
-async function proxyToDeployService(request: Request, env: Env): Promise<Response> {
+async function proxyToDeployService(
+  request: Request,
+  env: Env,
+  options: DeployServiceProxyOptions = {}
+): Promise<Response> {
   const requestUrl = new URL(request.url);
   const prefix = env.DEPLOY_SERVICE_PATH_PREFIX;
 
   // Strip the prefix to get the path the deploy service expects
-  const strippedPath = requestUrl.pathname.slice(prefix.length) || "/";
+  const strippedPath = options.upstreamPath ?? (requestUrl.pathname.slice(prefix.length) || "/");
+  const publicPathPrefix = options.publicPathPrefix ?? prefix;
   const upstreamUrl = new URL(env.INTERNAL_DEPLOY_SERVICE_URL);
   upstreamUrl.pathname = strippedPath;
   upstreamUrl.search = requestUrl.search;
@@ -69,7 +87,11 @@ async function proxyToDeployService(request: Request, env: Env): Promise<Respons
   }
   headers.set("x-forwarded-host", requestUrl.host);
   headers.set("x-forwarded-proto", requestUrl.protocol.replace(/:$/, ""));
-  headers.set("x-forwarded-prefix", prefix);
+  if (publicPathPrefix) {
+    headers.set("x-forwarded-prefix", publicPathPrefix);
+  } else {
+    headers.delete("x-forwarded-prefix");
+  }
 
   const upstreamRequest = new Request(upstreamUrl.toString(), {
     body: request.body,
@@ -89,12 +111,12 @@ async function proxyToDeployService(request: Request, env: Env): Promise<Respons
 
     if (location.startsWith("/")) {
       // Relative path — add the prefix
-      responseHeaders.set("location", `${prefix}${location}`);
+      responseHeaders.set("location", publicPathPrefix ? `${publicPathPrefix}${location}` : location);
     } else if (looksLikeAbsoluteUrl(location)) {
       const locationUrl = new URL(location);
       if (locationUrl.origin === internalOrigin) {
         const publicUrl = new URL(requestUrl.toString());
-        publicUrl.pathname = `${prefix}${locationUrl.pathname}`;
+        publicUrl.pathname = publicPathPrefix ? `${publicPathPrefix}${locationUrl.pathname}` : locationUrl.pathname;
         publicUrl.search = locationUrl.search;
         publicUrl.hash = locationUrl.hash;
         responseHeaders.set("location", publicUrl.toString());
@@ -141,6 +163,27 @@ function isRuntimeManifestRequest(
 
   return url.pathname === "/.well-known/kale-runtime.json"
     && (hostname === normalizedSuffix || hostname === normalizedRuntimeHost);
+}
+
+function resolveRootDeployServiceAliasPath(request: Request, env: Env): string | undefined {
+  const url = new URL(request.url);
+  const hostname = url.hostname.toLowerCase();
+  const suffix = env.PROJECT_HOST_SUFFIX.trim().toLowerCase();
+  if (hostname !== suffix) {
+    return undefined;
+  }
+
+  const normalizedPrefix = env.DEPLOY_SERVICE_PATH_PREFIX
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+
+  const aliasMap = new Map<string, string>([
+    [`/.well-known/oauth-authorization-server/${normalizedPrefix}`, "/.well-known/oauth-authorization-server"],
+    [`/.well-known/openid-configuration/${normalizedPrefix}`, "/.well-known/openid-configuration"],
+    [`/.well-known/oauth-protected-resource/${normalizedPrefix}/mcp`, "/.well-known/oauth-protected-resource/mcp"]
+  ]);
+
+  return aliasMap.get(url.pathname);
 }
 
 function resolveProjectName(request: Request, projectHostSuffix: string, runtimeManifestHost?: string): string | undefined {

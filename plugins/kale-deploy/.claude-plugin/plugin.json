@@ -1,7 +1,7 @@
 {
   "name": "kale-deploy",
-  "version": "0.2.0",
-  "description": "Kale Deploy plugin for scaffolding, diagnosing, adapting, and shipping Kale-compatible web apps through the remote Kale MCP server.",
+  "version": "0.2.7",
+  "description": "Kale Deploy plugin for scaffolding, diagnosing, adapting, and connecting Kale-compatible web apps.",
   "author": {
     "name": "CUNY AI Lab",
     "email": "hello@ailab.gc.cuny.edu"

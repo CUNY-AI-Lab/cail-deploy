@@ -24,7 +24,7 @@ Use this checklist before inviting a new batch of Kale Deploy pilot users.
 - the current Cloudflare Access policy still matches the intended pilot cohort
 - at least one real user can complete the OTP or login flow
 - Codex still completes MCP OAuth cleanly
-- Claude Code still works through the `/connect` token path
+- Claude Code still completes MCP OAuth cleanly, with `/connect` preserved as the fallback
 
 ## Support Checks
 

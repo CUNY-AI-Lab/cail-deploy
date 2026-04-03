@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260317.1",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.2",
     "wrangler": "^4.77.0"
   }

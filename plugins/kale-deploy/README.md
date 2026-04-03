@@ -66,24 +66,42 @@ for deployment.
 
 ## Claude Code
 
-This repo also acts as a Claude Code plugin marketplace, but the tested Claude
-onboarding path right now is the token flow below, not plugin installation and
-not the interactive `/mcp` screen.
+This repo also acts as a Claude Code plugin marketplace. The intended Claude
+path is:
 
-Open:
+1. install the local `kale-deploy` plugin bundle
+2. do not let Claude start by searching the MCP registry if the local Kale plugin is already installed
+3. let Claude connect to `https://cuny.qzz.io/kale/mcp`
+4. use `mcp-remote` only to complete OAuth:
+   `claude mcp add -s user kale -- npx -y mcp-remote https://cuny.qzz.io/kale/mcp --transport http-only`
+5. let `mcp-remote` handle the browser OAuth flow
+6. immediately replace the temporary bridge with one direct HTTP `kale` server:
 
-- `https://cuny.qzz.io/kale/connect`
+```bash
+KALE_PLUGIN_PATH="$(claude plugins list --json | node -e 'const fs = require("node:fs"); const plugins = JSON.parse(fs.readFileSync(0, "utf8")); const plugin = plugins.find((entry) => entry.id === "kale-deploy@cuny-ai-lab"); if (!plugin?.installPath) { process.stderr.write("Kale plugin is not installed.\n"); process.exit(1); } process.stdout.write(plugin.installPath);')"
+node "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint https://cuny.qzz.io/kale/mcp
+```
 
-Sign in with a CUNY email, click **Generate token**, and then run:
+7. ask Claude to call `test_connection` before you rely on Kale for deployment
+
+The real success condition is one user-scope direct HTTP `kale` server that can
+surface tools in fresh Claude sessions.
+
+If `mcp-remote` fails, use the token fallback below:
+
+1. open `https://cuny.qzz.io/kale/connect`
+2. sign in with a CUNY email
+3. click **Generate token**
+4. run:
 
 ```bash
 claude mcp remove kale -s local 2>/dev/null
 claude mcp remove kale -s user 2>/dev/null
-claude mcp add --transport http --header "Authorization: Bearer THE_TOKEN" -s local kale https://cuny.qzz.io/kale/mcp
+claude mcp add --transport http --header "Authorization: Bearer THE_TOKEN" -s user kale https://cuny.qzz.io/kale/mcp
 ```
 
 Replace `THE_TOKEN` with the generated token, then ask Claude to call
-`test_connection` before you rely on Kale for deployment.
+`test_connection`.
 
 For secret management, use the Kale `projectName` slug rather than `owner/repo`.
 If you only know the repo, call `get_repository_status` first and use the

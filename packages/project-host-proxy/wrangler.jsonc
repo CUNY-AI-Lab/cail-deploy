@@ -11,6 +11,18 @@
       "zone_name": "cuny.qzz.io"
     },
     {
+      "pattern": "cuny.qzz.io/.well-known/oauth-authorization-server/kale",
+      "zone_name": "cuny.qzz.io"
+    },
+    {
+      "pattern": "cuny.qzz.io/.well-known/openid-configuration/kale",
+      "zone_name": "cuny.qzz.io"
+    },
+    {
+      "pattern": "cuny.qzz.io/.well-known/oauth-protected-resource/kale/mcp",
+      "zone_name": "cuny.qzz.io"
+    },
+    {
       "pattern": "cuny.qzz.io/kale*",
       "zone_name": "cuny.qzz.io"
     },
