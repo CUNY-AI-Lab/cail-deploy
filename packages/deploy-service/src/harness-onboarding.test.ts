@@ -61,15 +61,14 @@ test("Claude setup prompt tells the harness to finalize from the bootstrap bridg
   const claude = prompts.find((entry) => entry.id === "claude");
 
   assert.ok(claude);
-  assert.match(claude.prompt, /do not search the MCP registry first when the local Kale plugin is installed/i);
-  assert.match(claude.prompt, /Use `mcp-remote` only to complete the browser OAuth flow/i);
-  assert.match(claude.prompt, /replace that temporary bridge with one direct HTTP `kale` server/i);
+  assert.match(claude.prompt, /do not search the MCP registry first/i);
+  assert.match(claude.prompt, /bootstrap OAuth/i);
+  assert.match(claude.prompt, /replace the temporary bridge with one direct HTTP `kale` server/i);
   assert.match(claude.prompt, /kale-claude-connect\.mjs/);
   assert.match(claude.prompt, /headersHelper/i);
-  assert.match(claude.prompt, /refreshes it automatically when a valid refresh token is cached/i);
-  assert.match(claude.prompt, /Only rerun the `mcp-remote` bootstrap if the helper reports that no valid Kale OAuth or refresh token is available/i);
+  assert.match(claude.prompt, /refreshes the Kale OAuth token automatically/i);
   assert.match(claude.prompt, /do not invent `claude mcp auth`, `claude mcp login`, or `claude mcp authenticate` commands/i);
   assert.match(claude.prompt, /claude mcp add -s user kale -- npx -y mcp-remote/i);
-  assert.match(claude.prompt, /Only if `mcp-remote` also fails/i);
+  assert.match(claude.prompt, /If OAuth fails/i);
   assert.match(claude.prompt, /https:\/\/cuny\.qzz\.io\/kale\/connect/);
 });

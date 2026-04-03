@@ -740,7 +740,7 @@ test("project control panel asks the user to connect GitHub before showing setti
   assert.match(html, /Kale Deploy can only show project secrets after it verifies a GitHub account with write or admin access/i);
   assert.doesNotMatch(html, /szweibel\/kale-cache-smoke-test/);
   assert.doesNotMatch(html, /kale-cache-smoke-test\.cuny\.qzz\.io/);
-  assert.match(html, /Return to Kale Deploy/);
+  assert.match(html, /Back to Kale Deploy/);
   assert.match(html, /returnTo=https%3A%2F%2Fdeploy\.example%2Fprojects%2Fkale-cache-smoke-test%2Fcontrol/);
 });
 

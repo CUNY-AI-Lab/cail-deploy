@@ -41,30 +41,7 @@ The install step is meant to be global for that agent, not just for one folder.
 
 The website lists short install instructions for the Kale add-on in each agent. After the add-on is installed, use the build prompt on the page and let the agent handle the rest.
 
-Current Claude note:
-
-- If the local Kale plugin is installed, Claude should not start by searching the MCP registry.
-- Claude Code should use `mcp-remote` only to complete OAuth, then switch to one direct HTTP `kale` server whose `headersHelper` reads and refreshes the latest valid Kale OAuth token.
-- The homepage starts Claude with the in-app `/plugin` install commands for `kale-deploy`.
-- The bootstrap command is:
-  `claude mcp add -s user kale -- npx -y mcp-remote https://cuny.qzz.io/kale/mcp --transport http-only`
-- After OAuth succeeds, run the installed `kale-claude-connect.mjs` helper to rewrite Claude to one direct HTTP `kale` server that uses `headersHelper`.
-- If the helper later reports that no valid Kale OAuth or refresh token is available, rerun the `mcp-remote` bootstrap and helper sync steps.
-- Only if `mcp-remote` also fails, fall back to [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), do the token handoff, and then verify that Kale tools are really available.
-- If you use the token fallback on more than one computer, reuse the same Claude token on both machines for now. Generating a new one at `/connect` currently revokes the previous active token.
-
-Current Codex note:
-
-- Codex normally uses the Kale add-on install path shown on the homepage or in the Codex app.
-- If that add-on path is unavailable, the manual fallback is the direct Kale MCP connection.
-- Remote Kale behavior updates immediately, but local add-on refresh behavior is harness-specific.
-- When a connected agent wants the current install/update truth, it should read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` from the runtime manifest, then use `test_connection` for the live next step.
-
-Current Gemini note:
-
-- Gemini CLI can install Kale as an extension.
-- The preferred public install path uses `--auto-update` so the extension stays current.
-- Gemini also supports explicit extension updates later if needed.
+If the agent has trouble connecting, it may ask you to visit [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), sign in, and paste a token back into the chat. This is a fallback for when the automatic sign-in does not complete.
 
 ### 2. Ask the agent to build the app
 
@@ -181,7 +158,7 @@ If you are unsure, push the repo and read the GitHub check result. It should tel
 
 Start here:
 
-- [troubleshooting.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/troubleshooting.md)
-- [support-matrix.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/support-matrix.md)
-- [claude-quickstart.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/claude-quickstart.md)
-- [codex-quickstart.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/codex-quickstart.md)
+- [troubleshooting.md](troubleshooting.md)
+- [support-matrix.md](support-matrix.md)
+- [claude-quickstart.md](claude-quickstart.md)
+- [codex-quickstart.md](codex-quickstart.md)

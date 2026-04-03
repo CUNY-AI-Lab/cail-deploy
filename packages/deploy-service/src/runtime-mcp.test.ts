@@ -400,7 +400,7 @@ test("landing page presents the agent-first flow and live project social proof",
   const html = await response.text();
   assert.match(html, /Kale Deploy/);
   assert.match(html, /From the CUNY AI Lab/);
-  assert.match(html, /Build and deploy web apps with your AI coding agent/);
+  assert.match(html, /A web publishing tool from the CUNY AI Lab/);
   assert.match(html, /Claude Code/);
   assert.match(html, /Codex/);
   assert.match(html, /Gemini CLI/);

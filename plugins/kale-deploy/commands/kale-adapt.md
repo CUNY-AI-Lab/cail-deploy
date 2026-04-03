@@ -26,4 +26,16 @@ Follow this sequence:
 7. Use `--refresh-guidance` only when the user wants Kale to replace existing `AGENTS.md` or `CLAUDE.md`.
 8. After adapting the repo, explain any remaining follow-up work honestly.
 
+Example output:
+
+```
+Detected shape: worker
+  created  kale.project.json
+  created  wrangler.jsonc
+  updated  package.json (added dev and check scripts)
+  skipped  src/index.ts (already exists)
+  created  AGENTS.md
+  created  CLAUDE.md
+```
+
 Do not silently convert a request-time Worker app into a pure static site, and do not delete user code just to make the repo look cleaner.

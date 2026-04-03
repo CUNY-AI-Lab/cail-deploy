@@ -30,6 +30,7 @@ export type RepositoryLifecycleViewModel = {
   deploymentUrl?: string;
   errorMessage?: string;
   errorDetail?: string;
+  errorKind?: string;
 };
 
 const INSTALL_AND_SETUP_SHARED_STYLES = `
@@ -265,12 +266,6 @@ export function renderOauthLoopbackContinuePage(input: {
     <title>Return To ${escapeHtml(appName)}</title>
     ${faviconLink()}
     ${baseStyles(`
-      .helper-steps {
-        margin-top: 16px;
-      }
-      .helper-steps li + li {
-        margin-top: 8px;
-      }
       .callback-actions {
         display: flex;
         flex-wrap: wrap;
@@ -308,22 +303,13 @@ export function renderOauthLoopbackContinuePage(input: {
       <div class="logo">${logoHtml("52px")}</div>
       <section class="card">
         <h1>Return to ${escapeHtml(appName)}</h1>
-        <p>Kale Deploy has finished the browser sign-in step. This page is now handing the result back to your local agent so it can finish logging in.</p>
-        <div class="notice">
-          <p>You should not need to do anything else here. Once the handoff completes, you can close this tab and return to the terminal.</p>
-        </div>
-        <ol class="helper-steps">
-          <li>Wait a moment for your local agent to receive the login result.</li>
-          <li>Close this tab and return to the terminal.</li>
-          <li>If your agent is still waiting, use <strong>Try handoff again</strong> once.</li>
-        </ol>
-        <div class="callback-actions">
-          <button class="button" type="button" id="close-tab-button">Close this tab</button>
-          <button class="button secondary" type="button" id="retry-handoff-button">Try handoff again</button>
-        </div>
         <p class="callback-status" id="callback-status">Handing off to your local agent…</p>
+        <p>Once the handoff completes, you can close this tab and return to the terminal.</p>
+        <div class="callback-actions">
+          <button class="button secondary" type="button" id="retry-handoff-button" hidden>Try handoff again</button>
+        </div>
         <details class="callback-help">
-          <summary>Advanced troubleshooting</summary>
+          <summary>Troubleshooting</summary>
           <p>If the agent still does not continue after you retry, the manual loopback URL is <code>${escapeHtml(input.callbackUrl)}</code>.</p>
         </details>
       </section>
@@ -331,9 +317,11 @@ export function renderOauthLoopbackContinuePage(input: {
     <script>
       const callbackUrl = ${callbackUrlJson};
       const statusEl = document.getElementById("callback-status");
-      const closeButton = document.getElementById("close-tab-button");
       const retryButton = document.getElementById("retry-handoff-button");
       let iframe;
+      function showRetry() {
+        if (retryButton) retryButton.hidden = false;
+      }
       function beginHandoff() {
         if (iframe) {
           iframe.remove();
@@ -345,21 +333,20 @@ export function renderOauthLoopbackContinuePage(input: {
           statusEl.textContent = "Your agent should be able to continue now. You can close this tab.";
         };
         iframe.onerror = () => {
-          statusEl.textContent = "If your agent is still waiting, try the handoff again once and then return to the terminal.";
+          statusEl.textContent = "The handoff may not have completed.";
+          showRetry();
         };
         document.body.appendChild(iframe);
       }
-      closeButton?.addEventListener("click", () => {
-        window.close();
-      });
       retryButton?.addEventListener("click", () => {
         statusEl.textContent = "Trying the handoff again…";
+        retryButton.hidden = true;
         beginHandoff();
       });
       beginHandoff();
       window.setTimeout(() => {
-        statusEl.textContent = "If nothing changes in the terminal, try the handoff again once or close this tab and return to the agent.";
-      }, 1500);
+        showRetry();
+      }, 3000);
     </script>
   </body>
   </html>`;
@@ -783,12 +770,17 @@ function renderSetupPageContent(input: {
       break;
     default:
       actions = `<div class="actions">
-          <a class="button secondary" href="${escapeHtml(serviceBaseUrl)}">Return to Kale Deploy</a>
+          <a class="button secondary" href="${escapeHtml(serviceBaseUrl)}">Back to Kale Deploy</a>
         </div>`;
   }
 
+  const failureIntro = lifecycle.errorKind === "needs_adaptation"
+    ? "This project needs changes before it can deploy:"
+    : lifecycle.errorKind === "unsupported"
+      ? "This project type is not supported on Kale:"
+      : "Build error:";
   const failureNotice = lifecycle.errorMessage
-    ? `<div class="notice notice-error"><p><strong>Build error:</strong> ${escapeHtml(lifecycle.errorMessage)}${lifecycle.errorDetail ? `<br /><code>${escapeHtml(lifecycle.errorDetail)}</code>` : ""}</p></div>`
+    ? `<div class="notice notice-error"><p><strong>${escapeHtml(failureIntro)}</strong> ${escapeHtml(lifecycle.errorMessage)}${lifecycle.errorDetail ? `<br /><code>${escapeHtml(lifecycle.errorDetail)}</code>` : ""}</p></div>`
     : "";
 
   return `<div class="setup-primary">

@@ -25,6 +25,19 @@ Follow this sequence:
 8. If the repo is missing Kale structure, recommend `kale-adapt` rather than rebuilding the project from scratch.
 9. If the script reports a stale local wrapper, tell the user the exact update command it returned.
 
+Example output:
+
+```
+Shape: worker
+  pass  package.json
+  pass  wrangler.jsonc
+  pass  kale.project.json
+  pass  src/index.ts
+  warn  AGENTS.md missing
+  pass  GET /api/health found
+Result: warn (1 issue)
+```
+
 When you finish, give the user:
 
 - the detected shape

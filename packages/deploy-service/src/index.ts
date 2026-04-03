@@ -48,11 +48,12 @@ import {
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
 import {
+  buildHarnessPromptContext,
   buildConnectionClientUpdatePolicy,
   buildConnectionLocalWrapperStatus,
   buildConnectionDynamicSkillPolicy,
   buildConnectionHarnessCatalog,
-  buildHarnessInstallInstructions,
+  buildLandingPageHarnessInstallInstructions,
   buildRuntimeClientUpdatePolicy,
   buildRuntimeDynamicSkillPolicy,
   buildRuntimeHarnessCatalog
@@ -761,20 +762,15 @@ deployServiceApp.get("/", async (c) => {
   const appSlug = resolveGitHubAppSlug(c.env);
   const installUrl = appSlug ? githubAppInstallUrl(appSlug) : undefined;
   const runtimeManifestUrl = resolvePublicRuntimeManifestUrl(c.env, serviceBaseUrl);
-  const mcpEndpoint = `${serviceBaseUrl}/mcp`;
   const repositoryUrl = "https://github.com/CUNY-AI-Lab/CAIL-deploy";
   const liveProjects = (await listProjects(c.env.CONTROL_PLANE_DB)).slice(0, 6);
   const liveProjectCount = liveProjects.length;
   const marketingName = "Kale Deploy";
   const marketingSource = "From the CUNY AI Lab";
   const buildPrompt = `Build me a small web app with ${marketingName} and put it online so I can see it live.`;
-
-  const agents = buildHarnessInstallInstructions({
-    marketingName,
-    serviceBaseUrl,
-    mcpEndpoint
-  });
-  const renderAgentInstallPanel = (agent: ReturnType<typeof buildHarnessInstallInstructions>[number], index: number) => {
+  const harnessPromptContext = buildHarnessPromptContext(marketingName, serviceBaseUrl);
+  const agents = buildLandingPageHarnessInstallInstructions(harnessPromptContext);
+  const renderAgentInstallPanel = (agent: ReturnType<typeof buildLandingPageHarnessInstallInstructions>[number], index: number) => {
     const notesHtml = agent.installNotes.length > 0
       ? `<ul class="install-notes">${agent.installNotes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>`
       : "";
@@ -1261,8 +1257,8 @@ deployServiceApp.get("/", async (c) => {
         <div class="logo">${logoHtml("44px")}</div>
         <span class="source">${escapeHtml(marketingSource)}</span>
         <h1>${escapeHtml(marketingName)}</h1>
-        <p class="lead">Build and deploy web apps with your AI coding agent.</p>
-        <p class="sub-lead">Kale gives your agent a deployment tool. Describe what you want to build — it writes the code and puts it online.</p>
+        <p class="lead">A web publishing tool from the CUNY AI Lab.</p>
+        <p class="sub-lead">Describe what you want to build to your AI coding agent. It writes the code and puts it online at a CUNY URL.</p>
         <div class="how-it-works">
           <div class="how-step"><span class="how-num">1</span>Install once</div>
           <span class="how-arrow">&#8594;</span>
@@ -4236,7 +4232,7 @@ function protectedAgentApiAuthErrorResponse(
 }
 
 function buildProtectedAgentApiAuthErrorPayload(env: Env, serviceBaseUrl: string, error: HttpError) {
-  const connection = buildConnectionHealthPayload(env, serviceBaseUrl);
+  const service = buildPublicServiceMetadata(env, serviceBaseUrl);
   const notAllowed = error.status === 403;
 
   return {
@@ -4245,11 +4241,32 @@ function buildProtectedAgentApiAuthErrorPayload(env: Env, serviceBaseUrl: string
       ? "Kale Deploy reached the institutional login layer, but this identity is not allowed to use the protected agent API."
       : "Kale Deploy is reachable, but this request is not authenticated yet.",
     nextAction: notAllowed ? "sign_in_with_allowed_cuny_email" : "complete_browser_login",
-    mcpEndpoint: connection.mcpEndpoint,
-    connectionHealthUrl: connection.connectionHealthUrl,
-    oauthProtectedResourceMetadata: connection.oauthProtectedResourceMetadata,
-    oauthAuthorizationMetadata: connection.oauthAuthorizationMetadata,
-    authorizationUrl: connection.authorizationUrl
+    mcpEndpoint: service.mcpEndpoint,
+    connectionHealthUrl: service.connectionHealthUrl,
+    oauthProtectedResourceMetadata: service.oauthProtectedResourceMetadata,
+    oauthAuthorizationMetadata: service.oauthAuthorizationMetadata,
+    authorizationUrl: service.authorizationUrl
+  };
+}
+
+function buildPublicServiceMetadata(env: Env, serviceBaseUrl: string) {
+  const serviceName = "Kale Deploy";
+  const oauthBaseUrl = resolveMcpOauthBaseUrl(env, serviceBaseUrl);
+  const appSlug = resolveGitHubAppSlug(env);
+
+  return {
+    serviceName,
+    serviceBaseUrl,
+    oauthBaseUrl,
+    connectionHealthUrl: `${serviceBaseUrl}/.well-known/kale-connection.json`,
+    mcpEndpoint: `${serviceBaseUrl}/mcp`,
+    oauthProtectedResourceMetadata: `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`,
+    oauthAuthorizationMetadata: `${oauthBaseUrl}/.well-known/oauth-authorization-server`,
+    publicOauthAuthorizationMetadata: `${serviceBaseUrl}/.well-known/oauth-authorization-server`,
+    authorizationUrl: `${serviceBaseUrl}/api/oauth/authorize`,
+    githubAppName: resolveGitHubAppName(env),
+    githubAppInstallUrl: appSlug ? githubAppInstallUrl(appSlug) : undefined,
+    harnessPromptContext: buildHarnessPromptContext(serviceName, serviceBaseUrl)
   };
 }
 
@@ -4262,51 +4279,51 @@ function buildConnectionHealthPayload(
     localBundleVersion?: string;
   }
 ) {
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(env, serviceBaseUrl);
-  const appSlug = resolveGitHubAppSlug(env);
-  const appName = resolveGitHubAppName(env);
+  const service = buildPublicServiceMetadata(env, serviceBaseUrl);
   const authenticated = Boolean(identity && identity.type !== "anonymous");
-  const harnessPromptContext = {
-    marketingName: "Kale Deploy",
-    serviceBaseUrl,
-    mcpEndpoint: `${serviceBaseUrl}/mcp`
-  };
 
   const wrapperStatus = buildConnectionLocalWrapperStatus(
-    harnessPromptContext,
+    service.harnessPromptContext,
     wrapperCheck?.harnessId,
     wrapperCheck?.localBundleVersion
   );
-
-  const summary = authenticated
-    ? "Kale Deploy is connected and authenticated. Register a repository or test a specific repo next."
-    : "Kale Deploy is reachable. Connect the MCP endpoint, complete the browser login flow, and then verify the connection before deploying.";
-  const summaryWithWarning = wrapperStatus?.warning
-    ? `${summary} ${wrapperStatus.summary}`
-    : summary;
+  const summaryWithWarning = buildConnectionHealthSummary(authenticated, wrapperStatus);
 
   return {
     ok: true,
-    serviceName: "Kale Deploy",
-    connectionHealthUrl: `${serviceBaseUrl}/.well-known/kale-connection.json`,
-    mcpEndpoint: `${serviceBaseUrl}/mcp`,
-    oauthProtectedResourceMetadata: `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`,
-    oauthAuthorizationMetadata: `${oauthBaseUrl}/.well-known/oauth-authorization-server`,
-    authorizationUrl: `${serviceBaseUrl}/api/oauth/authorize`,
-    githubAppName: appName,
-    githubAppInstallUrl: appSlug ? githubAppInstallUrl(appSlug) : undefined,
+    serviceName: service.serviceName,
+    connectionHealthUrl: service.connectionHealthUrl,
+    mcpEndpoint: service.mcpEndpoint,
+    oauthProtectedResourceMetadata: service.oauthProtectedResourceMetadata,
+    oauthAuthorizationMetadata: service.oauthAuthorizationMetadata,
+    authorizationUrl: service.authorizationUrl,
+    githubAppName: service.githubAppName,
+    githubAppInstallUrl: service.githubAppInstallUrl,
     authenticated,
     identityType: identity?.type,
     email: identity && "email" in identity ? identity.email : undefined,
     dynamicSkillPolicy: buildConnectionDynamicSkillPolicy(),
     clientUpdatePolicy: buildConnectionClientUpdatePolicy(),
-    harnesses: buildConnectionHarnessCatalog(harnessPromptContext),
+    harnesses: buildConnectionHarnessCatalog(service.harnessPromptContext),
     localWrapperStatus: wrapperStatus,
     nextAction: authenticated ? "register_project" : "connect_mcp_or_complete_browser_login",
     deploymentTrigger: "github_push_to_default_branch",
     localFolderUploadSupported: false,
     summary: summaryWithWarning
   };
+}
+
+function buildConnectionHealthSummary(
+  authenticated: boolean,
+  wrapperStatus?: ReturnType<typeof buildConnectionLocalWrapperStatus>
+) {
+  const summary = authenticated
+    ? "Kale Deploy is connected and authenticated. Register a repository or test a specific repo next."
+    : "Kale Deploy is reachable. Connect the MCP endpoint, complete the browser login flow, and then verify the connection before deploying.";
+
+  return wrapperStatus?.warning
+    ? `${summary} ${wrapperStatus.summary}`
+    : summary;
 }
 
 function getRequiredOauthFormField(form: FormData, field: string): string {
@@ -4535,16 +4552,9 @@ function normalizeWorkerRequest(request: Request, basePath: string): Request {
 }
 
 function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
+  const service = buildPublicServiceMetadata(env, serviceBaseUrl);
   const publicRuntimeUrl = resolvePublicRuntimeManifestUrl(env, serviceBaseUrl);
   const reservedProjectNames = Array.from(resolveReservedProjectNames(env, serviceBaseUrl)).sort();
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(env, serviceBaseUrl);
-  const oauthAuthorizationMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-authorization-server`;
-  const oauthProtectedResourceMetadataUrl = `${serviceBaseUrl}/.well-known/oauth-protected-resource/mcp`;
-  const harnessPromptContext = {
-    marketingName: "Kale Deploy",
-    serviceBaseUrl,
-    mcpEndpoint: `${serviceBaseUrl}/mcp`
-  };
   return {
     name: "kale-runtime",
     version: 1,
@@ -4573,7 +4583,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     static_project_request_time_logic_value: "none",
     dynamic_skill_policy: buildRuntimeDynamicSkillPolicy(),
     client_update_policy: buildRuntimeClientUpdatePolicy(),
-    agent_harnesses: buildRuntimeHarnessCatalog(harnessPromptContext),
+    agent_harnesses: buildRuntimeHarnessCatalog(service.harnessPromptContext),
     agent_build_guidance: [
       "Pick a starter shape explicitly: static for pure publishing sites, worker for projects that need request-time behavior.",
       "If the project is mostly content or simple publishing, prefer a pure static project with kale.project.json, a Wrangler assets directory, and no request-time Worker routes, response headers, _headers file, or _redirects file.",
@@ -4651,10 +4661,10 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     },
     agent_api: {
       runtime_manifest: publicRuntimeUrl,
-      mcp_endpoint: `${serviceBaseUrl}/mcp`,
-      connection_health: `${serviceBaseUrl}/.well-known/kale-connection.json`,
-      oauth_authorization_metadata: oauthAuthorizationMetadataUrl,
-      oauth_protected_resource_metadata: oauthProtectedResourceMetadataUrl,
+      mcp_endpoint: service.mcpEndpoint,
+      connection_health: service.connectionHealthUrl,
+      oauth_authorization_metadata: service.publicOauthAuthorizationMetadata,
+      oauth_protected_resource_metadata: service.oauthProtectedResourceMetadata,
       repository_status_template: `${serviceBaseUrl}/api/repositories/{owner}/{repo}/status`,
       register_project: `${serviceBaseUrl}/api/projects/register`,
       validate_project: `${serviceBaseUrl}/api/validate`,
@@ -4689,13 +4699,13 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     },
     mcp: {
       transport: "streamable_http",
-      endpoint: `${serviceBaseUrl}/mcp`,
+      endpoint: service.mcpEndpoint,
       auth: {
         scheme: "oauth2.1",
-        authorization_metadata_url: oauthAuthorizationMetadataUrl,
-        protected_resource_metadata_url: oauthProtectedResourceMetadataUrl,
+        authorization_metadata_url: service.publicOauthAuthorizationMetadata,
+        protected_resource_metadata_url: service.oauthProtectedResourceMetadata,
         dynamic_client_registration_endpoint: `${serviceBaseUrl}/oauth/register`,
-        browser_login_url: `${serviceBaseUrl}/api/oauth/authorize`
+        browser_login_url: service.authorizationUrl
       },
       tools: [
         "get_runtime_manifest",

@@ -1,6 +1,6 @@
 ---
 name: kale-deploy
-description: Use when building or adapting a web application for the Kale Deploy runtime on Cloudflare Workers, especially lightweight Worker-compatible apps that will be deployed by the Kale control plane to a shared CUNY host. Trigger when the user mentions Kale Deploy, Cloudflare Workers for Kale, live deployment under <project>.cuny.qzz.io, or wants a project scaffold that fits this platform.
+description: Build or adapt web apps for the Kale Deploy platform on Cloudflare Workers. Use when the user mentions Kale Deploy, wants a project at <project>.cuny.qzz.io, or needs a Worker-compatible scaffold.
 ---
 
 # Kale Deploy
@@ -12,12 +12,7 @@ If the repository already exists and needs to be checked or normalized for Kale,
 
 ## Dynamic policy
 
-This local skill is a bootstrap layer, not the final source of truth.
-
-- If Kale MCP tools are already available, call `get_runtime_manifest` early and read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses`.
-- If `test_connection` is available, use `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` instead of assuming the local auth flow notes are still current.
-- If the local wrapper metadata is available, pass `harness` and `localBundleVersion` to `test_connection` so Kale can warn about stale local bundle copy.
-- Use the local plugin guidance mainly to get Kale connected the first time or when the MCP server is not reachable yet.
+This skill is a bootstrap layer. When Kale MCP tools are available, `get_runtime_manifest` and `test_connection` override local guidance. See `kale-connect` for the full dynamic policy.
 
 ## What Kale Deploy is
 
@@ -160,22 +155,11 @@ Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. Th
 2. If the tools are available, call `get_runtime_manifest` and prefer the returned `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` fields if they differ from local plugin instructions.
 3. If the tools are available, skip to step 6.
 4. If the server is not yet configured, add it. The method depends on the agent:
-   - **Codex**: The Codex add-on bundles the Kale server config from `.codex-mcp.json`. If tools aren't available, run `codex mcp add kale --url https://cuny.qzz.io/kale/mcp` then `codex mcp login kale` and complete the browser sign-in. If the sandbox is read-only or `codex mcp` subcommands are unavailable in your build, fall back to the token-paste flow in step 4.
-   - **Claude Code**: If the local Kale plugin is installed, do not search the MCP registry first. Start with the installed plugin guidance and `claude mcp list`. Use `mcp-remote` only to complete OAuth for `https://cuny.qzz.io/kale/mcp`, then immediately replace that temporary bridge with one direct HTTP `kale` server by running the installed `kale-claude-connect.mjs` helper from the plugin cache. That helper configures `headersHelper`, so Claude reads the latest valid Kale OAuth token at connection time and refreshes it automatically when a valid refresh token is cached instead of copying a fixed bearer token into config. Do not invent `claude mcp auth`, `claude mcp login`, or `claude mcp authenticate` commands. The preferred ready state is one user-scope direct HTTP `kale` server. If that helper later reports that no valid Kale OAuth or refresh token is available, rerun the `mcp-remote` bootstrap and sync steps. If the OAuth bootstrap fails, use the token-paste fallback in step 5 with stale `kale` entries removed from local and user scope before re-adding the server.
+   - **Claude Code**: See the `kale-connect` skill's "Agent notes > Claude Code" section for the full OAuth bootstrap and finalize steps.
+   - **Codex**: The Codex add-on bundles the Kale server config. If tools aren't available, run `codex mcp add kale --url https://cuny.qzz.io/kale/mcp` then `codex mcp login kale` and complete the browser sign-in.
    - **Gemini CLI**: The server is declared in `.gemini/settings.json` in the repo. If it's not loaded, the user should restart Gemini CLI from the project directory.
    - **Other agents**: Point the agent's MCP configuration at `https://cuny.qzz.io/kale/mcp` (HTTP transport with OAuth).
-5. If authentication fails (e.g., the OAuth browser window never opens, or the server shows "Failed to connect"), use the **token-paste fallback**:
-   a. Tell the user: "I need to connect to Kale Deploy. Please visit this link, sign in with your CUNY email, and paste the token back here."
-   b. Give them: `https://cuny.qzz.io/kale/connect`
-   c. They click **Generate token**, copy it, and paste it into the chat.
-   d. Once the user pastes the token (starts with `kale_pat_`), configure the server with a static Bearer header. For Claude Code:
-      ```
-      claude mcp remove kale -s local 2>/dev/null
-      claude mcp remove kale -s user 2>/dev/null
-      claude mcp add -t http -H "Authorization: Bearer <the-token>" -s user kale https://cuny.qzz.io/kale/mcp
-      ```
-      For other agents, set the `Authorization: Bearer <the-token>` header in the agent's MCP server config.
-   e. The user may need to start a new conversation for the tools to appear.
+5. If authentication fails, use the **token-paste fallback**: ask the user to visit `https://cuny.qzz.io/kale/connect`, sign in, generate a token, and paste it back. Configure the server with a static `Authorization: Bearer <the-token>` header. See `kale-connect` for harness-specific commands.
 6. After the tools appear, call `get_runtime_manifest` so `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` come from Kale itself rather than the local plugin copy.
 7. When calling `test_connection`, include `harness` and `localBundleVersion` when you can determine them from the installed wrapper metadata.
 8. Call `register_project` to determine the canonical project slug and install state.

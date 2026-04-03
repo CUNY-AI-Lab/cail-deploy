@@ -62,7 +62,7 @@ export function renderGitHubUserAuthErrorPage(message: string, serviceBaseUrl: s
         <h1>GitHub connection failed</h1>
         <p>${escapeHtml(message)}</p>
         <div class="actions">
-          <a class="button" href="${escapeHtml(serviceBaseUrl)}">Return to Kale Deploy</a>
+          <a class="button" href="${escapeHtml(serviceBaseUrl)}">Back to Kale Deploy</a>
         </div>
       </section>
     </main>
@@ -128,7 +128,7 @@ export function renderProjectControlPanelAuthErrorPage(message: string, serviceB
         <h1>Project settings are not available yet</h1>
         <p>${escapeHtml(visibleMessage)}</p>
         <div class="actions">
-          <a class="button" href="${escapeHtml(serviceBaseUrl)}">Return to Kale Deploy</a>
+          <a class="button" href="${escapeHtml(serviceBaseUrl)}">Back to Kale Deploy</a>
         </div>
       </section>
     </main>
@@ -303,7 +303,7 @@ export function renderProjectControlPanelGatePage(input: {
         </div>
         <div class="actions">
           ${connectUrl ? `<a class="button" href="${escapeHtml(connectUrl)}">Connect your GitHub account</a>` : ""}
-          <a class="button secondary" href="${escapeHtml(serviceBaseUrl)}">Return to Kale Deploy</a>
+          <a class="button secondary" href="${escapeHtml(serviceBaseUrl)}">Back to Kale Deploy</a>
         </div>
       </section>
     </main>

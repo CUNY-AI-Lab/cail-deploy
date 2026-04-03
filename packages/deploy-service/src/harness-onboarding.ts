@@ -63,7 +63,7 @@ export type ConnectionLocalWrapperStatus = {
   notes: string[];
 };
 
-export type HarnessInstallInstruction = {
+export type LandingPageHarnessInstallInstruction = {
   id: HarnessId;
   name: string;
   letter: string;
@@ -117,6 +117,52 @@ export type HarnessCatalogEntry = {
   };
 };
 
+const CLIENT_UPDATE_POLICY_NOTES = [
+  "Remote Kale MCP and runtime changes apply immediately.",
+  "Local add-on, plugin, skill, or extension updates depend on the harness install surface.",
+  "When the local wrapper and the runtime manifest disagree, prefer the runtime manifest."
+] as const;
+
+const CONNECTION_CLIENT_UPDATE_POLICY_BASE = {
+  remoteMcpUpdateMode: "automatic" as const,
+  localWrapperUpdateMode: "harness_specific" as const,
+  runtimeManifestPreferred: true as const,
+  notes: CLIENT_UPDATE_POLICY_NOTES
+};
+
+const CONNECTION_DYNAMIC_SKILL_POLICY_BASE = {
+  localBundleRole: "bootstrap_only" as const,
+  authoritativeTools: ["get_runtime_manifest", "test_connection"],
+  runtimeManifestFields: [
+    "dynamic_skill_policy",
+    "client_update_policy",
+    "agent_harnesses",
+    "agent_build_guidance",
+    "agent_api.auth.human_handoff_rules"
+  ],
+  testConnectionFields: [
+    "dynamicSkillPolicy",
+    "clientUpdatePolicy",
+    "harnesses",
+    "nextAction",
+    "summary"
+  ],
+  wrapperCheckQueryParameters: [
+    "harness",
+    "localBundleVersion"
+  ],
+  refreshPoints: [
+    "When Kale tools first appear, call get_runtime_manifest before following local install guidance.",
+    "After authentication succeeds, call get_runtime_manifest and test_connection again before continuing.",
+    "When the local bundle and the live service disagree, prefer the live service fields."
+  ],
+  notes: [
+    "The checked-in plugin, command, and skill copy is a bootstrap layer.",
+    "Use the runtime manifest for install, update, and handoff policy.",
+    "Use test_connection for the current next step and repository-specific readiness."
+  ]
+} satisfies ConnectionDynamicSkillPolicy;
+
 export type RuntimeHarnessCatalogEntry = {
   id: HarnessId;
   name: string;
@@ -169,32 +215,132 @@ export type ConnectionHarnessCatalogEntry = {
   };
 };
 
-export function buildHarnessInstallInstructions(input: HarnessPromptContext): HarnessInstallInstruction[] {
-  return buildHarnessCatalog(input).map(({ id, name, letter, installMode, instruction, hint, installNotes, manualFallback }) => ({
-    id,
-    name,
-    letter,
-    installMode,
-    instruction,
-    hint,
-    installNotes,
-    manualFallback: manualFallback ? {
-      instruction: manualFallback.instruction,
-      hint: manualFallback.hint,
-      notes: manualFallback.notes
-    } : undefined
-  }));
+export function buildHarnessPromptContext(
+  marketingName: string,
+  serviceBaseUrl: string
+): HarnessPromptContext {
+  return {
+    marketingName,
+    serviceBaseUrl,
+    mcpEndpoint: `${serviceBaseUrl}/mcp`
+  };
 }
 
-export function buildRuntimeHarnessCatalog(input: HarnessPromptContext): RuntimeHarnessCatalogEntry[] {
-  return buildHarnessCatalog(input).map((entry) => ({
+function buildConnectUrl(input: HarnessPromptContext): string {
+  return `${input.serviceBaseUrl.replace(/\/$/, "")}/connect`;
+}
+
+function buildClaudeBootstrapCommand(input: HarnessPromptContext): string {
+  return `claude mcp remove kale -s local 2>/dev/null
+claude mcp remove kale -s user 2>/dev/null
+claude mcp add -s user kale -- npx -y mcp-remote ${input.mcpEndpoint} --transport http-only`;
+}
+
+function buildClaudeFinalizeCommand(input: HarnessPromptContext): string {
+  return `KALE_PLUGIN_PATH="$(claude plugins list --json | node -e 'const fs = require(\"node:fs\"); const plugins = JSON.parse(fs.readFileSync(0, \"utf8\")); const plugin = plugins.find((entry) => entry.id === \"kale-deploy@cuny-ai-lab\"); if (!plugin?.installPath) { process.stderr.write(\"Kale plugin is not installed.\\n\"); process.exit(1); } process.stdout.write(plugin.installPath);')"
+node "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint ${input.mcpEndpoint}`;
+}
+
+function buildClaudeTokenBridgeCommand(input: HarnessPromptContext): string {
+  return `claude mcp remove kale -s local 2>/dev/null
+claude mcp remove kale -s user 2>/dev/null
+claude mcp add --transport http --header "Authorization: Bearer THE_TOKEN" -s user kale ${input.mcpEndpoint}`;
+}
+
+function findHarnessCatalogEntry(
+  input: HarnessPromptContext,
+  harnessId: string
+): HarnessCatalogEntry | undefined {
+  return buildHarnessCatalog(input).find((entry) => entry.id === harnessId);
+}
+
+function buildKnownHarnessLocalWrapperStatus(
+  harness: HarnessCatalogEntry,
+  status: WrapperStatusKind,
+  warning: boolean,
+  localBundleVersion: string,
+  summary: string,
+  notes = harness.localWrapper.notes
+): ConnectionLocalWrapperStatus {
+  return {
+    harnessId: harness.id,
+    status,
+    warning,
+    localBundleVersion,
+    expectedBundleVersion: harness.localWrapper.bundleVersion,
+    updateMode: harness.localWrapper.updateMode,
+    updateCommand: harness.localWrapper.updateCommand,
+    restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
+    summary,
+    notes
+  };
+}
+
+function buildLandingPageHarnessInstallInstructionFromConnection(
+  entry: ConnectionHarnessCatalogEntry
+): LandingPageHarnessInstallInstruction {
+  return {
+    id: entry.id,
+    name: entry.name,
+    letter: entry.letter,
+    installMode: entry.installMode,
+    instruction: entry.installInstruction,
+    hint: entry.installHint,
+    installNotes: entry.installNotes,
+    manualFallback: buildLandingPageManualFallbackFromConnection(entry.manualFallback)
+  };
+}
+
+function buildLandingPageManualFallbackFromConnection(
+  fallback: ConnectionHarnessCatalogEntry["manualFallback"]
+): LandingPageHarnessInstallInstruction["manualFallback"] {
+  if (!fallback) {
+    return undefined;
+  }
+
+  return {
+    instruction: fallback.instruction,
+    hint: fallback.hint,
+    notes: fallback.notes
+  };
+}
+
+function buildConnectionManualFallback(entry: HarnessCatalogEntry): ConnectionHarnessCatalogEntry["manualFallback"] {
+  if (!entry.manualFallback) {
+    return undefined;
+  }
+
+  return {
+    authMode: entry.manualFallback.authMode,
+    instruction: entry.manualFallback.instruction,
+    hint: entry.manualFallback.hint,
+    notes: entry.manualFallback.notes
+  };
+}
+
+function buildConnectionLocalWrapper(entry: HarnessCatalogEntry): ConnectionHarnessCatalogEntry["localWrapper"] {
+  return {
+    kind: entry.localWrapper.kind,
+    packageName: entry.localWrapper.packageName,
+    bundleVersion: entry.localWrapper.bundleVersion,
+    updateMode: entry.localWrapper.updateMode,
+    updateCommand: entry.localWrapper.updateCommand,
+    restartRequiredAfterUpdate: entry.localWrapper.restartRequiredAfterUpdate,
+    notes: entry.localWrapper.notes
+  };
+}
+
+function buildRuntimeHarnessCatalogEntryFromConnection(
+  entry: ConnectionHarnessCatalogEntry
+): RuntimeHarnessCatalogEntry {
+  return {
     id: entry.id,
     name: entry.name,
     letter: entry.letter,
     install_surface: entry.installSurface,
     install_mode: entry.installMode,
-    install_instruction: entry.instruction,
-    install_hint: entry.hint,
+    install_instruction: entry.installInstruction,
+    install_hint: entry.installHint,
     install_notes: entry.installNotes,
     manual_fallback: entry.manualFallback ? {
       auth_mode: entry.manualFallback.authMode,
@@ -211,143 +357,35 @@ export function buildRuntimeHarnessCatalog(input: HarnessPromptContext): Runtime
       restart_required_after_update: entry.localWrapper.restartRequiredAfterUpdate,
       notes: entry.localWrapper.notes
     }
-  }));
-}
-
-export function buildConnectionHarnessCatalog(input: HarnessPromptContext): ConnectionHarnessCatalogEntry[] {
-  return buildHarnessCatalog(input).map((entry) => ({
-    id: entry.id,
-    name: entry.name,
-    letter: entry.letter,
-    installSurface: entry.installSurface,
-    installMode: entry.installMode,
-    installInstruction: entry.instruction,
-    installHint: entry.hint,
-    installNotes: entry.installNotes,
-    manualFallback: entry.manualFallback ? {
-      authMode: entry.manualFallback.authMode,
-      instruction: entry.manualFallback.instruction,
-      hint: entry.manualFallback.hint,
-      notes: entry.manualFallback.notes
-    } : undefined,
-    localWrapper: {
-      kind: entry.localWrapper.kind,
-      packageName: entry.localWrapper.packageName,
-      bundleVersion: entry.localWrapper.bundleVersion,
-      updateMode: entry.localWrapper.updateMode,
-      updateCommand: entry.localWrapper.updateCommand,
-      restartRequiredAfterUpdate: entry.localWrapper.restartRequiredAfterUpdate,
-      notes: entry.localWrapper.notes
-    }
-  }));
-}
-
-export function buildRuntimeClientUpdatePolicy() {
-  return {
-    remote_mcp_update_mode: "automatic",
-    local_wrapper_update_mode: "harness_specific",
-    runtime_manifest_preferred: true,
-    notes: [
-      "Remote Kale MCP and runtime changes apply immediately.",
-      "Local add-on, plugin, skill, or extension updates depend on the harness install surface.",
-      "When the local wrapper and the runtime manifest disagree, prefer the runtime manifest."
-    ]
   };
 }
 
-export function buildConnectionClientUpdatePolicy() {
+function buildRuntimeClientUpdatePolicyFromConnection(
+  policy: ReturnType<typeof buildConnectionClientUpdatePolicy>
+) {
   return {
-    remoteMcpUpdateMode: "automatic",
-    localWrapperUpdateMode: "harness_specific",
-    runtimeManifestPreferred: true,
-    notes: [
-      "Remote Kale MCP and runtime changes apply immediately.",
-      "Local add-on, plugin, skill, or extension updates depend on the harness install surface.",
-      "When the local wrapper and the runtime manifest disagree, prefer the runtime manifest."
-    ]
+    remote_mcp_update_mode: policy.remoteMcpUpdateMode,
+    local_wrapper_update_mode: policy.localWrapperUpdateMode,
+    runtime_manifest_preferred: policy.runtimeManifestPreferred,
+    notes: [...policy.notes]
   };
 }
 
-export function buildRuntimeDynamicSkillPolicy(): RuntimeDynamicSkillPolicy {
+function buildRuntimeDynamicSkillPolicyFromConnection(
+  policy: ConnectionDynamicSkillPolicy
+): RuntimeDynamicSkillPolicy {
   return {
-    local_bundle_role: "bootstrap_only",
-    authoritative_tools: ["get_runtime_manifest", "test_connection"],
-    runtime_manifest_fields: [
-      "dynamic_skill_policy",
-      "client_update_policy",
-      "agent_harnesses",
-      "agent_build_guidance",
-      "agent_api.auth.human_handoff_rules"
-    ],
-    test_connection_fields: [
-      "dynamicSkillPolicy",
-      "clientUpdatePolicy",
-      "harnesses",
-      "nextAction",
-      "summary"
-    ],
-    wrapper_check_query_parameters: [
-      "harness",
-      "localBundleVersion"
-    ],
-    refresh_points: [
-      "When Kale tools first appear, call get_runtime_manifest before following local install guidance.",
-      "After authentication succeeds, call get_runtime_manifest and test_connection again before continuing.",
-      "When the local bundle and the live service disagree, prefer the live service fields."
-    ],
-    notes: [
-      "The checked-in plugin, command, and skill copy is a bootstrap layer.",
-      "Use the runtime manifest for install, update, and handoff policy.",
-      "Use test_connection for the current next step and repository-specific readiness."
-    ]
+    local_bundle_role: policy.localBundleRole,
+    authoritative_tools: [...policy.authoritativeTools],
+    runtime_manifest_fields: [...policy.runtimeManifestFields],
+    test_connection_fields: [...policy.testConnectionFields],
+    wrapper_check_query_parameters: [...policy.wrapperCheckQueryParameters],
+    refresh_points: [...policy.refreshPoints],
+    notes: [...policy.notes]
   };
 }
 
-export function buildConnectionDynamicSkillPolicy(): ConnectionDynamicSkillPolicy {
-  return {
-    localBundleRole: "bootstrap_only",
-    authoritativeTools: ["get_runtime_manifest", "test_connection"],
-    runtimeManifestFields: [
-      "dynamic_skill_policy",
-      "client_update_policy",
-      "agent_harnesses",
-      "agent_build_guidance",
-      "agent_api.auth.human_handoff_rules"
-    ],
-    testConnectionFields: [
-      "dynamicSkillPolicy",
-      "clientUpdatePolicy",
-      "harnesses",
-      "nextAction",
-      "summary"
-    ],
-    wrapperCheckQueryParameters: [
-      "harness",
-      "localBundleVersion"
-    ],
-    refreshPoints: [
-      "When Kale tools first appear, call get_runtime_manifest before following local install guidance.",
-      "After authentication succeeds, call get_runtime_manifest and test_connection again before continuing.",
-      "When the local bundle and the live service disagree, prefer the live service fields."
-    ],
-    notes: [
-      "The checked-in plugin, command, and skill copy is a bootstrap layer.",
-      "Use the runtime manifest for install, update, and handoff policy.",
-      "Use test_connection for the current next step and repository-specific readiness."
-    ]
-  };
-}
-
-export function buildRuntimeLocalWrapperStatus(
-  input: HarnessPromptContext,
-  harnessId: string | undefined,
-  localBundleVersion: string | undefined
-): RuntimeLocalWrapperStatus | undefined {
-  const status = evaluateLocalWrapperStatus(input, harnessId, localBundleVersion);
-  if (!status) {
-    return undefined;
-  }
-
+function buildRuntimeLocalWrapperStatusFromConnection(status: ConnectionLocalWrapperStatus): RuntimeLocalWrapperStatus {
   return {
     harness_id: status.harnessId,
     status: status.status,
@@ -362,6 +400,71 @@ export function buildRuntimeLocalWrapperStatus(
   };
 }
 
+export function buildLandingPageHarnessInstallInstructions(input: HarnessPromptContext): LandingPageHarnessInstallInstruction[] {
+  return buildConnectionHarnessCatalog(input).map(buildLandingPageHarnessInstallInstructionFromConnection);
+}
+
+export function buildRuntimeHarnessCatalog(input: HarnessPromptContext): RuntimeHarnessCatalogEntry[] {
+  return buildConnectionHarnessCatalog(input).map(buildRuntimeHarnessCatalogEntryFromConnection);
+}
+
+export function buildConnectionHarnessCatalog(input: HarnessPromptContext): ConnectionHarnessCatalogEntry[] {
+  return buildHarnessCatalog(input).map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    letter: entry.letter,
+    installSurface: entry.installSurface,
+    installMode: entry.installMode,
+    installInstruction: entry.instruction,
+    installHint: entry.hint,
+    installNotes: entry.installNotes,
+    manualFallback: buildConnectionManualFallback(entry),
+    localWrapper: buildConnectionLocalWrapper(entry)
+  }));
+}
+
+export function buildRuntimeClientUpdatePolicy() {
+  return buildRuntimeClientUpdatePolicyFromConnection(buildConnectionClientUpdatePolicy());
+}
+
+export function buildConnectionClientUpdatePolicy() {
+  return {
+    remoteMcpUpdateMode: CONNECTION_CLIENT_UPDATE_POLICY_BASE.remoteMcpUpdateMode,
+    localWrapperUpdateMode: CONNECTION_CLIENT_UPDATE_POLICY_BASE.localWrapperUpdateMode,
+    runtimeManifestPreferred: CONNECTION_CLIENT_UPDATE_POLICY_BASE.runtimeManifestPreferred,
+    notes: [...CONNECTION_CLIENT_UPDATE_POLICY_BASE.notes]
+  };
+}
+
+export function buildRuntimeDynamicSkillPolicy(): RuntimeDynamicSkillPolicy {
+  return buildRuntimeDynamicSkillPolicyFromConnection(buildConnectionDynamicSkillPolicy());
+}
+
+export function buildConnectionDynamicSkillPolicy(): ConnectionDynamicSkillPolicy {
+  return {
+    localBundleRole: CONNECTION_DYNAMIC_SKILL_POLICY_BASE.localBundleRole,
+    authoritativeTools: [...CONNECTION_DYNAMIC_SKILL_POLICY_BASE.authoritativeTools],
+    runtimeManifestFields: [...CONNECTION_DYNAMIC_SKILL_POLICY_BASE.runtimeManifestFields],
+    testConnectionFields: [...CONNECTION_DYNAMIC_SKILL_POLICY_BASE.testConnectionFields],
+    wrapperCheckQueryParameters: [...CONNECTION_DYNAMIC_SKILL_POLICY_BASE.wrapperCheckQueryParameters],
+    refreshPoints: [...CONNECTION_DYNAMIC_SKILL_POLICY_BASE.refreshPoints],
+    notes: [...CONNECTION_DYNAMIC_SKILL_POLICY_BASE.notes]
+  };
+}
+
+export function buildRuntimeLocalWrapperStatus(
+  input: HarnessPromptContext,
+  harnessId: string | undefined,
+  localBundleVersion: string | undefined
+): RuntimeLocalWrapperStatus | undefined {
+  const status = evaluateLocalWrapperStatus(input, harnessId, localBundleVersion);
+  if (!status) {
+    return undefined;
+  }
+
+  return buildRuntimeLocalWrapperStatusFromConnection(status);
+}
+
 export function buildConnectionLocalWrapperStatus(
   input: HarnessPromptContext,
   harnessId: string | undefined,
@@ -374,24 +477,18 @@ export function buildHarnessSetupPrompts(
   profile: HarnessPromptProfile,
   input: HarnessPromptContext
 ): HarnessSetupPrompt[] {
-  if (profile === "skill-first") {
-    return buildSkillFirstHarnessSetupPrompts(input);
+  if (profile !== "current" && profile !== "skill-first") {
+    throw new Error(`Unsupported harness prompt profile '${profile}'.`);
   }
-  return buildCurrentAppHarnessSetupPrompts(input);
-}
 
-export function buildCurrentAppHarnessSetupPrompts(input: HarnessPromptContext): HarnessSetupPrompt[] {
-  return buildInstalledHarnessSetupPrompts(input);
-}
-
-export function buildSkillFirstHarnessSetupPrompts(input: HarnessPromptContext): HarnessSetupPrompt[] {
   return buildInstalledHarnessSetupPrompts(input);
 }
 
 function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[] {
-  const connectUrl = `${input.serviceBaseUrl.replace(/\/$/, "")}/connect`;
-  const claudeBootstrapCommand = `claude mcp remove kale -s local 2>/dev/null\nclaude mcp remove kale -s user 2>/dev/null\nclaude mcp add -s user kale -- npx -y mcp-remote ${input.mcpEndpoint} --transport http-only`;
-  const claudeFinalizeCommand = `KALE_PLUGIN_PATH="$(claude plugins list --json | node -e 'const fs = require(\"node:fs\"); const plugins = JSON.parse(fs.readFileSync(0, \"utf8\")); const plugin = plugins.find((entry) => entry.id === \"kale-deploy@cuny-ai-lab\"); if (!plugin?.installPath) { process.stderr.write(\"Kale plugin is not installed.\\\\n\"); process.exit(1); } process.stdout.write(plugin.installPath);')"\nnode "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint ${input.mcpEndpoint}`;
+  const connectUrl = buildConnectUrl(input);
+  const claudeBootstrapCommand = buildClaudeBootstrapCommand(input);
+  const claudeFinalizeCommand = buildClaudeFinalizeCommand(input);
+  const claudeTokenBridgeCommand = buildClaudeTokenBridgeCommand(input);
 
   return [
     {
@@ -422,7 +519,7 @@ function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[]
           "Only rerun the mcp-remote bootstrap if the helper reports that no valid Kale OAuth or refresh token is available.",
           "Do not leave the temporary stdio bridge as the long-term Claude connection.",
           `If mcp-remote itself fails, fall back to the token bridge from ${connectUrl}.`,
-          `Last-resort token bridge:\nclaude mcp remove kale -s local 2>/dev/null\nclaude mcp remove kale -s user 2>/dev/null\nclaude mcp add --transport http --header "Authorization: Bearer THE_TOKEN" -s user kale ${input.mcpEndpoint}`,
+          `Last-resort token bridge:\n${claudeTokenBridgeCommand}`,
           `Generate THE_TOKEN from ${connectUrl}.`
         ]
       },
@@ -510,7 +607,7 @@ function evaluateLocalWrapperStatus(
     return undefined;
   }
 
-  const harness = buildHarnessCatalog(input).find((entry) => entry.id === normalizedHarnessId);
+  const harness = findHarnessCatalogEntry(input, normalizedHarnessId);
   if (!harness) {
     return {
       harnessId: normalizedHarnessId,
@@ -526,65 +623,46 @@ function evaluateLocalWrapperStatus(
 
   const comparison = compareBundleVersions(normalizedBundleVersion, harness.localWrapper.bundleVersion);
   if (comparison === null) {
-    return {
-      harnessId: harness.id,
-      status: "unparseable",
-      warning: true,
-      localBundleVersion: normalizedBundleVersion,
-      expectedBundleVersion: harness.localWrapper.bundleVersion,
-      updateMode: harness.localWrapper.updateMode,
-      updateCommand: harness.localWrapper.updateCommand,
-      restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
-      summary: `${harness.name} reported local bundle version '${normalizedBundleVersion}', which Kale could not compare with the current bundle '${harness.localWrapper.bundleVersion}'.`,
-      notes: [
+    return buildKnownHarnessLocalWrapperStatus(
+      harness,
+      "unparseable",
+      true,
+      normalizedBundleVersion,
+      `${harness.name} reported local bundle version '${normalizedBundleVersion}', which Kale could not compare with the current bundle '${harness.localWrapper.bundleVersion}'.`,
+      [
         "Use a simple dotted version such as 0.2.4 when reporting local wrapper versions.",
         ...harness.localWrapper.notes
       ]
-    };
+    );
   }
 
   if (comparison < 0) {
-    return {
-      harnessId: harness.id,
-      status: "stale",
-      warning: true,
-      localBundleVersion: normalizedBundleVersion,
-      expectedBundleVersion: harness.localWrapper.bundleVersion,
-      updateMode: harness.localWrapper.updateMode,
-      updateCommand: harness.localWrapper.updateCommand,
-      restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
-      summary: `${harness.name} reported local bundle version ${normalizedBundleVersion}, but Kale currently publishes ${harness.localWrapper.bundleVersion}. Refresh or update the local wrapper before relying on stale local guidance.`,
-      notes: harness.localWrapper.notes
-    };
+    return buildKnownHarnessLocalWrapperStatus(
+      harness,
+      "stale",
+      true,
+      normalizedBundleVersion,
+      `${harness.name} reported local bundle version ${normalizedBundleVersion}, but Kale currently publishes ${harness.localWrapper.bundleVersion}. Refresh or update the local wrapper before relying on stale local guidance.`
+    );
   }
 
   if (comparison > 0) {
-    return {
-      harnessId: harness.id,
-      status: "ahead",
-      warning: false,
-      localBundleVersion: normalizedBundleVersion,
-      expectedBundleVersion: harness.localWrapper.bundleVersion,
-      updateMode: harness.localWrapper.updateMode,
-      updateCommand: harness.localWrapper.updateCommand,
-      restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
-      summary: `${harness.name} reported local bundle version ${normalizedBundleVersion}, which is newer than the currently published Kale bundle ${harness.localWrapper.bundleVersion}.`,
-      notes: harness.localWrapper.notes
-    };
+    return buildKnownHarnessLocalWrapperStatus(
+      harness,
+      "ahead",
+      false,
+      normalizedBundleVersion,
+      `${harness.name} reported local bundle version ${normalizedBundleVersion}, which is newer than the currently published Kale bundle ${harness.localWrapper.bundleVersion}.`
+    );
   }
 
-  return {
-    harnessId: harness.id,
-    status: "current",
-    warning: false,
-    localBundleVersion: normalizedBundleVersion,
-    expectedBundleVersion: harness.localWrapper.bundleVersion,
-    updateMode: harness.localWrapper.updateMode,
-    updateCommand: harness.localWrapper.updateCommand,
-    restartRequiredAfterUpdate: harness.localWrapper.restartRequiredAfterUpdate,
-    summary: `${harness.name} reported the current Kale bundle version ${normalizedBundleVersion}.`,
-    notes: harness.localWrapper.notes
-  };
+  return buildKnownHarnessLocalWrapperStatus(
+    harness,
+    "current",
+    false,
+    normalizedBundleVersion,
+    `${harness.name} reported the current Kale bundle version ${normalizedBundleVersion}.`
+  );
 }
 
 function compareBundleVersions(left: string, right: string): number | null {
@@ -613,12 +691,43 @@ function parseBundleVersion(version: string): number[] | null {
 }
 
 function buildInstalledHarnessSetupPrompts(input: HarnessPromptContext): HarnessSetupPrompt[] {
-  const connectUrl = `${input.serviceBaseUrl.replace(/\/$/, "")}/connect`;
+  const connectUrl = buildConnectUrl(input);
+  const claudeBootstrapCommand = buildClaudeBootstrapCommand(input).replace(/\n/g, " && ");
   const { marketingName } = input;
-  const livePolicyInstruction = "When Kale tools appear, call get_runtime_manifest and read dynamic_skill_policy, client_update_policy, and agent_harnesses before trusting any local guidance. Then call test_connection and use dynamicSkillPolicy, clientUpdatePolicy, harnesses, nextAction, and summary as the live source of truth.";
-  const claudeSetupPrompt = `Prepare this Claude Code environment for future ${marketingName} work. The official \`kale-deploy\` plugin is already installed. Use the installed \`kale-deploy:kale-connect\` command or the plugin's \`kale-connect\` guidance to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. ${livePolicyInstruction} In Claude Code, do not search the MCP registry first when the local Kale plugin is installed. Start with the installed plugin guidance and \`claude mcp list\`. Use \`mcp-remote\` only to complete the browser OAuth flow: \`claude mcp remove kale -s local 2>/dev/null && claude mcp remove kale -s user 2>/dev/null && claude mcp add -s user kale -- npx -y mcp-remote ${input.mcpEndpoint} --transport http-only\`. After OAuth succeeds, replace that temporary bridge with one direct HTTP \`kale\` server by running the installed \`kale-claude-connect.mjs\` helper from the plugin cache. That helper configures \`headersHelper\` so Claude uses the latest valid Kale OAuth token each time it connects and refreshes it automatically when a valid refresh token is cached. Only rerun the \`mcp-remote\` bootstrap if the helper reports that no valid Kale OAuth or refresh token is available. The ready state is one user-scope \`kale\` HTTP server at ${input.mcpEndpoint}. Do not invent \`claude mcp auth\`, \`claude mcp login\`, or \`claude mcp authenticate\` commands. Only if \`mcp-remote\` also fails, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, confirm register_project is available.`;
-  const codexSetupPrompt = `Prepare this Codex environment for future ${marketingName} work. The official \`kale-deploy\` add-on or bundled Kale skills are already installed. Use the installed \`kale-connect\` guidance to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. ${livePolicyInstruction} If Kale authentication is needed, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, confirm register_project is available.`;
-  const geminiSetupPrompt = `Prepare this Gemini CLI environment for future ${marketingName} work. The official \`kale-deploy\` extension or skills are already installed, and the Kale MCP server is already declared at \`.gemini/settings.json\` in the current project. Use the installed \`kale-connect\` skill to connect Kale and check what, if anything, is still needed before GitHub-backed project work can begin. Do not build an app yet. ${livePolicyInstruction} If Kale authentication is needed, ask me to open ${connectUrl}, sign in, generate a token, and paste it back here. Before saying ${marketingName} is ready, confirm register_project is available.`;
+
+  const claudeSetupPrompt = [
+    `Goal: Prepare this Claude Code environment for ${marketingName}. Do not build an app yet.`,
+    "",
+    `1. The \`kale-deploy\` plugin is already installed. Run \`claude mcp list\` to check whether a \`kale\` server is already connected.`,
+    `2. If connected, skip to step 5. If not, bootstrap OAuth: \`${claudeBootstrapCommand}\``,
+    `3. After the browser OAuth flow completes, replace the temporary bridge with one direct HTTP \`kale\` server by running the installed \`kale-claude-connect.mjs\` helper. It configures \`headersHelper\` so Claude reuses and refreshes the Kale OAuth token automatically.`,
+    `4. If OAuth fails, ask the user to generate a token at ${connectUrl} and paste it back.`,
+    `5. Call \`get_runtime_manifest\` and use \`dynamic_skill_policy\`, \`client_update_policy\`, and \`agent_harnesses\` as live truth over any local guidance.`,
+    `6. Call \`test_connection\` and use \`nextAction\` and \`summary\` for the current next step.`,
+    `7. Confirm \`register_project\` is available. Only then say ${marketingName} is ready.`,
+    "",
+    `Do not search the MCP registry first. Do not invent \`claude mcp auth\`, \`claude mcp login\`, or \`claude mcp authenticate\` commands. The ready state is one user-scope \`kale\` HTTP server at ${input.mcpEndpoint}.`
+  ].join("\n");
+
+  const codexSetupPrompt = [
+    `Goal: Prepare this Codex environment for ${marketingName}. Do not build an app yet.`,
+    "",
+    `1. The \`kale-deploy\` add-on or bundled Kale skills are already installed. Use the installed \`kale-connect\` guidance to connect Kale.`,
+    `2. If Kale authentication is needed, ask the user to visit ${connectUrl}, sign in, generate a token, and paste it back.`,
+    `3. Call \`get_runtime_manifest\` and use \`dynamic_skill_policy\`, \`client_update_policy\`, and \`agent_harnesses\` as live truth.`,
+    `4. Call \`test_connection\` and use \`nextAction\` and \`summary\` for the current next step.`,
+    `5. Confirm \`register_project\` is available. Only then say ${marketingName} is ready.`
+  ].join("\n");
+
+  const geminiSetupPrompt = [
+    `Goal: Prepare this Gemini CLI environment for ${marketingName}. Do not build an app yet.`,
+    "",
+    `1. The \`kale-deploy\` extension or skills are already installed, and the Kale MCP server is declared in \`.gemini/settings.json\`. Use the installed \`kale-connect\` skill to connect Kale.`,
+    `2. If Kale authentication is needed, ask the user to visit ${connectUrl}, sign in, generate a token, and paste it back.`,
+    `3. Call \`get_runtime_manifest\` and use \`dynamic_skill_policy\`, \`client_update_policy\`, and \`agent_harnesses\` as live truth.`,
+    `4. Call \`test_connection\` and use \`nextAction\` and \`summary\` for the current next step.`,
+    `5. Confirm \`register_project\` is available. Only then say ${marketingName} is ready.`
+  ].join("\n");
 
   return [
     { id: "claude", name: "Claude Code", prompt: claudeSetupPrompt, letter: "C" },
