@@ -1,6 +1,6 @@
 {
   "name": "kale-deploy",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Kale Deploy assistant adapter for building Kale-compatible Cloudflare apps.",
   "author": {
     "name": "CUNY AI Lab",
@@ -19,7 +19,7 @@
     "oauth"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.codex-mcp.json",
   "interface": {
     "displayName": "Kale Deploy",
     "shortDescription": "Build and deploy apps that fit the Kale runtime.",

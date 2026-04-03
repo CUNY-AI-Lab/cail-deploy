@@ -3,7 +3,7 @@ import { SignJWT, base64url, jwtVerify } from "jose";
 const REGISTERED_CLIENT_AUDIENCE = "cail-mcp-oauth-client";
 const AUTHORIZATION_CODE_AUDIENCE = "cail-mcp-oauth-code";
 const ACCESS_TOKEN_AUDIENCE = "cail-mcp";
-const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
+const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60;
 const DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS = 5 * 60;
 
 export type RegisteredOAuthClient = {

@@ -44,11 +44,12 @@ The website lists short install instructions for the Kale add-on in each agent. 
 Current Claude note:
 
 - If the local Kale plugin is installed, Claude should not start by searching the MCP registry.
-- Claude Code should use `mcp-remote` only to complete OAuth, then switch to one direct HTTP `kale` server.
+- Claude Code should use `mcp-remote` only to complete OAuth, then switch to one direct HTTP `kale` server whose `headersHelper` reads the latest valid Kale OAuth token.
 - The homepage starts Claude with the in-app `/plugin` install commands for `kale-deploy`.
 - The bootstrap command is:
   `claude mcp add -s user kale -- npx -y mcp-remote https://cuny.qzz.io/kale/mcp --transport http-only`
-- After OAuth succeeds, run the installed `kale-claude-connect.mjs` helper to rewrite Claude to one direct HTTP `kale` server.
+- After OAuth succeeds, run the installed `kale-claude-connect.mjs` helper to rewrite Claude to one direct HTTP `kale` server that uses `headersHelper`.
+- When that OAuth token expires, rerun the `mcp-remote` bootstrap and helper sync steps.
 - Only if `mcp-remote` also fails, fall back to [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), do the token handoff, and then verify that Kale tools are really available.
 - If you use the token fallback on more than one computer, reuse the same Claude token on both machines for now. Generating a new one at `/connect` currently revokes the previous active token.
 

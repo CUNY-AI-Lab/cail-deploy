@@ -92,6 +92,7 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
     SHARED_STATIC_VALIDATION_RETRY_MS: "0",
     DEPLOY_SERVICE_BASE_URL: "https://deploy.example",
     MCP_OAUTH_BASE_URL: "https://auth.example",
+    MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS: "86400",
     DEPLOY_API_TOKEN: "deploy-token",
     MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
     GITHUB_APP_ID: "3196468",
@@ -269,7 +270,7 @@ export async function createAccessJwt(email: string): Promise<string> {
     .setAudience("test-access-aud")
     .setSubject(`user:${email}`)
     .setIssuedAt()
-    .setExpirationTime("1h")
+    .setExpirationTime("24h")
     .sign(key);
 }
 

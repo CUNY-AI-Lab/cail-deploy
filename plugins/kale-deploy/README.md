@@ -75,7 +75,7 @@ path is:
 4. use `mcp-remote` only to complete OAuth:
    `claude mcp add -s user kale -- npx -y mcp-remote https://cuny.qzz.io/kale/mcp --transport http-only`
 5. let `mcp-remote` handle the browser OAuth flow
-6. immediately replace the temporary bridge with one direct HTTP `kale` server:
+6. immediately replace the temporary bridge with one direct HTTP `kale` server that uses `headersHelper`:
 
 ```bash
 KALE_PLUGIN_PATH="$(claude plugins list --json | node -e 'const fs = require("node:fs"); const plugins = JSON.parse(fs.readFileSync(0, "utf8")); const plugin = plugins.find((entry) => entry.id === "kale-deploy@cuny-ai-lab"); if (!plugin?.installPath) { process.stderr.write("Kale plugin is not installed.\n"); process.exit(1); } process.stdout.write(plugin.installPath);')"
@@ -85,7 +85,9 @@ node "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint htt
 7. ask Claude to call `test_connection` before you rely on Kale for deployment
 
 The real success condition is one user-scope direct HTTP `kale` server that can
-surface tools in fresh Claude sessions.
+surface tools in fresh Claude sessions and whose `headersHelper` can still read
+a valid Kale OAuth token. If that token expires, rerun the bootstrap and sync
+steps.
 
 If `mcp-remote` fails, use the token fallback below:
 
@@ -113,7 +115,7 @@ The Codex plugin bundle lives in this same directory and is referenced from the
 repo marketplace metadata:
 
 - `.codex-plugin/plugin.json`
-- `.mcp.json`
+- `.codex-mcp.json`
 - `/Users/stephenzweibel/Apps/CAIL-deploy/.agents/plugins/marketplace.json`
 
 Codex can use the same remote MCP server through the bundled plugin metadata,
@@ -127,7 +129,7 @@ For existing repositories, the most useful command flow is usually:
 
 I verified the Codex side at the packaging level:
 
-- the plugin manifest is valid and points at the bundled `.mcp.json`
+- the Codex plugin manifest is valid and points at the bundled `.codex-mcp.json`
 - the repo contains the Codex marketplace entry for `kale-deploy`
 - the remote MCP server completes OAuth login successfully with `codex mcp add` plus `codex mcp login`
 

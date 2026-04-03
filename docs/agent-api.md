@@ -69,7 +69,7 @@ There is also a current bootstrap path for Claude Code when native remote-MCP OA
 
 - `claude mcp add -s user kale -- npx -y mcp-remote https://cuny.qzz.io/kale/mcp --transport http-only`
 
-That bridge handles Kale's existing OAuth endpoints itself. After OAuth succeeds, Claude should immediately rewrite `kale` to a direct HTTP MCP server with the bearer token from the installed `kale-claude-connect.mjs` helper. The token bridge at `https://cuny.qzz.io/kale/connect` is still available as the last resort.
+That bridge handles Kale's existing OAuth endpoints itself. After OAuth succeeds, Claude should immediately rewrite `kale` to a direct HTTP MCP server whose `headersHelper` reads the latest valid Kale OAuth token through the installed `kale-claude-connect.mjs` helper. If that OAuth token expires, rerun the bootstrap and sync steps. The token bridge at `https://cuny.qzz.io/kale/connect` is still available as the last resort.
 
 ## Remote MCP server
 
@@ -89,7 +89,7 @@ Auth:
 - dynamic client registration: `POST /oauth/register`
 - browser authorization endpoint: `GET /api/oauth/authorize`
 - token exchange: `POST /oauth/token`
-- current Claude Code OAuth bootstrap: `claude mcp add -s user kale -- npx -y mcp-remote https://cuny.qzz.io/kale/mcp --transport http-only`, then run the installed `kale-claude-connect.mjs` helper to convert `kale` to direct HTTP
+- current Claude Code OAuth bootstrap: `claude mcp add -s user kale -- npx -y mcp-remote https://cuny.qzz.io/kale/mcp --transport http-only`, then run the installed `kale-claude-connect.mjs` helper to convert `kale` to direct HTTP with `headersHelper`
 - last-resort token bridge for stubborn harnesses: `GET /connect`, then use `Authorization: Bearer kale_pat_*` on `/mcp`
 
 Current MCP tools:
@@ -502,7 +502,7 @@ Today, the strongest loop is:
 2. scaffold with `kale-init` or create a Worker-compatible repo
 3. create the GitHub repo with `gh repo create` or another GitHub client
 4. connect the harness to `POST /mcp`
-5. let the harness complete MCP OAuth through the browser; for Claude Code today, use `mcp-remote` to complete OAuth and then immediately finalize to a direct HTTP `kale` server; if that flow stalls, fall back to `/connect`
+5. let the harness complete MCP OAuth through the browser; for Claude Code today, use `mcp-remote` to complete OAuth and then immediately finalize to a direct HTTP `kale` server with `headersHelper`; if that OAuth token later expires, rerun the bootstrap and sync steps; if the flow stalls, fall back to `/connect`
 6. call `test_connection`
 7. call `register_project`
 8. if `installStatus` is `not_installed`, send the user to `guidedInstallUrl`

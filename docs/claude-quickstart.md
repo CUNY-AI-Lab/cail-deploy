@@ -32,7 +32,7 @@ Tell Claude to:
 
 1. use `mcp-remote`
 2. complete the browser OAuth flow
-3. replace the temporary bridge with one direct HTTP `kale` entry
+3. replace the temporary bridge with one direct HTTP `kale` entry that uses `headersHelper`
 4. verify that `test_connection` and `register_project` are available
 
 Important:
@@ -56,13 +56,15 @@ Complete the browser login flow first.
 
 Important:
 
-- do not leave this stdio bridge as the steady-state Kale connection
+- do not leave this stdio bridge as the long-term Kale connection
 - the real ready state is one user-scope direct HTTP `kale` server at `https://cuny.qzz.io/kale/mcp`
 
 ## 5. Finalize Claude to direct HTTP
 
 After `mcp-remote` finishes OAuth, replace the temporary bridge with one direct
-HTTP `kale` entry by running the installed helper from the plugin cache:
+HTTP `kale` entry by running the installed helper from the plugin cache. The
+helper configures `headersHelper`, so Claude reads the latest valid Kale OAuth
+token each time it connects:
 
 ```bash
 KALE_PLUGIN_PATH="$(claude plugins list --json | node -e 'const fs = require("node:fs"); const plugins = JSON.parse(fs.readFileSync(0, "utf8")); const plugin = plugins.find((entry) => entry.id === "kale-deploy@cuny-ai-lab"); if (!plugin?.installPath) { process.stderr.write("Kale plugin is not installed.\n"); process.exit(1); } process.stdout.write(plugin.installPath);')"
@@ -71,6 +73,9 @@ node "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint htt
 
 If Claude still does not surface the Kale tools in the current conversation,
 restart Claude Code once and start a fresh session.
+
+If the helper later reports that no valid Kale OAuth token exists, rerun the
+bootstrap and sync steps above.
 
 ## 6. Use the token bridge only if `mcp-remote` fails
 

@@ -87,8 +87,8 @@
         "Claude installs Kale as a user-scope plugin bundle.",
         "The plugin install provides Kale skills and the Claude finalization helper.",
         "In Claude Code, do not search the MCP registry first when the local Kale plugin is installed. Start with the installed plugin and claude mcp list.",
-        "Use mcp-remote only to complete the OAuth browser flow, then replace the temporary bridge with one direct HTTP kale entry.",
-        "The steady-state Claude ready state is a single user-scope kale HTTP server at the Kale MCP endpoint.",
+        "Use mcp-remote only to complete the OAuth browser flow, then replace the temporary bridge with one direct HTTP kale entry that uses headersHelper.",
+        "The preferred Claude ready state is a single user-scope kale HTTP server at the Kale MCP endpoint.",
         "Do not invent claude mcp auth, login, or authenticate commands."
       ],
       "manual_fallback": {
@@ -98,7 +98,9 @@
         "notes": [
           "Use mcp-remote only long enough to complete the OAuth browser flow.",
           "After OAuth succeeds, immediately rewrite Claude to one direct HTTP kale server with the installed kale-claude-connect helper.",
-          "Do not leave the temporary stdio bridge as the steady-state Claude connection.",
+          "The direct HTTP entry uses headersHelper to read the latest valid Kale mcp-remote OAuth token at connection time.",
+          "When that OAuth token expires, rerun the mcp-remote bootstrap and sync steps.",
+          "Do not leave the temporary stdio bridge as the long-term Claude connection.",
           "If mcp-remote itself fails, fall back to the token bridge from https://cuny.qzz.io/kale/connect.",
           "Last-resort token bridge:\nclaude mcp remove kale -s local 2>/dev/null\nclaude mcp remove kale -s user 2>/dev/null\nclaude mcp add --transport http --header \"Authorization: Bearer THE_TOKEN\" -s user kale https://cuny.qzz.io/kale/mcp",
           "Generate THE_TOKEN from https://cuny.qzz.io/kale/connect."
@@ -107,7 +109,7 @@
       "local_wrapper": {
         "kind": "plugin",
         "package_name": "kale-deploy@cuny-ai-lab",
-        "bundle_version": "0.2.7",
+        "bundle_version": "0.2.8",
         "update_mode": "manual",
         "update_command": "claude plugins update kale-deploy@cuny-ai-lab -s user",
         "restart_required_after_update": true,
@@ -141,7 +143,7 @@
       "local_wrapper": {
         "kind": "add_on",
         "package_name": "kale-deploy",
-        "bundle_version": "0.2.7",
+        "bundle_version": "0.2.8",
         "update_mode": "unknown",
         "notes": [
           "Codex CLI does not currently expose add-on update commands.",
@@ -164,7 +166,7 @@
       "local_wrapper": {
         "kind": "extension",
         "package_name": "kale-deploy",
-        "bundle_version": "0.2.7",
+        "bundle_version": "0.2.8",
         "update_mode": "manual",
         "update_command": "gemini extensions update kale-deploy",
         "notes": [

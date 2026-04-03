@@ -569,7 +569,7 @@ deployServiceApp.post("/oauth/token", async (c) => {
       subject: authorizationCode.subject,
       scope: authorizationCode.scope,
       resource: authorizationCode.resource,
-      ttlSeconds: parsePositiveInteger(c.env.MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS, 60 * 60)
+      ttlSeconds: parsePositiveInteger(c.env.MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS, 24 * 60 * 60)
     });
 
     return c.json({

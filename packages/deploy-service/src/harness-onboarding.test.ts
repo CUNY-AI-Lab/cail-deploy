@@ -12,7 +12,7 @@ const promptContext = {
   mcpEndpoint: "https://cuny.qzz.io/kale/mcp"
 };
 
-test("Claude catalog entry uses mcp-remote only as OAuth bootstrap and then finalizes to direct HTTP", () => {
+test("Claude catalog entry uses mcp-remote only as OAuth bootstrap and then finalizes to direct HTTP with headersHelper", () => {
   const harnesses = buildConnectionHarnessCatalog(promptContext);
   const claude = harnesses.find((entry) => entry.id === "claude");
 
@@ -26,6 +26,12 @@ test("Claude catalog entry uses mcp-remote only as OAuth bootstrap and then fina
   );
   assert.ok(
     claude.installNotes.some((note) => /single user-scope kale HTTP server/i.test(note))
+  );
+  assert.ok(
+    (claude.manualFallback?.notes ?? []).some((note) => /headersHelper to read the latest valid Kale mcp-remote OAuth token/i.test(note))
+  );
+  assert.ok(
+    (claude.manualFallback?.notes ?? []).some((note) => /rerun the mcp-remote bootstrap and sync steps/i.test(note))
   );
   assert.ok(
     claude.installNotes.some((note) => /do not search the MCP registry first/i.test(note))
@@ -47,7 +53,7 @@ test("Claude catalog entry uses mcp-remote only as OAuth bootstrap and then fina
   );
 });
 
-test("Claude setup prompt tells the harness to finalize from the bootstrap bridge to direct HTTP", () => {
+test("Claude setup prompt tells the harness to finalize from the bootstrap bridge to direct HTTP with headersHelper", () => {
   const prompts = buildHarnessSetupPrompts("current", promptContext);
   const claude = prompts.find((entry) => entry.id === "claude");
 
@@ -56,6 +62,8 @@ test("Claude setup prompt tells the harness to finalize from the bootstrap bridg
   assert.match(claude.prompt, /Use `mcp-remote` only to complete the browser OAuth flow/i);
   assert.match(claude.prompt, /replace that temporary bridge with one direct HTTP `kale` server/i);
   assert.match(claude.prompt, /kale-claude-connect\.mjs/);
+  assert.match(claude.prompt, /headersHelper/i);
+  assert.match(claude.prompt, /If the helper reports no valid token, rerun the `mcp-remote` bootstrap/i);
   assert.match(claude.prompt, /do not invent `claude mcp auth`, `claude mcp login`, or `claude mcp authenticate` commands/i);
   assert.match(claude.prompt, /claude mcp add -s user kale -- npx -y mcp-remote/i);
   assert.match(claude.prompt, /Only if `mcp-remote` also fails/i);

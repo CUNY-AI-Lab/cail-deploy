@@ -1,15 +1,19 @@
 import os from "node:os";
 import path from "node:path";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_MCP_ENDPOINT = "https://cuny.qzz.io/kale/mcp";
 const DEFAULT_CONFIG_PATH = path.join(os.homedir(), ".claude.json");
 const DEFAULT_AUTH_ROOT = path.join(os.homedir(), ".mcp-auth");
 const DEFAULT_SERVER_NAME = "kale";
+const TOKEN_EXPIRY_GRACE_SECONDS = 60;
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
 function printUsage() {
   console.error(`Usage:
   node kale-claude-connect.mjs sync [--config <path>] [--auth-root <path>] [--mcp-endpoint <url>] [--name <server-name>]
+  node kale-claude-connect.mjs headers [--auth-root <path>] [--mcp-endpoint <url>]
   node kale-claude-connect.mjs status [--config <path>] [--auth-root <path>] [--mcp-endpoint <url>] [--name <server-name>]`);
 }
 
@@ -83,6 +87,14 @@ function parseJwtPayload(token) {
   }
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/gu, `'\"'\"'`)}'`;
+}
+
+function buildHeadersHelperCommand(options) {
+  return `${shellQuote(process.execPath)} ${shellQuote(SCRIPT_PATH)} headers --auth-root ${shellQuote(options.authRoot)} --mcp-endpoint ${shellQuote(options.mcpEndpoint)}`;
+}
+
 async function findTokenFiles(root) {
   const candidates = [];
   let authRoots = [];
@@ -128,6 +140,8 @@ async function findTokenFiles(root) {
 
 async function loadLatestToken({ authRoot, mcpEndpoint }) {
   const tokenFiles = await findTokenFiles(authRoot);
+  const endpointBase = mcpEndpoint.replace(/\/mcp$/u, "");
+  const minimumExpiryEpochSeconds = Math.floor(Date.now() / 1000) + TOKEN_EXPIRY_GRACE_SECONDS;
   const matches = [];
 
   for (const candidate of tokenFiles) {
@@ -152,24 +166,32 @@ async function loadLatestToken({ authRoot, mcpEndpoint }) {
     const payload = parseJwtPayload(tokens.access_token);
     const resource = typeof payload?.resource === "string" ? payload.resource : undefined;
     const issuer = typeof payload?.iss === "string" ? payload.iss : undefined;
-    const endpointBase = mcpEndpoint.replace(/\/mcp$/u, "");
     const tokenType = typeof tokens.token_type === "string" ? tokens.token_type : "Bearer";
+    const expiresAtEpochSeconds = typeof payload?.exp === "number" ? payload.exp : undefined;
     const expiresAt = typeof payload?.exp === "number"
       ? new Date(payload.exp * 1000).toISOString()
       : undefined;
+    const resourceMatches = resource === mcpEndpoint;
+    const issuerMatches = issuer === endpointBase;
+    const isExpired = typeof expiresAtEpochSeconds !== "number" || expiresAtEpochSeconds <= minimumExpiryEpochSeconds;
+
+    if (!resourceMatches || !issuerMatches || isExpired) {
+      continue;
+    }
 
     matches.push({
       filePath: candidate.filePath,
+      mtimeMs: candidate.mtimeMs,
       accessToken: tokens.access_token,
       authorizationHeader: `${tokenType} ${tokens.access_token}`,
       resource,
       issuer,
       expiresAt,
-      score: resource === mcpEndpoint ? 2 : issuer === endpointBase ? 1 : 0
+      expiresAtEpochSeconds
     });
   }
 
-  matches.sort((left, right) => right.score - left.score);
+  matches.sort((left, right) => right.mtimeMs - left.mtimeMs);
   return matches[0];
 }
 
@@ -198,6 +220,9 @@ async function runStatus(options) {
     hasConfigEntry: Boolean(existingEntry),
     configEntryType: existingEntry?.type,
     configEntryUrl: existingEntry?.url,
+    configEntryHeadersHelper: existingEntry?.headersHelper,
+    configEntryHasStaticAuthorization: typeof existingEntry?.headers?.Authorization === "string",
+    hasValidToken: Boolean(token),
     tokenSourcePath: token?.filePath,
     tokenResource: token?.resource,
     tokenIssuer: token?.issuer,
@@ -205,10 +230,21 @@ async function runStatus(options) {
   }, null, 2));
 }
 
+async function runHeaders(options) {
+  const token = await loadLatestToken(options);
+  if (!token) {
+    throw new Error(`No valid Kale mcp-remote OAuth token found under ${options.authRoot}. Run the Kale mcp-remote bootstrap again.`);
+  }
+
+  process.stdout.write(`${JSON.stringify({
+    Authorization: token.authorizationHeader
+  })}\n`);
+}
+
 async function runSync(options) {
   const token = await loadLatestToken(options);
   if (!token) {
-    throw new Error(`No mcp-remote OAuth token found under ${options.authRoot}. Run the Kale mcp-remote bootstrap first.`);
+    throw new Error(`No valid Kale mcp-remote OAuth token found under ${options.authRoot}. Run the Kale mcp-remote bootstrap first.`);
   }
 
   const config = await readClaudeConfig(options.configPath);
@@ -219,9 +255,7 @@ async function runSync(options) {
   mcpServers[options.serverName] = {
     type: "http",
     url: options.mcpEndpoint,
-    headers: {
-      Authorization: token.authorizationHeader
-    }
+    headersHelper: buildHeadersHelperCommand(options)
   };
 
   config.mcpServers = mcpServers;
@@ -235,13 +269,17 @@ async function runSync(options) {
     tokenResource: token.resource,
     tokenIssuer: token.issuer,
     tokenExpiresAt: token.expiresAt,
-    summary: "Claude Kale config updated to direct HTTP with the latest mcp-remote OAuth token."
+    headersHelper: buildHeadersHelperCommand(options),
+    summary: "Claude Kale config updated to direct HTTP with a headersHelper backed by the latest valid Kale mcp-remote OAuth token."
   }, null, 2));
 }
 
 async function main() {
   const parsed = parseArgs(process.argv.slice(2));
   switch (parsed.command) {
+    case "headers":
+      await runHeaders(parsed);
+      break;
     case "status":
       await runStatus(parsed);
       break;

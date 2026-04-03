@@ -35,7 +35,7 @@ This local skill is only the bootstrap layer.
 2. If the server is missing or disconnected, connect Kale Deploy. The official service is:
    - front door: `https://cuny.qzz.io/kale`
    - MCP endpoint: `https://cuny.qzz.io/kale/mcp`
-3. Prefer the agent's normal MCP or plugin flow first. In Claude Code, if the local Kale plugin is installed, do not search the MCP registry first. Start with the installed plugin guidance and `claude mcp list`. For Claude Code, use `mcp-remote` only to complete OAuth, then replace that temporary bridge with one direct HTTP `kale` server. If that still fails or the server remains disconnected, use the token-paste fallback:
+3. Prefer the agent's normal MCP or plugin flow first. In Claude Code, if the local Kale plugin is installed, do not search the MCP registry first. Start with the installed plugin guidance and `claude mcp list`. For Claude Code, use `mcp-remote` only to complete OAuth, then replace that temporary bridge with one direct HTTP `kale` server whose `headersHelper` reads the latest valid Kale OAuth token. If that still fails or the server remains disconnected, use the token-paste fallback:
    - tell the user: "I need to connect to Kale Deploy. Please visit this link, sign in with your CUNY email, generate a token, and paste it back here."
    - give them: `https://cuny.qzz.io/kale/connect`
    - once they paste a token starting with `kale_pat_`, configure the Kale server with a static Bearer header if the agent supports that path
@@ -50,7 +50,7 @@ This local skill is only the bootstrap layer.
 - Prefer the installed Kale plugin surfaces over inventing ad hoc steps.
 - In Claude Code, if the local Kale plugin is installed, do not search the MCP registry first. Start with the installed plugin guidance and `claude mcp list`.
 - Use `mcp-remote` only long enough to complete the OAuth browser flow.
-- The steady-state Claude ready state is one user-scope direct HTTP `kale` server at `https://cuny.qzz.io/kale/mcp`.
+- The preferred Claude ready state is one user-scope direct HTTP `kale` server at `https://cuny.qzz.io/kale/mcp`.
 - Do not invent `claude mcp auth`, `claude mcp login`, or `claude mcp authenticate` commands. Those are not real Claude CLI commands.
 - Bootstrap OAuth like this:
 
@@ -66,6 +66,9 @@ claude mcp add -s user kale -- npx -y mcp-remote https://cuny.qzz.io/kale/mcp --
 KALE_PLUGIN_PATH="$(claude plugins list --json | node -e 'const fs = require("node:fs"); const plugins = JSON.parse(fs.readFileSync(0, "utf8")); const plugin = plugins.find((entry) => entry.id === "kale-deploy@cuny-ai-lab"); if (!plugin?.installPath) { process.stderr.write("Kale plugin is not installed.\n"); process.exit(1); } process.stdout.write(plugin.installPath);')"
 node "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint https://cuny.qzz.io/kale/mcp
 ```
+
+- That helper configures `headersHelper`, so Claude reuses the latest valid Kale OAuth token at connection time.
+- If the helper later reports that no valid token exists, rerun the bootstrap and sync steps.
 
 - If token-paste is needed, the last-resort fallback is:
 
