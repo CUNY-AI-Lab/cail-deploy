@@ -4,6 +4,10 @@ dist/
 coverage/
 .DS_Store
 .gemini/
+.claude/
+deployments/
+tmp/
+scripts/ops/probe-workers-builds.mjs
 .env
 .env.*
 !.env.example
