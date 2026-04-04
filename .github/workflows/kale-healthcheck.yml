@@ -22,7 +22,6 @@ jobs:
       KALE_RUNTIME_URL: https://runtime.cuny.qzz.io/.well-known/kale-runtime.json
       KALE_DEPLOY_SERVICE_HEALTH_URL: https://cail-deploy-service.ailab-452.workers.dev/healthz
       KALE_GATEWAY_HEALTH_URL: https://cail-gateway.ailab-452.workers.dev/healthz
-      KALE_SMOKE_URL: https://kale-cache-smoke-test.cuny.qzz.io/api/cache-smoke
       KALE_RUNNER_INSTANCE_ID: i-0a6504fec9b1bcfaf
     steps:
       - name: Check out repository

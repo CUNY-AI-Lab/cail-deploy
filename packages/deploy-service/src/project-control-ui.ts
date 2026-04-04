@@ -336,11 +336,6 @@ export function renderProjectControlPanelPage(input: {
     count: number;
     secrets: ProjectControlSecretListItem[];
   };
-  featured: {
-    enabled: boolean;
-    headline?: string;
-    sortOrder: number;
-  };
   formToken: string;
   flash?: ProjectControlFlash;
 }): string {
@@ -366,7 +361,6 @@ export function renderProjectControlPanelPage(input: {
     repoUrl,
     setupUrl,
     secrets,
-    featured,
     formToken,
     flash
   } = input;
@@ -420,11 +414,6 @@ export function renderProjectControlPanelPage(input: {
         margin-top: 20px;
         animation: fadeUp 0.4s ease both;
         animation-delay: 0.08s;
-      }
-      .featured-panel {
-        margin-top: 20px;
-        animation: fadeUp 0.4s ease both;
-        animation-delay: 0.06s;
       }
       .danger-panel {
         margin-top: 20px;
@@ -940,52 +929,6 @@ export function renderProjectControlPanelPage(input: {
               </div>`
             : ""}
         </div>
-      </section>
-
-      <section class="card featured-panel">
-        <div class="section-header">
-          <h2>Featured project</h2>
-        </div>
-        <p class="section-desc">Choose whether this project appears on the public featured projects page.</p>
-        <form class="secret-form" method="post" action="${escapeHtml(`${controlBaseUrl}/projects/${encodeURIComponent(projectName)}/control/featured`)}">
-          <input type="hidden" name="formToken" value="${escapeHtml(formToken)}" />
-          <p class="secret-form-title">Public showcase settings</p>
-          <div class="field-group">
-            <label style="display:flex; align-items:center; gap:10px; text-transform:none; letter-spacing:0; color:var(--ink); margin-bottom:0;">
-              <input type="checkbox" name="featureProject" value="1"${featured.enabled ? " checked" : ""} style="width:auto; margin:0;" />
-              Show this project on the featured projects page
-            </label>
-            <p class="field-help">Only live projects appear publicly. You can save this before or after the next deploy.</p>
-          </div>
-          <div class="field-grid">
-            <div class="field-group">
-              <label for="feature-headline">Short blurb</label>
-              <input
-                id="feature-headline"
-                name="featureHeadline"
-                maxlength="160"
-                placeholder="One sentence about what makes this project worth opening."
-                value="${escapeHtml(featured.headline ?? "")}"
-              />
-              <p class="field-help">Optional. Falls back to the project description when blank.</p>
-            </div>
-            <div class="field-group">
-              <label for="feature-sort-order">Display order</label>
-              <input
-                id="feature-sort-order"
-                name="featureSortOrder"
-                type="number"
-                min="0"
-                step="1"
-                value="${escapeHtml(String(featured.sortOrder))}"
-              />
-              <p class="field-help">Lower numbers appear first.</p>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="button" type="submit">Save featured settings</button>
-          </div>
-        </form>
       </section>
 
       <section class="card secrets-panel">

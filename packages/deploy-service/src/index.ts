@@ -42,12 +42,18 @@ import {
 } from "./project-control-ui";
 import {
   createProjectAdminEntryResponse,
-  createProjectControlFeaturedUpdateResponse,
   createProjectControlPanelResponse,
   createProjectControlProjectDeleteResponse,
   createProjectControlSecretDeleteResponse,
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
+import {
+  buildFeaturedProjectsAdminRecords,
+  clearFeaturedProjectForLiveProject,
+  createFeaturedProjectsAdminPageResponse,
+  createFeaturedProjectsAdminUpdateResponse,
+  setFeaturedProjectForLiveProject
+} from "./featured-projects-controller";
 import { renderFeaturedProjectsPage } from "./featured-projects-ui";
 import {
   buildHarnessPromptContext,
@@ -106,6 +112,7 @@ import {
   getLatestBuildJobForProject,
   getLatestProjectForRepository,
   getProjectDeletionBacklog,
+  listProjectDeletionBacklogs,
   getPreferredProjectNameForRepository,
   getProjectDomain,
   getProject,
@@ -199,6 +206,8 @@ type Env = {
   CLOUDFLARE_ACCESS_ALLOWED_EMAILS?: string;
   CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS?: string;
   CLOUDFLARE_ACCESS_TEAM_DOMAIN?: string;
+  KALE_ADMIN_EMAILS?: string;
+  FEATURED_PROJECT_ADMIN_EMAILS?: string;
   MCP_OAUTH_BASE_URL?: string;
   MCP_OAUTH_TOKEN_SECRET?: string;
   MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
@@ -1407,6 +1416,89 @@ deployServiceApp.get("/featured", async (c) => {
   }));
 });
 
+deployServiceApp.get("/featured/control", async (c) => {
+  return createFeaturedProjectsAdminPageResponse({
+    env: c.env,
+    request: c.req.raw,
+    requireFeaturedProjectAdminIdentity,
+    resolveServiceBaseUrl,
+    listProjects: (env) => listProjects(env.CONTROL_PLANE_DB),
+    listFeaturedProjects: (env) => listFeaturedProjects(env.CONTROL_PLANE_DB),
+    resolveMcpOauthSecret
+  });
+});
+
+deployServiceApp.post("/featured/control", async (c) => {
+  return createFeaturedProjectsAdminUpdateResponse({
+    env: c.env,
+    request: c.req.raw,
+    requireFeaturedProjectAdminIdentity,
+    resolveServiceBaseUrl,
+    resolveMcpOauthSecret,
+    getProject: (env, projectName) => getProject(env.CONTROL_PLANE_DB, projectName),
+    getFeaturedProject: (env, githubRepo) => getFeaturedProject(env.CONTROL_PLANE_DB, githubRepo),
+    putFeaturedProject: (env, feature) => putFeaturedProject(env.CONTROL_PLANE_DB, feature),
+    deleteFeaturedProject: (env, githubRepo) => deleteFeaturedProject(env.CONTROL_PLANE_DB, githubRepo)
+  });
+});
+
+deployServiceApp.get("/api/admin/overview", async (c) => {
+  return runProtectedAdminApiAction(c, async () => {
+    return c.json(await buildAdminOverviewPayload(c.env));
+  });
+});
+
+deployServiceApp.put("/api/admin/projects/:projectName/featured", async (c) => {
+  return runProtectedAdminApiAction(c, async () => {
+    const rawBody: unknown = await c.req.json().catch(() => ({}));
+    const body = typeof rawBody === "object" && rawBody !== null
+      ? rawBody as { headline?: string; sortOrder?: number | string }
+      : {};
+    const { project, feature } = await setFeaturedProjectForLiveProject({
+      env: c.env,
+      projectName: c.req.param("projectName"),
+      getProject: (env, projectName) => getProject(env.CONTROL_PLANE_DB, projectName),
+      getFeaturedProject: (env, githubRepo) => getFeaturedProject(env.CONTROL_PLANE_DB, githubRepo),
+      putFeaturedProject: (env, featuredProject) => putFeaturedProject(env.CONTROL_PLANE_DB, featuredProject),
+      headline: typeof body.headline === "string" && body.headline.trim() ? body.headline.trim() : undefined,
+      sortOrder: parseAdminFeaturedProjectSortOrder(body.sortOrder)
+    });
+
+    return c.json({
+      ok: true,
+      summary: `${project.projectName} is now featured.`,
+      projectName: project.projectName,
+      githubRepo: feature.githubRepo,
+      featured: {
+        enabled: true,
+        headline: feature.headline,
+        sortOrder: feature.sortOrder
+      }
+    });
+  });
+});
+
+deployServiceApp.delete("/api/admin/projects/:projectName/featured", async (c) => {
+  return runProtectedAdminApiAction(c, async () => {
+    const project = await clearFeaturedProjectForLiveProject({
+      env: c.env,
+      projectName: c.req.param("projectName"),
+      getProject: (env, projectName) => getProject(env.CONTROL_PLANE_DB, projectName),
+      deleteFeaturedProject: (env, githubRepo) => deleteFeaturedProject(env.CONTROL_PLANE_DB, githubRepo)
+    });
+
+    return c.json({
+      ok: true,
+      summary: `${project.projectName} is no longer featured.`,
+      projectName: project.projectName,
+      githubRepo: project.githubRepo,
+      featured: {
+        enabled: false
+      }
+    });
+  });
+});
+
 deployServiceApp.get("/github/app", (c) => {
   const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
   const appSlug = resolveGitHubAppSlug(c.env);
@@ -1873,39 +1965,6 @@ deployServiceApp.get("/projects/:projectName/control", async (c) => {
     ...PROJECT_CONTROL_ROUTE_DEPENDENCIES,
     buildProjectStatusResponse,
     buildProjectSecretsListPayload,
-    getFeaturedProject: (env, githubRepo) => getFeaturedProject(env.CONTROL_PLANE_DB, githubRepo),
-  });
-});
-
-deployServiceApp.post("/projects/:projectName/control/featured", async (c) => {
-  return createProjectControlFeaturedUpdateResponse({
-    env: c.env,
-    request: c.req.raw,
-    projectName: c.req.param("projectName"),
-    ...PROJECT_CONTROL_ROUTE_DEPENDENCIES,
-    updateFeaturedProject: async (env, authorization, input) => {
-      const now = new Date().toISOString();
-
-      if (!input.enabled) {
-        await deleteFeaturedProject(env.CONTROL_PLANE_DB, authorization.project.githubRepo);
-        return {
-          summary: `${authorization.project.projectName} is no longer featured.`
-        };
-      }
-
-      const existing = await getFeaturedProject(env.CONTROL_PLANE_DB, authorization.project.githubRepo);
-      await putFeaturedProject(env.CONTROL_PLANE_DB, {
-        githubRepo: authorization.project.githubRepo,
-        projectName: authorization.project.projectName,
-        headline: input.headline,
-        sortOrder: input.sortOrder,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now
-      });
-      return {
-        summary: `${authorization.project.projectName} is now featured.`
-      };
-    }
   });
 });
 
@@ -1961,6 +2020,27 @@ async function runProjectAdminAgentApiAction<TPayload extends Record<string, unk
   });
 }
 
+async function runProtectedAdminApiAction(
+  c: Context<{ Bindings: Env }>,
+  action: (identity: AuthenticatedAgentRequestIdentity) => Promise<Response>
+): Promise<Response> {
+  let identity: AuthenticatedAgentRequestIdentity;
+
+  try {
+    identity = await requireKaleAdminMcpIdentity(c.req.raw, c.env);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.json({ error: httpError.message }, { status: httpError.status });
+  }
+
+  try {
+    return await action(identity);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.json({ error: httpError.message }, { status: httpError.status });
+  }
+}
+
 async function runProtectedAgentApiAction(
   c: Context<{ Bindings: Env }>,
   action: (identity: AgentRequestIdentity) => Promise<Response>
@@ -1980,6 +2060,48 @@ async function runProtectedAgentApiAction(
     const httpError = asHttpError(error);
     return c.json({ error: httpError.message }, { status: httpError.status });
   }
+}
+
+async function buildAdminOverviewPayload(env: Env) {
+  const [projects, featuredProjects, deletionBacklogs] = await Promise.all([
+    listProjects(env.CONTROL_PLANE_DB),
+    listFeaturedProjects(env.CONTROL_PLANE_DB),
+    listProjectDeletionBacklogs(env.CONTROL_PLANE_DB, 100)
+  ]);
+  const adminProjects = buildFeaturedProjectsAdminRecords(projects, featuredProjects);
+
+  return {
+    summary: `${adminProjects.length} live repositories, ${featuredProjects.length} featured projects, ${deletionBacklogs.length} pending deletion cleanups.`,
+    projectCount: adminProjects.length,
+    featuredProjectCount: featuredProjects.length,
+    deletionBacklogCount: deletionBacklogs.length,
+    projects: adminProjects,
+    featuredProjects,
+    deletionBacklogs
+  };
+}
+
+function parseAdminFeaturedProjectSortOrder(value: number | string | undefined): number {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new HttpError(400, "Featured project order must be a non-negative number.");
+    }
+    return Math.trunc(value);
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return 100;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new HttpError(400, "Featured project order must be a non-negative number.");
+    }
+    return parsed;
+  }
+
+  return 100;
 }
 
 deployServiceApp.get("/api/build-jobs/:jobId/status", async (c) => {
@@ -4077,6 +4199,34 @@ async function requireCloudflareAccessIdentity(request: Request, env: Env): Prom
   }
 }
 
+async function requireFeaturedProjectAdminIdentity(
+  request: Request,
+  env: Env
+): Promise<CloudflareAccessRequestIdentity> {
+  const identity = await requireCloudflareAccessIdentity(request, env);
+  assertKaleAdminEmail(identity.email, env, {
+    unavailableMessage: "Featured project curation is not configured on this deployment.",
+    forbiddenMessage: "Featured project curation is only available to Kale editors."
+  });
+
+  return identity;
+}
+
+async function requireKaleAdminMcpIdentity(
+  request: Request,
+  env: Env
+): Promise<AuthenticatedAgentRequestIdentity> {
+  const identity = await requireMcpRequestIdentity(request, env);
+  if (identity.type !== "mcp_oauth") {
+    throw new HttpError(403, "Kale admin operations require a short-lived MCP OAuth session, not a personal access token.");
+  }
+  assertKaleAdminEmail(identity.email, env, {
+    unavailableMessage: "Kale admin operations are not configured on this deployment.",
+    forbiddenMessage: "Kale admin operations are only available to Kale administrators."
+  });
+  return identity;
+}
+
 function resolveAccessConfigFromEnv(env: Env) {
   return resolveCloudflareAccessConfig({
     teamDomain: env.CLOUDFLARE_ACCESS_TEAM_DOMAIN,
@@ -4086,6 +4236,38 @@ function resolveAccessConfigFromEnv(env: Env) {
   });
 }
 
+function resolveKaleAdminEmails(env: Env): Set<string> {
+  return new Set(
+    [
+      ...splitConfiguredList(resolveConfiguredEnvValue(env.KALE_ADMIN_EMAILS)),
+      ...splitConfiguredList(resolveConfiguredEnvValue(env.FEATURED_PROJECT_ADMIN_EMAILS))
+    ].map((value) =>
+      value.toLowerCase()
+    )
+  );
+}
+
+function assertKaleAdminEmail(
+  email: string,
+  env: Env,
+  messages: {
+    unavailableMessage: string;
+    forbiddenMessage: string;
+  }
+): void {
+  const allowedEmails = resolveKaleAdminEmails(env);
+  if (allowedEmails.size === 0) {
+    throw new HttpError(503, messages.unavailableMessage);
+  }
+  if (!allowedEmails.has(email.toLowerCase())) {
+    throw new HttpError(403, messages.forbiddenMessage);
+  }
+}
+
+function hasKaleAdminEmail(email: string | undefined, env: Env): boolean {
+  return typeof email === "string" && resolveKaleAdminEmails(env).has(email.toLowerCase());
+}
+
 function resolveMcpOauthSecret(env: Env): string {
   const secret = resolveConfiguredEnvValue(env.MCP_OAUTH_TOKEN_SECRET);
   if (!secret) {
@@ -4093,6 +4275,13 @@ function resolveMcpOauthSecret(env: Env): string {
   }
 
   return secret;
+}
+
+function splitConfiguredList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(/[,\n]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function resolveMcpOauthBaseUrl(env: Env, requestUrl: string): string {
@@ -4816,6 +5005,8 @@ function createDeployServiceMcpServer(
   executionContext: ExecutionContext
 ) {
   const serviceBaseUrl = resolveServiceBaseUrl(env, requestUrl);
+  const adminEnabled = identity.type === "mcp_oauth"
+    && hasKaleAdminEmail("email" in identity ? identity.email : undefined, env);
   return createDeployServiceMcpSurface({
     serviceBaseUrl,
     identityType: identity.type,
@@ -4855,7 +5046,68 @@ function createDeployServiceMcpServer(
         return deleteProjectFromKale(env, PROJECT_DELETE_CONFIG, authorization, {
           scheduleBackgroundCleanup: (task) => executionContext.waitUntil(task)
         });
-      })
+      }),
+    getAdminOverview: adminEnabled
+      ? async () => {
+          const payload = await buildAdminOverviewPayload(env);
+          return {
+            status: 200,
+            summary: payload.summary,
+            body: payload
+          };
+        }
+      : undefined,
+    setFeaturedProject: adminEnabled
+      ? async (projectName, headline, sortOrder) => {
+          const { project, feature } = await setFeaturedProjectForLiveProject({
+            env,
+            projectName,
+            getProject: (env, projectName) => getProject(env.CONTROL_PLANE_DB, projectName),
+            getFeaturedProject: (env, githubRepo) => getFeaturedProject(env.CONTROL_PLANE_DB, githubRepo),
+            putFeaturedProject: (env, featuredProject) => putFeaturedProject(env.CONTROL_PLANE_DB, featuredProject),
+            headline: typeof headline === "string" && headline.trim() ? headline.trim() : undefined,
+            sortOrder: parseAdminFeaturedProjectSortOrder(sortOrder)
+          });
+          return {
+            status: 200,
+            summary: `${project.projectName} is now featured.`,
+            body: {
+              ok: true,
+              summary: `${project.projectName} is now featured.`,
+              projectName: project.projectName,
+              githubRepo: feature.githubRepo,
+              featured: {
+                enabled: true,
+                headline: feature.headline,
+                sortOrder: feature.sortOrder
+              }
+            }
+          };
+        }
+      : undefined,
+    unfeatureProject: adminEnabled
+      ? async (projectName) => {
+          const project = await clearFeaturedProjectForLiveProject({
+            env,
+            projectName,
+            getProject: (env, projectName) => getProject(env.CONTROL_PLANE_DB, projectName),
+            deleteFeaturedProject: (env, githubRepo) => deleteFeaturedProject(env.CONTROL_PLANE_DB, githubRepo)
+          });
+          return {
+            status: 200,
+            summary: `${project.projectName} is no longer featured.`,
+            body: {
+              ok: true,
+              summary: `${project.projectName} is no longer featured.`,
+              projectName: project.projectName,
+              githubRepo: project.githubRepo,
+              featured: {
+                enabled: false
+              }
+            }
+          };
+        }
+      : undefined
   });
 }
 

@@ -742,6 +742,176 @@ test("mcp handles preflight and returns tools when authorized with OAuth", async
   assert.equal(testConnectionResult.result.structuredContent.harnesses[0]?.localWrapper.updateCommand, "claude plugins update kale-deploy@cuny-ai-lab -s user");
 });
 
+test("mcp exposes admin tools only to allowlisted OAuth admins and supports featured curation", async () => {
+  const { env, db } = createTestContext({
+    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
+    KALE_ADMIN_EMAILS: "person@cuny.edu"
+  });
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    description: "Practice reading with interactive passages.",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+
+  const adminAccessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
+  const nonAdminAccessToken = await issueTestMcpAccessToken(env, "someone@cuny.edu");
+
+  const adminToolListResponse = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 20,
+      method: "tools/list",
+      params: {}
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${adminAccessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(adminToolListResponse.status, 200);
+  const adminToolList = await adminToolListResponse.json() as {
+    result: {
+      tools: Array<{ name: string }>;
+    };
+  };
+  assert.ok(adminToolList.result.tools.some((tool) => tool.name === "get_admin_overview"));
+  assert.ok(adminToolList.result.tools.some((tool) => tool.name === "set_featured_project"));
+  assert.ok(adminToolList.result.tools.some((tool) => tool.name === "unfeature_project"));
+
+  const nonAdminToolListResponse = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 21,
+      method: "tools/list",
+      params: {}
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${nonAdminAccessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(nonAdminToolListResponse.status, 200);
+  const nonAdminToolList = await nonAdminToolListResponse.json() as {
+    result: {
+      tools: Array<{ name: string }>;
+    };
+  };
+  assert.ok(!nonAdminToolList.result.tools.some((tool) => tool.name === "get_admin_overview"));
+  assert.ok(!nonAdminToolList.result.tools.some((tool) => tool.name === "set_featured_project"));
+
+  const setFeaturedResponse = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 22,
+      method: "tools/call",
+      params: {
+        name: "set_featured_project",
+        arguments: {
+          projectName: "cloze-reader",
+          headline: "A reading game for practicing comprehension.",
+          sortOrder: 2
+        }
+      }
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${adminAccessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(setFeaturedResponse.status, 200);
+  const setFeaturedBody = await setFeaturedResponse.json() as {
+    result: {
+      structuredContent: {
+        featured: {
+          enabled: boolean;
+          headline?: string;
+          sortOrder: number;
+        };
+      };
+    };
+  };
+  assert.equal(setFeaturedBody.result.structuredContent.featured.enabled, true);
+  assert.equal(setFeaturedBody.result.structuredContent.featured.headline, "A reading game for practicing comprehension.");
+  assert.equal(setFeaturedBody.result.structuredContent.featured.sortOrder, 2);
+
+  const overviewResponse = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 23,
+      method: "tools/call",
+      params: {
+        name: "get_admin_overview",
+        arguments: {}
+      }
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${adminAccessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(overviewResponse.status, 200);
+  const overviewBody = await overviewResponse.json() as {
+    result: {
+      structuredContent: {
+        projectCount: number;
+        featuredProjectCount: number;
+        projects: Array<{ projectName: string; featured: { enabled: boolean; sortOrder: number } }>;
+      };
+    };
+  };
+  assert.equal(overviewBody.result.structuredContent.projectCount, 1);
+  assert.equal(overviewBody.result.structuredContent.featuredProjectCount, 1);
+  assert.equal(overviewBody.result.structuredContent.projects[0]?.projectName, "cloze-reader");
+  assert.equal(overviewBody.result.structuredContent.projects[0]?.featured.enabled, true);
+  assert.equal(overviewBody.result.structuredContent.projects[0]?.featured.sortOrder, 2);
+
+  const unfeatureResponse = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 24,
+      method: "tools/call",
+      params: {
+        name: "unfeature_project",
+        arguments: {
+          projectName: "cloze-reader"
+        }
+      }
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${adminAccessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(unfeatureResponse.status, 200);
+  assert.equal(db.selectFeaturedProject("szweibel/cloze-reader"), null);
+});
+
 test("connection health reports a stale local wrapper when the harness version is older", async () => {
   const { env } = createTestContext();
 

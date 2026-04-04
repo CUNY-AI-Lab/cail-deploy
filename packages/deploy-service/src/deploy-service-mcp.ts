@@ -49,6 +49,9 @@ export function createDeployServiceMcpServer(input: {
   setProjectSecret: (projectName: string, secretName: string, value: string) => Promise<McpStatusResponse & { summary: string }>;
   deleteProjectSecret: (projectName: string, secretName: string) => Promise<McpStatusResponse & { summary: string }>;
   deleteProject: (projectName: string, confirmProjectName: string) => Promise<McpStatusResponse & { summary: string }>;
+  getAdminOverview?: () => Promise<McpStatusResponse & { summary: string }>;
+  setFeaturedProject?: (projectName: string, headline?: string, sortOrder?: number) => Promise<McpStatusResponse & { summary: string }>;
+  unfeatureProject?: (projectName: string) => Promise<McpStatusResponse & { summary: string }>;
 }): McpServer {
   const server = new McpServer(
     {
@@ -298,6 +301,69 @@ export function createDeployServiceMcpServer(input: {
       return createMcpToolResult(result.summary, result.body);
     }
   );
+
+  if (input.getAdminOverview && input.setFeaturedProject && input.unfeatureProject) {
+    const getAdminOverview = input.getAdminOverview;
+    const setFeaturedProject = input.setFeaturedProject;
+    const unfeatureProject = input.unfeatureProject;
+
+    server.registerTool(
+      "get_admin_overview",
+      {
+        title: "Get admin overview",
+        description: "List the current live project inventory, featured shortlist, and pending deletion backlogs for Kale admins.",
+        inputSchema: {}
+      },
+      async () => {
+        const result = await getAdminOverview();
+        if (result.status >= 400) {
+          return createMcpToolErrorResult(result.summary, result.body);
+        }
+
+        return createMcpToolResult(result.summary, result.body);
+      }
+    );
+
+    server.registerTool(
+      "set_featured_project",
+      {
+        title: "Set featured project",
+        description: "Feature a live project on the public Kale Deploy featured page.",
+        inputSchema: {
+          projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${input.maxProjectNameLength} characters.`),
+          headline: z.string().optional().describe("Optional editorial blurb for the public featured page."),
+          sortOrder: z.number().int().nonnegative().optional().describe("Lower numbers appear first. Defaults to 100.")
+        }
+      },
+      async ({ projectName, headline, sortOrder }) => {
+        const result = await setFeaturedProject(projectName, headline, sortOrder);
+        if (result.status >= 400) {
+          return createMcpToolErrorResult(result.summary, result.body);
+        }
+
+        return createMcpToolResult(result.summary, result.body);
+      }
+    );
+
+    server.registerTool(
+      "unfeature_project",
+      {
+        title: "Unfeature project",
+        description: "Remove a project from the public Kale Deploy featured page.",
+        inputSchema: {
+          projectName: z.string().describe(`Kale project slug in lowercase kebab-case, up to ${input.maxProjectNameLength} characters.`)
+        }
+      },
+      async ({ projectName }) => {
+        const result = await unfeatureProject(projectName);
+        if (result.status >= 400) {
+          return createMcpToolErrorResult(result.summary, result.body);
+        }
+
+        return createMcpToolResult(result.summary, result.body);
+      }
+    );
+  }
 
   server.registerResource(
     "runtime-manifest",

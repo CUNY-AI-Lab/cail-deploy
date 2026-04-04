@@ -7,6 +7,8 @@ import {
   fetchApp,
   fetchRaw,
   installAccessFetchMock,
+  issueTestMcpAccessToken,
+  issueTestMcpPatToken,
   sealStoredValueForTest,
   TEST_ACCESS_PRIVATE_KEY,
   jsonResponse
@@ -890,7 +892,7 @@ test("project control panel shows secrets and accepts a browser form submission 
   assert.ok(savedSecret);
 });
 
-test("project control panel can feature and unfeature a project", async (t) => {
+test("project control panel does not expose featured settings", async (t) => {
   const { env, db } = createTestContext({
     CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
     CLOUDFLARE_ACCESS_AUD: "test-access-aud",
@@ -973,18 +975,52 @@ test("project control panel can feature and unfeature a project", async (t) => {
   }), env);
   assert.equal(pageResponse.status, 200);
   const html = await pageResponse.text();
-  assert.match(html, /Featured project/);
-  assert.match(html, /Show this project on the featured projects page/);
+  assert.doesNotMatch(html, /Featured project/);
+  assert.doesNotMatch(html, /Show this project on the featured projects page/);
+});
+
+test("featured projects admin page can feature and unfeature a live project for an allowlisted editor", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu",
+    FEATURED_PROJECT_ADMIN_EMAILS: "person@cuny.edu"
+  });
+  installAccessFetchMock(t);
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    description: "Practice reading with interactive cloze passages.",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const pageResponse = await fetchRaw(new Request("https://deploy.example/featured/control", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+  assert.equal(pageResponse.status, 200);
+  const html = await pageResponse.text();
+  assert.match(html, /Featured Projects Admin/);
+  assert.match(html, /Show this project on the public featured page/);
   const formTokenMatch = html.match(/name="formToken" value="([^"]+)"/);
   assert.ok(formTokenMatch);
 
   const enableForm = new FormData();
   enableForm.set("formToken", formTokenMatch?.[1] ?? "");
+  enableForm.set("projectName", "cloze-reader");
   enableForm.set("featureProject", "1");
   enableForm.set("featureHeadline", "A reading game for practicing comprehension.");
   enableForm.set("featureSortOrder", "2");
 
-  const enableResponse = await fetchRaw(new Request("https://deploy.example/projects/cloze-reader/control/featured", {
+  const enableResponse = await fetchRaw(new Request("https://deploy.example/featured/control", {
     method: "POST",
     headers: {
       "cf-access-jwt-assertion": accessJwt,
@@ -1012,10 +1048,11 @@ test("project control panel can feature and unfeature a project", async (t) => {
 
   const disableForm = new FormData();
   disableForm.set("formToken", formTokenMatch?.[1] ?? "");
+  disableForm.set("projectName", "cloze-reader");
   disableForm.set("featureHeadline", "");
   disableForm.set("featureSortOrder", "100");
 
-  const disableResponse = await fetchRaw(new Request("https://deploy.example/projects/cloze-reader/control/featured", {
+  const disableResponse = await fetchRaw(new Request("https://deploy.example/featured/control", {
     method: "POST",
     headers: {
       "cf-access-jwt-assertion": accessJwt,
@@ -1025,6 +1062,198 @@ test("project control panel can feature and unfeature a project", async (t) => {
   }), env);
   assert.equal(disableResponse.status, 302);
   assert.equal(db.selectFeaturedProject("szweibel/cloze-reader"), null);
+});
+
+test("featured projects admin page rejects signed-in users who are not editors", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu",
+    FEATURED_PROJECT_ADMIN_EMAILS: "editor@cuny.edu"
+  });
+  installAccessFetchMock(t);
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const response = await fetchRaw(new Request("https://deploy.example/featured/control", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+  assert.equal(response.status, 403);
+  const html = await response.text();
+  assert.match(html, /only available to Kale editors/i);
+});
+
+test("featured projects admin page dedupes multiple live slugs for the same repository", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu",
+    FEATURED_PROJECT_ADMIN_EMAILS: "person@cuny.edu"
+  });
+  installAccessFetchMock(t);
+  db.putProject({
+    projectName: "old-cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    description: "Old live slug that should not get its own featured card.",
+    deploymentUrl: "https://old-cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-old",
+    createdAt: "2026-04-03T10:00:00.000Z",
+    updatedAt: "2026-04-03T10:10:00.000Z"
+  });
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    description: "Current live slug that should drive the featured card.",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-new",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+  db.putFeaturedProject({
+    github_repo: "szweibel/cloze-reader",
+    project_name: "cloze-reader",
+    headline: "Current featured headline.",
+    sort_order: 3,
+    created_at: "2026-04-04T10:00:00.000Z",
+    updated_at: "2026-04-04T10:10:00.000Z"
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const response = await fetchRaw(new Request("https://deploy.example/featured/control", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.equal((html.match(/name="projectName" value="cloze-reader"/g) ?? []).length, 1);
+  assert.equal((html.match(/name="projectName" value="old-cloze-reader"/g) ?? []).length, 0);
+  assert.match(html, /Current featured headline\./);
+});
+
+test("admin overview API returns deduped live repositories and pending deletion cleanup for Kale admins", async () => {
+  const { env, db } = createTestContext({
+    KALE_ADMIN_EMAILS: "person@cuny.edu"
+  });
+  db.putProject({
+    projectName: "old-cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    deploymentUrl: "https://old-cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-old",
+    createdAt: "2026-04-03T10:00:00.000Z",
+    updatedAt: "2026-04-03T10:10:00.000Z"
+  });
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    description: "Current live slug.",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-new",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+  db.putFeaturedProject({
+    github_repo: "szweibel/cloze-reader",
+    project_name: "cloze-reader",
+    headline: "Featured current slug.",
+    sort_order: 4,
+    created_at: "2026-04-04T10:00:00.000Z",
+    updated_at: "2026-04-04T10:10:00.000Z"
+  });
+  db.putProjectDeletionBacklog({
+    github_repo: "szweibel/kale-files-smoke-test",
+    project_name: "kale-files-smoke-test",
+    requested_at: "2026-04-04T09:00:00.000Z",
+    updated_at: "2026-04-04T09:15:00.000Z",
+    worker_script_names_json: JSON.stringify(["kale-files-smoke-test"]),
+    database_ids_json: JSON.stringify([]),
+    files_bucket_names_json: JSON.stringify(["files-kale-files-smoke-test"]),
+    cache_namespace_ids_json: JSON.stringify([]),
+    artifact_prefixes_json: JSON.stringify([]),
+    last_error: "Timed out deleting files bucket."
+  });
+
+  const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
+  const response = await fetchApp(
+    "GET",
+    "/api/admin/overview",
+    env,
+    undefined,
+    {
+      authorization: `Bearer ${accessToken}`
+    }
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    projectCount: number;
+    featuredProjectCount: number;
+    deletionBacklogCount: number;
+    projects: Array<{ projectName: string; githubRepo: string; featured: { enabled: boolean; sortOrder: number } }>;
+    deletionBacklogs: Array<{ githubRepo: string; projectName: string; lastError?: string }>;
+  };
+  assert.equal(body.projectCount, 1);
+  assert.equal(body.featuredProjectCount, 1);
+  assert.equal(body.deletionBacklogCount, 1);
+  assert.deepEqual(body.projects.map((project) => project.projectName), ["cloze-reader"]);
+  assert.deepEqual(body.projects.map((project) => project.githubRepo), ["szweibel/cloze-reader"]);
+  assert.equal(body.projects[0]?.featured.enabled, true);
+  assert.equal(body.projects[0]?.featured.sortOrder, 4);
+  assert.equal(body.deletionBacklogs[0]?.githubRepo, "szweibel/kale-files-smoke-test");
+  assert.match(body.deletionBacklogs[0]?.lastError ?? "", /files bucket/i);
+});
+
+test("admin overview API rejects PAT tokens even for allowlisted admins", async () => {
+  const { env, db } = createTestContext({
+    KALE_ADMIN_EMAILS: "person@cuny.edu"
+  });
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+
+  const token = await issueTestMcpPatToken(db, "person@cuny.edu");
+  const response = await fetchApp(
+    "GET",
+    "/api/admin/overview",
+    env,
+    undefined,
+    {
+      authorization: `Bearer ${token}`
+    }
+  );
+
+  assert.equal(response.status, 403);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /require a short-lived MCP OAuth session/i);
 });
 
 test("project deletion API removes the Kale project and its managed resources without touching GitHub", async (t) => {

@@ -25,7 +25,6 @@ import {
   assertProjectDeleteConfirmation,
   type ProjectDeletePayload
 } from "./project-delete";
-import type { FeaturedProjectRecord } from "./lib/control-plane";
 
 type ProjectContext = {
   repositoryFullName: string;
@@ -131,10 +130,6 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
     project: ProjectSecretsAccessContext["project"],
     githubLogin: string
   ) => Promise<ProjectSecretsListPayload>;
-  getFeaturedProject: (
-    env: TEnv,
-    githubRepo: string
-  ) => Promise<FeaturedProjectRecord | null>;
   resolveMcpOauthSecret: (env: TEnv) => string;
 }): Promise<Response> {
   const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
@@ -170,10 +165,9 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
       }), 403);
     }
 
-    const [statusResult, secretsPayload, featuredProject, formToken] = await Promise.all([
+    const [statusResult, secretsPayload, formToken] = await Promise.all([
       input.buildProjectStatusResponse(input.env, input.projectName, { includeSensitive: true }),
       input.buildProjectSecretsListPayload(input.env, authorization.project, authorization.githubLogin),
-      input.getFeaturedProject(input.env, authorization.project.githubRepo),
       createProjectControlFormToken({
         secret: input.resolveMcpOauthSecret(input.env),
         issuer: serviceBaseUrl,
@@ -231,11 +225,6 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
       secrets: {
         count: secretsPayload.count,
         secrets: secretsPayload.secrets
-      },
-      featured: {
-        enabled: Boolean(featuredProject),
-        headline: featuredProject?.headline,
-        sortOrder: featuredProject?.sortOrder ?? 100
       },
       formToken,
       flash
@@ -347,40 +336,6 @@ export async function createProjectControlProjectDeleteResponse<TEnv>(input: {
       buildProjectAdminEntryUrl(serviceBaseUrl, {
         flash: "success",
         message: result.summary
-      })
-  });
-}
-
-export async function createProjectControlFeaturedUpdateResponse<TEnv>(input: {
-  env: TEnv;
-  request: Request;
-  projectName: string;
-  requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
-  resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
-  resolveMcpOauthSecret: (env: TEnv) => string;
-  authorizeProjectSecretsAccess: (
-    env: TEnv,
-    requestUrl: string,
-    identity: AuthenticatedAgentRequestIdentity,
-    projectName: string
-  ) => Promise<ProjectSecretsAuthorization>;
-  updateFeaturedProject: (
-    env: TEnv,
-    authorization: Extract<ProjectSecretsAuthorization, { ok: true }>,
-    input: {
-      enabled: boolean;
-      headline?: string;
-      sortOrder: number;
-    }
-  ) => Promise<{ summary: string }>;
-}): Promise<Response> {
-  return createProjectControlMutationResponse({
-    ...input,
-    mutate: async ({ env, authorization, form }) =>
-      input.updateFeaturedProject(env, authorization, {
-        enabled: form.get("featureProject") === "1",
-        headline: readOptionalProjectControlFormField(form, "featureHeadline"),
-        sortOrder: parseProjectControlSortOrder(readOptionalProjectControlFormField(form, "featureSortOrder"))
       })
   });
 }
@@ -512,29 +467,6 @@ function getRequiredProjectControlFormField(form: FormData, field: string): stri
   }
 
   return value.trim();
-}
-
-function readOptionalProjectControlFormField(form: FormData, field: string): string | undefined {
-  const value = form.get(field);
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function parseProjectControlSortOrder(value?: string): number {
-  if (!value) {
-    return 100;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new HttpError(400, "Featured project order must be a non-negative number.");
-  }
-
-  return parsed;
 }
 
 function htmlResponse(html: string, status = 200): Response {

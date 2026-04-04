@@ -34,6 +34,7 @@ jobs:
       INPUT_SMOKE_BRANCH: ${{ github.event.inputs.branch }}
       KALE_SMOKE_GITHUB_TOKEN: ${{ secrets.KALE_LIFECYCLE_SMOKE_GITHUB_TOKEN }}
       KALE_SMOKE_KALE_TOKEN: ${{ secrets.KALE_LIFECYCLE_SMOKE_KALE_TOKEN }}
+      KALE_SMOKE_TIMEOUT_SECONDS: "1800"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
