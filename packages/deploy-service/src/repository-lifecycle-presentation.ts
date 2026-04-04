@@ -4,6 +4,7 @@ export type RepositoryWorkflowStage =
   | "app_setup"
   | "github_install"
   | "name_conflict"
+  | "cleanup_pending"
   | "awaiting_push"
   | "build_queued"
   | "build_running"
@@ -163,6 +164,14 @@ export function buildRepositorySetupStagePresentationMap(
       userBody: "Project names become part of the public URL. Choose from the suggestions below.",
       agentTitle: "Re-register with a new name",
       agentBody: "Pick an available name from the suggestions and re-register the project."
+    },
+    cleanup_pending: {
+      headline: "Finishing cleanup",
+      summary: "Kale is still deleting the previous project resources for this repo.",
+      userTitle: "Wait for cleanup to finish",
+      userBody: "Kale is still deleting the previous project resources for this repo. Check back in a minute before deploying again.",
+      agentTitle: "Wait, then check again",
+      agentBody: "Deletion cleanup is still in progress for this repository. Wait for it to finish before re-registering or deploying again."
     }
   };
 }
@@ -172,6 +181,7 @@ export function buildRepositoryBannerPresentationMap(): Record<RepositoryWorkflo
     app_setup: { className: "status-config", icon: "\u2699", label: "Setup needed" },
     github_install: { className: "status-pending", icon: "\u25cf", label: "GitHub needed" },
     name_conflict: { className: "status-danger", icon: "\u26a0", label: "Name taken" },
+    cleanup_pending: { className: "status-pending", icon: "\u21bb", label: "Finishing cleanup" },
     awaiting_push: { className: "status-ready", icon: "\u27a4", label: "Ready to deploy" },
     build_queued: { className: "status-pending", icon: "\u25cf", label: "Build queued" },
     build_running: { className: "status-pending", icon: "\u21bb", label: "Building" },
@@ -242,6 +252,7 @@ export function renderLifecycleSteps(currentStage: string): string {
   const stageMap = new Map<string, string>([
     ["app_setup", "github_install"],
     ["github_install", "github_install"],
+    ["cleanup_pending", "github_install"],
     ["awaiting_push", "awaiting_push"],
     ["build_queued", "build_running"],
     ["build_running", "build_running"],

@@ -1,3 +1,5 @@
+import { AwsClient } from "aws4fetch";
+
 import type {
   CloudflareEnvelope,
   D1CreateResult,
@@ -9,6 +11,8 @@ import type {
 type CloudflareClientOptions = {
   accountId: string;
   apiToken: string;
+  r2AccessKeyId?: string;
+  r2SecretAccessKey?: string;
 };
 
 type KvNamespaceResult = {
@@ -20,7 +24,18 @@ type R2BucketResult = {
   name: string;
 };
 
+type CloudflareTokenVerifyResult = {
+  id: string;
+};
+
+type CloudflareTokenVerifyAttempt = {
+  id: string | null;
+  error?: string;
+};
+
 export class CloudflareApiClient {
+  private r2AwsClientPromise: Promise<AwsClient> | null = null;
+
   constructor(private readonly options: CloudflareClientOptions) {}
 
   async findD1DatabaseByName(name: string): Promise<D1CreateResult | undefined> {
@@ -140,6 +155,19 @@ export class CloudflareApiClient {
     await this.rawRequest(`/r2/buckets/${encodeURIComponent(name)}`, {
       method: "DELETE"
     }, [404]);
+  }
+
+  async emptyAndDeleteR2Bucket(name: string): Promise<void> {
+    for (;;) {
+      const keys = await this.listR2ObjectKeys(name);
+      if (keys.length === 0) {
+        break;
+      }
+
+      await Promise.all(keys.map((key) => this.deleteR2Object(name, key)));
+    }
+
+    await this.deleteR2Bucket(name);
   }
 
   async uploadUserWorker(
@@ -291,6 +319,118 @@ export class CloudflareApiClient {
 
     return response;
   }
+
+  private async listR2ObjectKeys(bucketName: string): Promise<string[]> {
+    const client = await this.resolveR2AwsClient();
+    const response = await client.fetch(
+      this.buildR2ObjectUrl(bucketName, "?list-type=2&max-keys=1000"),
+      { method: "GET" }
+    );
+    if (!response.ok) {
+      throw new Error(`Cloudflare R2 object listing failed with ${response.status}.`);
+    }
+
+    return extractXmlValues(await response.text(), "Key");
+  }
+
+  private async deleteR2Object(bucketName: string, key: string): Promise<void> {
+    const client = await this.resolveR2AwsClient();
+    const response = await client.fetch(this.buildR2ObjectUrl(bucketName, `/${encodeR2ObjectKey(key)}`), {
+      method: "DELETE"
+    });
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Cloudflare R2 object deletion failed with ${response.status}.`);
+    }
+  }
+
+  private buildR2ObjectUrl(bucketName: string, suffix: string): string {
+    const normalizedSuffix = suffix.startsWith("?") || suffix.startsWith("/")
+      ? suffix
+      : `/${suffix}`;
+    return `https://${this.options.accountId}.r2.cloudflarestorage.com/${encodeURIComponent(bucketName)}${normalizedSuffix}`;
+  }
+
+  private async resolveR2AwsClient(): Promise<AwsClient> {
+    if (!this.r2AwsClientPromise) {
+      this.r2AwsClientPromise = this.buildR2AwsClient();
+    }
+
+    return await this.r2AwsClientPromise;
+  }
+
+  private async buildR2AwsClient(): Promise<AwsClient> {
+    if (this.options.r2AccessKeyId && this.options.r2SecretAccessKey) {
+      return new AwsClient({
+        service: "s3",
+        region: "auto",
+        accessKeyId: this.options.r2AccessKeyId,
+        secretAccessKey: this.options.r2SecretAccessKey
+      });
+    }
+
+    const accessKeyId = await this.resolveR2AccessKeyIdFromApiToken();
+
+    return new AwsClient({
+      service: "s3",
+      region: "auto",
+      accessKeyId,
+      secretAccessKey: await sha256Hex(this.options.apiToken)
+    });
+  }
+
+  private async resolveR2AccessKeyIdFromApiToken(): Promise<string> {
+    const userTokenResult = await this.verifyCloudflareToken(
+      "https://api.cloudflare.com/client/v4/user/tokens/verify",
+      "user"
+    );
+    if (userTokenResult.id) {
+      return userTokenResult.id;
+    }
+
+    const accountTokenResult = await this.verifyCloudflareToken(
+      `https://api.cloudflare.com/client/v4/accounts/${this.options.accountId}/tokens/verify`,
+      "account"
+    );
+    if (accountTokenResult.id) {
+      return accountTokenResult.id;
+    }
+
+    throw new Error(
+      `Cloudflare token verification failed. ${[
+        userTokenResult.error ?? "user token verification did not return an active token id",
+        accountTokenResult.error ?? "account token verification did not return an active token id"
+      ].join("; ")}`
+    );
+  }
+
+  private async verifyCloudflareToken(
+    url: string,
+    tokenKind: "user" | "account"
+  ): Promise<CloudflareTokenVerifyAttempt> {
+    const tokenResponse = await fetch(url, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${this.options.apiToken}`
+      }
+    });
+    if (!tokenResponse.ok) {
+      return {
+        id: null,
+        error: `Cloudflare ${tokenKind} token verification failed with ${tokenResponse.status}`
+      };
+    }
+
+    const envelope = await tokenResponse.json<CloudflareEnvelope<CloudflareTokenVerifyResult>>();
+    if (!envelope.success || !envelope.result?.id) {
+      return {
+        id: null,
+        error: envelope.errors.map((error) => error.message).join("; ")
+          || `Cloudflare ${tokenKind} token verification did not return an active token id`
+      };
+    }
+
+    return { id: envelope.result.id };
+  }
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -310,4 +450,27 @@ function workerModuleContentType(fileName: string, contentType: string): string 
   }
 
   return contentType || "application/octet-stream";
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function extractXmlValues(xml: string, tagName: string): string[] {
+  const pattern = new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`, "g");
+  return [...xml.matchAll(pattern)].map((match) => decodeXmlText(match[1] ?? ""));
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&amp;/gu, "&")
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, "\"")
+    .replace(/&#39;/gu, "'");
+}
+
+function encodeR2ObjectKey(key: string): string {
+  return key.split("/").map((segment) => encodeURIComponent(segment)).join("/");
 }

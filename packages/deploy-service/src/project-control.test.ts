@@ -12,6 +12,7 @@ import {
   jsonResponse
 } from "./test-support";
 import { encryptStoredText } from "./lib/sealed-data";
+import { resumePendingProjectDeletionBacklogs } from "./project-delete";
 
 test("github user auth start redirects to GitHub with signed repository context", async (t) => {
   const { env } = createTestContext({
@@ -893,7 +894,9 @@ test("project deletion API removes the Kale project and its managed resources wi
   const { env, db, archive } = createTestContext({
     CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
     CLOUDFLARE_ACCESS_AUD: "test-access-aud",
-    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu",
+    CLOUDFLARE_R2_ACCESS_KEY_ID: "r2-access-key",
+    CLOUDFLARE_R2_SECRET_ACCESS_KEY: "r2-secret-key"
   });
   db.putProject({
     projectName: "cail-assets-build-test",
@@ -1064,6 +1067,22 @@ test("project deletion API removes the Kale project and its managed resources wi
       });
     }
 
+    if (url.origin === "https://account-123.r2.cloudflarestorage.com"
+      && url.pathname === "/files-cail-assets-build-test"
+      && url.searchParams.get("list-type") === "2") {
+      requests.push(`${request.method} ${url.pathname}${url.search}`);
+      return new Response(
+        "<ListBucketResult><Name>files-cail-assets-build-test</Name><KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>",
+        {
+          headers: { "content-type": "application/xml" }
+        }
+      );
+    }
+
+    if (url.origin === "https://api.cloudflare.com" && url.pathname === "/client/v4/user/tokens/verify") {
+      throw new Error("Delete flow should not verify the Cloudflare API token when explicit R2 credentials are configured.");
+    }
+
     if (url.origin === "https://api.cloudflare.com") {
       requests.push(`${request.method} ${url.pathname}`);
       return jsonResponse({ success: true, errors: [], result: {} });
@@ -1128,6 +1147,7 @@ test("project deletion API removes the Kale project and its managed resources wi
   assert.equal(archive.readText("deployments/cail-assets-build-test-old/dep-old/manifest.json"), null);
   assert.equal(archive.readText("deployments/cail-assets-build-test-old/dep-old/assets/index.html"), null);
   assert.deepEqual([...requests].sort(), [
+    "GET /files-cail-assets-build-test?list-type=2&max-keys=1000",
     "DELETE /client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/cail-assets-build-test",
     "DELETE /client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/cail-assets-build-test-old",
     "DELETE /client/v4/accounts/account-123/d1/database/db-123",
@@ -1136,7 +1156,7 @@ test("project deletion API removes the Kale project and its managed resources wi
   ].sort());
 });
 
-test("project deletion unpublishes the site before failing when external cleanup cannot finish", async (t) => {
+test("project deletion keeps retryable cleanup in the backlog after unpublishing the site", async (t) => {
   const { env, db } = createTestContext({
     CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
     CLOUDFLARE_ACCESS_AUD: "test-access-aud",
@@ -1168,6 +1188,7 @@ test("project deletion unpublishes the site before failing when external cleanup
   });
 
   const originalFetch = globalThis.fetch;
+  let allowDatabaseDelete = false;
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request ? input : new Request(input, init);
     const url = new URL(request.url);
@@ -1209,6 +1230,9 @@ test("project deletion unpublishes the site before failing when external cleanup
     }
 
     if (url.origin === "https://api.cloudflare.com" && url.pathname.endsWith("/d1/database/db-fail")) {
+      if (allowDatabaseDelete) {
+        return jsonResponse({ success: true, errors: [], result: {} });
+      }
       return new Response(JSON.stringify({ success: false, errors: [{ code: 1000, message: "boom" }] }), { status: 500 });
     }
 
@@ -1230,14 +1254,29 @@ test("project deletion unpublishes the site before failing when external cleanup
     }
   );
 
-  assert.equal(response.status, 502);
-  const body = await response.json() as { error: string };
-  assert.match(body.error, /unpublished delete-failure-smoke-test/i);
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    summary: string;
+    cleanupPending?: {
+      databases: number;
+      summary: string;
+    };
+  };
+  assert.match(body.summary, /keep retrying/i);
+  assert.equal(body.cleanupPending?.databases, 1);
 
   const storedProject = db.selectProject("delete-failure-smoke-test") as {
     latest_deployment_id: string | null;
   } | null;
   assert.equal(storedProject?.latest_deployment_id, null);
+  assert.ok(db.selectProjectDeletionBacklog("szweibel/delete-failure-smoke-test"));
+
+  allowDatabaseDelete = true;
+  await resumePendingProjectDeletionBacklogs(env, {
+    resolveRequiredCloudflareApiToken: (deleteEnv) => deleteEnv.CLOUDFLARE_API_TOKEN ?? ""
+  });
+  assert.equal(db.selectProject("delete-failure-smoke-test"), null);
+  assert.equal(db.selectProjectDeletionBacklog("szweibel/delete-failure-smoke-test"), null);
 });
 
 test("project settings delete form requires typed confirmation and redirects back to the lookup page after success", async (t) => {

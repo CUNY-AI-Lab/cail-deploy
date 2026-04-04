@@ -144,6 +144,72 @@ test("CloudflareApiClient paginates R2 bucket lookup", async (t: TestContext) =>
   assert.equal(bucket?.name, "wanted-bucket");
 });
 
+test("CloudflareApiClient falls back to account token verification for R2 object cleanup", async (t: TestContext) => {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+    requests.push(`${request.method} ${url.origin}${url.pathname}${url.search}`);
+
+    if (url.origin === "https://api.cloudflare.com" && url.pathname === "/client/v4/user/tokens/verify") {
+      return new Response(JSON.stringify({ success: false, errors: [{ code: 1001, message: "unauthorized" }] }), {
+        status: 401,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    if (url.origin === "https://api.cloudflare.com"
+      && url.pathname === "/client/v4/accounts/account-123/tokens/verify") {
+      return new Response(JSON.stringify({
+        success: true,
+        errors: [],
+        result: { id: "account-token-id-123" }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    if (url.origin === "https://account-123.r2.cloudflarestorage.com"
+      && url.pathname === "/files-bucket"
+      && url.searchParams.get("list-type") === "2") {
+      assert.match(request.headers.get("authorization") ?? "", /Credential=account-token-id-123\//);
+      return new Response(
+        "<ListBucketResult><Name>files-bucket</Name><KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>",
+        { status: 200, headers: { "content-type": "application/xml" } }
+      );
+    }
+
+    if (url.origin === "https://api.cloudflare.com"
+      && url.pathname === "/client/v4/accounts/account-123/r2/buckets/files-bucket") {
+      return new Response(JSON.stringify({ success: true, errors: [], result: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new CloudflareApiClient({
+    accountId: "account-123",
+    apiToken: "token-123"
+  });
+  await client.emptyAndDeleteR2Bucket("files-bucket");
+
+  assert.deepEqual(requests, [
+    "GET https://api.cloudflare.com/client/v4/user/tokens/verify",
+    "GET https://api.cloudflare.com/client/v4/accounts/account-123/tokens/verify",
+    "GET https://account-123.r2.cloudflarestorage.com/files-bucket?list-type=2&max-keys=1000",
+    "DELETE https://api.cloudflare.com/client/v4/accounts/account-123/r2/buckets/files-bucket"
+  ]);
+});
+
 test("repository status returns a repo-first lifecycle summary", async () => {
   const { env, db } = createTestContext({
     GITHUB_APP_ID: undefined,
@@ -180,6 +246,53 @@ test("repository status returns a repo-first lifecycle summary", async () => {
   assert.equal(body.nextAction, "view_live_project");
   assert.match(body.summary, /site is live/i);
   assert.equal(body.deploymentUrl, "https://cail-deploy-smoke-test.cuny.qzz.io");
+});
+
+test("project registration pauses while repository deletion cleanup is still pending", async () => {
+  const { env, db } = createTestContext({
+    GITHUB_APP_ID: undefined,
+    GITHUB_APP_PRIVATE_KEY: undefined,
+    GITHUB_APP_SLUG: undefined
+  });
+
+  db.putProject({
+    projectName: "cail-deploy-smoke-test",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cail-deploy-smoke-test",
+    deploymentUrl: "https://cail-deploy-smoke-test.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: undefined,
+    createdAt: "2026-03-26T22:40:54.747Z",
+    updatedAt: "2026-03-26T22:41:04.957Z"
+  });
+  db.putProjectDeletionBacklog({
+    github_repo: "szweibel/cail-deploy-smoke-test",
+    project_name: "cail-deploy-smoke-test",
+    requested_at: "2026-04-04T10:00:00.000Z",
+    updated_at: "2026-04-04T10:00:10.000Z",
+    worker_script_names_json: JSON.stringify(["cail-deploy-smoke-test"]),
+    database_ids_json: JSON.stringify([]),
+    files_bucket_names_json: JSON.stringify([]),
+    cache_namespace_ids_json: JSON.stringify([]),
+    artifact_prefixes_json: JSON.stringify([]),
+    last_error: "worker_script cail-deploy-smoke-test: boom"
+  });
+
+  const response = await fetchApp("POST", "/api/projects/register", env, {
+    repositoryFullName: "szweibel/cail-deploy-smoke-test"
+  });
+  assert.equal(response.status, 409);
+
+  const body = await response.json() as {
+    ok: boolean;
+    workflowStage: string;
+    nextAction: string;
+    summary: string;
+  };
+  assert.equal(body.ok, false);
+  assert.equal(body.workflowStage, "cleanup_pending");
+  assert.equal(body.nextAction, "wait_for_delete_cleanup");
+  assert.match(body.summary, /finishing cleanup/i);
 });
 
 test("project registration returns a repo-aware guided install URL when the app is configured", async (t: TestContext) => {

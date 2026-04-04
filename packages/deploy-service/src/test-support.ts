@@ -43,6 +43,8 @@ export type TestEnv = {
   BUILD_QUEUE: Queue<BuildRunnerJobRequest>;
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_API_TOKEN?: string;
+  CLOUDFLARE_R2_ACCESS_KEY_ID?: string;
+  CLOUDFLARE_R2_SECRET_ACCESS_KEY?: string;
   CLOUDFLARE_ACCESS_AUD?: string;
   CLOUDFLARE_ACCESS_ALLOWED_EMAILS?: string;
   CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS?: string;
@@ -445,6 +447,7 @@ export class FakeD1Database {
   private readonly mcpTokens = new Map<string, Record<string, unknown>>();
   private readonly projectSecrets = new Map<string, Record<string, unknown>>();
   private readonly projectDomains = new Map<string, Record<string, unknown>>();
+  private readonly projectDeletionBacklogs = new Map<string, Record<string, unknown>>();
   private readonly usedOauthGrants = new Set<string>();
   private readonly usedOauthRefreshTokens = new Set<string>();
 
@@ -525,6 +528,21 @@ export class FakeD1Database {
     updated_at: string;
   }): void {
     this.projectDomains.set(row.domain_label, row);
+  }
+
+  putProjectDeletionBacklog(row: {
+    github_repo: string;
+    project_name: string;
+    requested_at: string;
+    updated_at: string;
+    worker_script_names_json: string;
+    database_ids_json: string;
+    files_bucket_names_json: string;
+    cache_namespace_ids_json: string;
+    artifact_prefixes_json: string;
+    last_error: string | null;
+  }): void {
+    this.projectDeletionBacklogs.set(row.github_repo, row);
   }
 
   upsertProjectFromParams(params: unknown[]): void {
@@ -617,10 +635,20 @@ export class FakeD1Database {
     return this.projectSecrets.get(`${githubRepo}:${secretName}`) ?? null;
   }
 
+  selectProjectDeletionBacklog(githubRepo: string): Record<string, unknown> | null {
+    return this.projectDeletionBacklogs.get(githubRepo) ?? null;
+  }
+
   listProjectSecrets(githubRepo: string): Record<string, unknown>[] {
     return Array.from(this.projectSecrets.values())
       .filter((secret) => secret.github_repo === githubRepo)
       .sort((left, right) => String(left.secret_name).localeCompare(String(right.secret_name)));
+  }
+
+  listProjectDeletionBacklogs(limit: number): Record<string, unknown>[] {
+    return Array.from(this.projectDeletionBacklogs.values())
+      .sort((left, right) => String(left.updated_at).localeCompare(String(right.updated_at)))
+      .slice(0, limit);
   }
 
   upsertGitHubUserAuthFromParams(params: unknown[]): void {
@@ -663,6 +691,22 @@ export class FakeD1Database {
       is_primary: Number(params[3]),
       created_at: existing?.created_at ? String(existing.created_at) : String(params[4]),
       updated_at: String(params[5])
+    });
+  }
+
+  upsertProjectDeletionBacklogFromParams(params: unknown[]): void {
+    const existing = this.projectDeletionBacklogs.get(String(params[0]));
+    this.putProjectDeletionBacklog({
+      github_repo: String(params[0]),
+      project_name: String(params[1]),
+      requested_at: existing?.requested_at ? String(existing.requested_at) : String(params[2]),
+      updated_at: String(params[3]),
+      worker_script_names_json: String(params[4]),
+      database_ids_json: String(params[5]),
+      files_bucket_names_json: String(params[6]),
+      cache_namespace_ids_json: String(params[7]),
+      artifact_prefixes_json: String(params[8]),
+      last_error: nullableString(params[9])
     });
   }
 
@@ -772,6 +816,10 @@ export class FakeD1Database {
 
   deleteProjectPolicy(githubRepo: string): void {
     this.projectPolicies.delete(githubRepo);
+  }
+
+  deleteProjectDeletionBacklog(githubRepo: string): void {
+    this.projectDeletionBacklogs.delete(githubRepo);
   }
 
   updateDeploymentArchiveState(
@@ -1175,6 +1223,10 @@ class FakePreparedStatement {
       return this.db.selectProjectPolicy(String(this.params[0])) as T | null;
     }
 
+    if (normalized.includes("from project_deletion_backlogs") && normalized.includes("where github_repo = ?")) {
+      return this.db.selectProjectDeletionBacklog(String(this.params[0])) as T | null;
+    }
+
     if (normalized.includes("from build_jobs") && normalized.includes("where job_id = ?")) {
       return this.db.selectBuildJob(String(this.params[0])) as T | null;
     }
@@ -1291,6 +1343,10 @@ class FakePreparedStatement {
       return { results: this.db.listProjectsForRepository(String(this.params[0])) as T[] };
     }
 
+    if (normalized.includes("from project_deletion_backlogs") && normalized.includes("order by updated_at asc") && normalized.includes("limit ?")) {
+      return { results: this.db.listProjectDeletionBacklogs(Number(this.params[0])) as T[] };
+    }
+
     return { results: [] };
   }
 
@@ -1335,6 +1391,10 @@ class FakePreparedStatement {
 
     if (normalized.includes("insert into project_domains")) {
       this.db.upsertProjectDomainFromParams(this.params);
+    }
+
+    if (normalized.includes("insert into project_deletion_backlogs")) {
+      this.db.upsertProjectDeletionBacklogFromParams(this.params);
     }
 
     if (normalized.includes("insert into mcp_tokens")) {
@@ -1403,6 +1463,10 @@ class FakePreparedStatement {
 
     if (normalized.includes("delete from project_policies") && normalized.includes("where github_repo = ?")) {
       this.db.deleteProjectPolicy(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from project_deletion_backlogs") && normalized.includes("where github_repo = ?")) {
+      this.db.deleteProjectDeletionBacklog(String(this.params[0]));
     }
 
     if (normalized.includes("update deployments") && normalized.includes("set archive_kind = ?, manifest_key = ?") && normalized.includes("where deployment_id = ?")) {

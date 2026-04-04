@@ -67,6 +67,19 @@ export type ProjectDomainRecord = {
   updatedAt: string;
 };
 
+export type ProjectDeletionBacklogRecord = {
+  githubRepo: string;
+  projectName: string;
+  requestedAt: string;
+  updatedAt: string;
+  workerScriptNames: string[];
+  databaseIds: string[];
+  filesBucketNames: string[];
+  cacheNamespaceIds: string[];
+  artifactPrefixes: string[];
+  lastError?: string;
+};
+
 export const DEFAULT_PROJECT_POLICY: ProjectPolicySettings = Object.freeze({
   aiEnabled: false,
   vectorizeEnabled: false,
@@ -191,6 +204,19 @@ type ProjectDomainRow = {
   is_primary: number;
   created_at: string;
   updated_at: string;
+};
+
+type ProjectDeletionBacklogRow = {
+  github_repo: string;
+  project_name: string;
+  requested_at: string;
+  updated_at: string;
+  worker_script_names_json: string;
+  database_ids_json: string;
+  files_bucket_names_json: string;
+  cache_namespace_ids_json: string;
+  artifact_prefixes_json: string;
+  last_error: string | null;
 };
 
 export async function listProjects(db: D1Database): Promise<ProjectRecord[]> {
@@ -1174,6 +1200,105 @@ export async function deleteRepositoryControlPlaneState(
   `).bind(githubRepo).run();
 }
 
+export async function getProjectDeletionBacklog(
+  db: D1Database,
+  githubRepo: string
+): Promise<ProjectDeletionBacklogRecord | null> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT
+      github_repo,
+      project_name,
+      requested_at,
+      updated_at,
+      worker_script_names_json,
+      database_ids_json,
+      files_bucket_names_json,
+      cache_namespace_ids_json,
+      artifact_prefixes_json,
+      last_error
+    FROM project_deletion_backlogs
+    WHERE github_repo = ?
+  `).bind(githubRepo).first<ProjectDeletionBacklogRow>();
+
+  return row ? toProjectDeletionBacklogRecord(row) : null;
+}
+
+export async function listProjectDeletionBacklogs(
+  db: D1Database,
+  limit = 10
+): Promise<ProjectDeletionBacklogRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      github_repo,
+      project_name,
+      requested_at,
+      updated_at,
+      worker_script_names_json,
+      database_ids_json,
+      files_bucket_names_json,
+      cache_namespace_ids_json,
+      artifact_prefixes_json,
+      last_error
+    FROM project_deletion_backlogs
+    ORDER BY updated_at ASC
+    LIMIT ?
+  `).bind(limit).all<ProjectDeletionBacklogRow>();
+
+  return result.results.map(toProjectDeletionBacklogRecord);
+}
+
+export async function putProjectDeletionBacklog(
+  db: D1Database,
+  backlog: ProjectDeletionBacklogRecord
+): Promise<void> {
+  await db.prepare(`
+    INSERT INTO project_deletion_backlogs (
+      github_repo,
+      project_name,
+      requested_at,
+      updated_at,
+      worker_script_names_json,
+      database_ids_json,
+      files_bucket_names_json,
+      cache_namespace_ids_json,
+      artifact_prefixes_json,
+      last_error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(github_repo) DO UPDATE SET
+      project_name = excluded.project_name,
+      updated_at = excluded.updated_at,
+      worker_script_names_json = excluded.worker_script_names_json,
+      database_ids_json = excluded.database_ids_json,
+      files_bucket_names_json = excluded.files_bucket_names_json,
+      cache_namespace_ids_json = excluded.cache_namespace_ids_json,
+      artifact_prefixes_json = excluded.artifact_prefixes_json,
+      last_error = excluded.last_error
+  `).bind(
+    backlog.githubRepo,
+    backlog.projectName,
+    backlog.requestedAt,
+    backlog.updatedAt,
+    JSON.stringify(backlog.workerScriptNames),
+    JSON.stringify(backlog.databaseIds),
+    JSON.stringify(backlog.filesBucketNames),
+    JSON.stringify(backlog.cacheNamespaceIds),
+    JSON.stringify(backlog.artifactPrefixes),
+    backlog.lastError ?? null
+  ).run();
+}
+
+export async function deleteProjectDeletionBacklog(
+  db: D1Database,
+  githubRepo: string
+): Promise<void> {
+  await db.prepare(`
+    DELETE FROM project_deletion_backlogs
+    WHERE github_repo = ?
+  `).bind(githubRepo).run();
+}
+
 export async function getBuildJob(db: D1Database, jobId: string): Promise<BuildJobRecord | null> {
   const session = db.withSession("first-primary");
   const row = await session.prepare(`
@@ -1448,6 +1573,21 @@ function toProjectDomainRecord(row: ProjectDomainRow): ProjectDomainRecord {
   };
 }
 
+function toProjectDeletionBacklogRecord(row: ProjectDeletionBacklogRow): ProjectDeletionBacklogRecord {
+  return {
+    githubRepo: row.github_repo,
+    projectName: row.project_name,
+    requestedAt: row.requested_at,
+    updatedAt: row.updated_at,
+    workerScriptNames: parseJsonArray(row.worker_script_names_json),
+    databaseIds: parseJsonArray(row.database_ids_json),
+    filesBucketNames: parseJsonArray(row.files_bucket_names_json),
+    cacheNamespaceIds: parseJsonArray(row.cache_namespace_ids_json),
+    artifactPrefixes: parseJsonArray(row.artifact_prefixes_json),
+    lastError: row.last_error ?? undefined
+  };
+}
+
 function toGitHubUserAuthRecord(row: GitHubUserAuthRow): GitHubUserAuthRecord {
   return {
     accessSubject: row.access_subject,
@@ -1504,6 +1644,14 @@ function toProjectPolicyRecord(row: ProjectPolicyRow): ProjectPolicyRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+function parseJsonArray(value: string): string[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return parsed.map((entry) => String(entry));
 }
 
 function toProjectSecretRecord(row: ProjectSecretRow): ProjectSecretRecord {

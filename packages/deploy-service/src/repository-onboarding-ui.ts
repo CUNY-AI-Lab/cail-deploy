@@ -24,7 +24,7 @@ export type RepositoryLifecycleViewModel = {
   repositoryStatusUrl: string;
   statusUrl: string;
   validateUrl: string;
-  workflowStage: "app_setup" | "github_install" | "awaiting_push" | "build_queued" | "build_running" | "build_failed" | "live" | "name_conflict";
+  workflowStage: "app_setup" | "github_install" | "awaiting_push" | "build_queued" | "build_running" | "build_failed" | "live" | "name_conflict" | "cleanup_pending";
   summary: string;
   buildJobStatusUrl?: string;
   deploymentUrl?: string;
@@ -586,6 +586,7 @@ export function renderGitHubSetupPage(input: {
         github_install: { className: "status-pending", icon: "&#9719;", label: "GitHub needed" },
         awaiting_push: { className: "status-ready", icon: "&#10148;", label: "Ready to deploy" },
         name_conflict: { className: "status-danger", icon: "&#9888;", label: "Name taken" },
+        cleanup_pending: { className: "status-pending", icon: "&#8635;", label: "Finishing cleanup" },
         app_setup: { className: "status-config", icon: "&#9881;", label: "Setup needed" }
       }[input.lifecycle.workflowStage]
     : undefined;

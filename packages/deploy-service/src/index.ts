@@ -70,7 +70,8 @@ import {
 } from "./project-secrets";
 import {
   assertProjectDeleteConfirmation,
-  deleteProjectFromKale
+  deleteProjectFromKale,
+  resumePendingProjectDeletionBacklogs
 } from "./project-delete";
 import {
   canAutoPromoteToSharedStatic,
@@ -100,6 +101,7 @@ import {
   getDeployment,
   getLatestBuildJobForProject,
   getLatestProjectForRepository,
+  getProjectDeletionBacklog,
   getPreferredProjectNameForRepository,
   getProjectDomain,
   getProject,
@@ -185,6 +187,8 @@ type Env = {
   FAILED_ARTIFACT_RETENTION_DAYS?: string;
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_ACCOUNT_ID: string;
+  CLOUDFLARE_R2_ACCESS_KEY_ID?: string;
+  CLOUDFLARE_R2_SECRET_ACCESS_KEY?: string;
   CLOUDFLARE_ACCESS_AUD?: string;
   CLOUDFLARE_ACCESS_ALLOWED_EMAILS?: string;
   CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS?: string;
@@ -346,6 +350,15 @@ deployServiceApp.use("/mcp/.well-known/*", cors({
   allowMethods: ["GET", "OPTIONS"],
   allowHeaders: ["accept", "mcp-protocol-version"]
 }));
+
+deployServiceApp.use("*", async (c, next) => {
+  c.executionCtx.waitUntil(
+    resumePendingProjectDeletionBacklogs(c.env, PROJECT_DELETE_CONFIG, { limit: 1 }).catch((error) => {
+      console.error("Pending project deletion cleanup failed.", { error });
+    })
+  );
+  await next();
+});
 
 deployServiceApp.get("/healthz", (c) => c.json({ ok: true }));
 
@@ -1814,7 +1827,9 @@ deployServiceApp.delete("/api/projects/:projectName", async (c) => {
     }
 
     assertProjectDeleteConfirmation(c.req.param("projectName"), body.confirmProjectName);
-    return deleteProjectFromKale(c.env, PROJECT_DELETE_CONFIG, authorization);
+    return deleteProjectFromKale(c.env, PROJECT_DELETE_CONFIG, authorization, {
+      scheduleBackgroundCleanup: (task) => c.executionCtx.waitUntil(task)
+    });
   });
 });
 
@@ -1871,7 +1886,9 @@ deployServiceApp.post("/projects/:projectName/control/delete", async (c) => {
     projectName: c.req.param("projectName"),
     ...PROJECT_CONTROL_ROUTE_DEPENDENCIES,
     deleteProject: (env, authorization) =>
-      deleteProjectFromKale(env, PROJECT_DELETE_CONFIG, authorization)
+      deleteProjectFromKale(env, PROJECT_DELETE_CONFIG, authorization, {
+        scheduleBackgroundCleanup: (task) => c.executionCtx.waitUntil(task)
+      })
   });
 });
 
@@ -1948,7 +1965,7 @@ deployServiceApp.all("/mcp", async (c) => {
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });
-    const server = createDeployServiceMcpServer(c.env, c.req.raw.url, identity);
+    const server = createDeployServiceMcpServer(c.env, c.req.raw.url, identity, c.executionCtx);
     await server.connect(transport);
 
     const response = await transport.handleRequest(c.req.raw);
@@ -4742,7 +4759,8 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
 function createDeployServiceMcpServer(
   env: Env,
   requestUrl: string,
-  identity: AgentRequestIdentity
+  identity: AgentRequestIdentity,
+  executionContext: ExecutionContext
 ) {
   const serviceBaseUrl = resolveServiceBaseUrl(env, requestUrl);
   return createDeployServiceMcpSurface({
@@ -4781,7 +4799,9 @@ function createDeployServiceMcpServer(
     deleteProject: async (projectName, confirmProjectName) =>
       runProjectAdminMcpAction(env, requestUrl, identity, projectName, async (authorization) => {
         assertProjectDeleteConfirmation(projectName, confirmProjectName);
-        return deleteProjectFromKale(env, PROJECT_DELETE_CONFIG, authorization);
+        return deleteProjectFromKale(env, PROJECT_DELETE_CONFIG, authorization, {
+          scheduleBackgroundCleanup: (task) => executionContext.waitUntil(task)
+        });
       })
   });
 }
@@ -4982,6 +5002,41 @@ async function buildRepositoryLifecycleState(
   const guidedInstallUrl = appSlug
     ? buildGuidedGitHubInstallUrl(serviceBaseUrl, repositoryFullName, projectName)
     : undefined;
+  const deletionBacklog = await getProjectDeletionBacklog(env.CONTROL_PLANE_DB, repositoryFullName);
+
+  if (deletionBacklog) {
+    return {
+      httpStatus: 409,
+      payload: {
+        ok: false,
+        error: "Kale is still finishing cleanup for the last delete request on this repository.",
+        repository: {
+          ownerLogin: repository.owner,
+          name: repository.repo,
+          fullName: repositoryFullName,
+          htmlUrl: `https://github.com/${repository.owner}/${repository.repo}`
+        },
+        projectName,
+        projectUrl,
+        projectAvailable: false,
+        existingRepositoryFullName: repositoryFullName,
+        suggestedProjectUrl: projectUrl,
+        installStatus: !appSlug ? "app_unconfigured" : "installed",
+        installUrl: appSlug ? githubAppInstallUrl(appSlug) : undefined,
+        guidedInstallUrl,
+        setupUrl: `${serviceBaseUrl}/github/setup`,
+        statusUrl: `${serviceBaseUrl}/api/projects/${projectName}/status`,
+        repositoryStatusUrl: `${serviceBaseUrl}/api/repositories/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/status`,
+        validateUrl: `${serviceBaseUrl}/api/validate`,
+        nextAction: "wait_for_delete_cleanup",
+        summary: `Kale is still finishing cleanup for ${deletionBacklog.projectName}. Wait a minute, then check again before re-registering this repository.`,
+        workflowStage: "cleanup_pending",
+        installed: Boolean(appSlug),
+        latestStatus: "not_deployed",
+        updatedAt: deletionBacklog.updatedAt
+      }
+    };
+  }
 
   let installation: GitHubRepositoryInstallation | null = null;
   if (appSlug && resolveGitHubAppId(env) && resolveConfiguredEnvValue(env.GITHUB_APP_PRIVATE_KEY)) {
@@ -5516,6 +5571,7 @@ function resolveRepositoryWorkflowState(input: {
     | "configure_github_app"
     | "install_github_app"
     | "choose_different_project_name"
+    | "wait_for_delete_cleanup"
     | "push_to_default_branch"
     | "poll_status"
     | "inspect_failure"
