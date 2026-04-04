@@ -80,6 +80,22 @@ export type ProjectDeletionBacklogRecord = {
   lastError?: string;
 };
 
+export type FeaturedProjectRecord = {
+  githubRepo: string;
+  projectName: string;
+  headline?: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FeaturedProjectDisplayRecord = FeaturedProjectRecord & {
+  ownerLogin: string;
+  deploymentUrl: string;
+  description?: string;
+  runtimeLane: ProjectRecord["runtimeLane"];
+};
+
 export const DEFAULT_PROJECT_POLICY: ProjectPolicySettings = Object.freeze({
   aiEnabled: false,
   vectorizeEnabled: false,
@@ -219,6 +235,22 @@ type ProjectDeletionBacklogRow = {
   last_error: string | null;
 };
 
+type FeaturedProjectRow = {
+  github_repo: string;
+  project_name: string;
+  headline: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type FeaturedProjectDisplayRow = FeaturedProjectRow & {
+  owner_login: string;
+  deployment_url: string;
+  description: string | null;
+  runtime_lane: "dedicated_worker" | "shared_static" | "shared_app" | null;
+};
+
 export async function listProjects(db: D1Database): Promise<ProjectRecord[]> {
   const session = db.withSession("first-primary");
   const result = await session.prepare(`
@@ -243,6 +275,56 @@ export async function listProjects(db: D1Database): Promise<ProjectRecord[]> {
   `).all<ProjectRow>();
 
   return result.results.map(toProjectRecord);
+}
+
+export async function listFeaturedProjects(db: D1Database): Promise<FeaturedProjectDisplayRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      fp.github_repo,
+      p.project_name,
+      fp.headline,
+      fp.sort_order,
+      fp.created_at,
+      fp.updated_at,
+      p.owner_login,
+      p.deployment_url,
+      p.description,
+      p.runtime_lane
+    FROM featured_projects fp
+    JOIN projects p
+      ON p.github_repo = fp.github_repo
+     AND p.latest_deployment_id IS NOT NULL
+     AND p.updated_at = (
+       SELECT MAX(p2.updated_at)
+       FROM projects p2
+       WHERE p2.github_repo = fp.github_repo
+         AND p2.latest_deployment_id IS NOT NULL
+     )
+    ORDER BY fp.sort_order ASC, fp.updated_at DESC
+  `).all<FeaturedProjectDisplayRow>();
+
+  return result.results.map(toFeaturedProjectDisplayRecord);
+}
+
+export async function getFeaturedProject(
+  db: D1Database,
+  githubRepo: string
+): Promise<FeaturedProjectRecord | null> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT
+      github_repo,
+      project_name,
+      headline,
+      sort_order,
+      created_at,
+      updated_at
+    FROM featured_projects
+    WHERE github_repo = ?
+  `).bind(githubRepo).first<FeaturedProjectRow>();
+
+  return row ? toFeaturedProjectRecord(row) : null;
 }
 
 export async function getProject(db: D1Database, projectName: string): Promise<ProjectRecord | null> {
@@ -1195,6 +1277,11 @@ export async function deleteRepositoryControlPlaneState(
   `).bind(githubRepo).run();
 
   await db.prepare(`
+    DELETE FROM featured_projects
+    WHERE github_repo = ?
+  `).bind(githubRepo).run();
+
+  await db.prepare(`
     DELETE FROM projects
     WHERE github_repo = ?
   `).bind(githubRepo).run();
@@ -1295,6 +1382,45 @@ export async function deleteProjectDeletionBacklog(
 ): Promise<void> {
   await db.prepare(`
     DELETE FROM project_deletion_backlogs
+    WHERE github_repo = ?
+  `).bind(githubRepo).run();
+}
+
+export async function putFeaturedProject(
+  db: D1Database,
+  feature: FeaturedProjectRecord
+): Promise<void> {
+  await db.prepare(`
+    INSERT INTO featured_projects (
+      github_repo,
+      project_name,
+      headline,
+      sort_order,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(github_repo) DO UPDATE SET
+      project_name = excluded.project_name,
+      headline = excluded.headline,
+      sort_order = excluded.sort_order,
+      updated_at = excluded.updated_at
+  `).bind(
+    feature.githubRepo,
+    feature.projectName,
+    feature.headline ?? null,
+    feature.sortOrder,
+    feature.createdAt,
+    feature.updatedAt
+  ).run();
+}
+
+export async function deleteFeaturedProject(
+  db: D1Database,
+  githubRepo: string
+): Promise<void> {
+  await db.prepare(`
+    DELETE FROM featured_projects
     WHERE github_repo = ?
   `).bind(githubRepo).run();
 }
@@ -1559,6 +1685,27 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     latestDeploymentId: row.latest_deployment_id ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function toFeaturedProjectRecord(row: FeaturedProjectRow): FeaturedProjectRecord {
+  return {
+    githubRepo: row.github_repo,
+    projectName: row.project_name,
+    headline: row.headline ?? undefined,
+    sortOrder: row.sort_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function toFeaturedProjectDisplayRecord(row: FeaturedProjectDisplayRow): FeaturedProjectDisplayRecord {
+  return {
+    ...toFeaturedProjectRecord(row),
+    ownerLogin: row.owner_login,
+    deploymentUrl: row.deployment_url,
+    description: row.description ?? undefined,
+    runtimeLane: row.runtime_lane ?? "dedicated_worker"
   };
 }
 

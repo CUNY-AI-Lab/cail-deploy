@@ -890,6 +890,143 @@ test("project control panel shows secrets and accepts a browser form submission 
   assert.ok(savedSecret);
 });
 
+test("project control panel can feature and unfeature a project", async (t) => {
+  const { env, db } = createTestContext({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
+    CLOUDFLARE_ACCESS_AUD: "test-access-aud",
+    CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.origin === "https://access.example" && url.pathname === "/cdn-cgi/access/certs") {
+      return jsonResponse({
+        keys: [
+          {
+            ...TEST_ACCESS_PRIVATE_KEY.publicKey,
+            use: "sig",
+            alg: "RS256",
+            kid: "test-access-key"
+          }
+        ]
+      });
+    }
+
+    if (url.origin === "https://api.github.com" && url.pathname === "/repos/szweibel/cloze-reader") {
+      return jsonResponse({
+        id: 7,
+        name: "cloze-reader",
+        full_name: "szweibel/cloze-reader",
+        default_branch: "main",
+        html_url: "https://github.com/szweibel/cloze-reader",
+        clone_url: "https://github.com/szweibel/cloze-reader.git",
+        private: false,
+        owner: { login: "szweibel" },
+        permissions: {
+          admin: false,
+          maintain: false,
+          push: true,
+          pull: true
+        }
+      });
+    }
+
+    return originalFetch(input, init);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    description: "Practice reading with interactive cloze passages.",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+  db.putGitHubUserAuth({
+    access_subject: "user:person@cuny.edu",
+    access_email: "person@cuny.edu",
+    github_user_id: 9001,
+    github_login: "szweibel",
+    access_token_encrypted: await sealStoredValueForTest(env, "github-user-token"),
+    access_token_expires_at: "2030-01-01T00:00:00.000Z",
+    refresh_token_encrypted: null,
+    refresh_token_expires_at: null,
+    created_at: "2026-04-04T10:00:00.000Z",
+    updated_at: "2026-04-04T10:00:00.000Z"
+  });
+
+  const accessJwt = await createAccessJwt("person@cuny.edu");
+  const pageResponse = await fetchRaw(new Request("https://deploy.example/projects/cloze-reader/control", {
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  }), env);
+  assert.equal(pageResponse.status, 200);
+  const html = await pageResponse.text();
+  assert.match(html, /Featured project/);
+  assert.match(html, /Show this project on the featured projects page/);
+  const formTokenMatch = html.match(/name="formToken" value="([^"]+)"/);
+  assert.ok(formTokenMatch);
+
+  const enableForm = new FormData();
+  enableForm.set("formToken", formTokenMatch?.[1] ?? "");
+  enableForm.set("featureProject", "1");
+  enableForm.set("featureHeadline", "A reading game for practicing comprehension.");
+  enableForm.set("featureSortOrder", "2");
+
+  const enableResponse = await fetchRaw(new Request("https://deploy.example/projects/cloze-reader/control/featured", {
+    method: "POST",
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    },
+    body: enableForm
+  }), env);
+  assert.equal(enableResponse.status, 302);
+  assert.match(enableResponse.headers.get("location") ?? "", /flash=success/);
+  const featured = db.selectFeaturedProject("szweibel/cloze-reader") as {
+    github_repo: string;
+    project_name: string;
+    headline: string | null;
+    sort_order: number;
+    created_at: string;
+    updated_at: string;
+  } | null;
+  assert.ok(featured);
+  assert.equal(featured?.github_repo, "szweibel/cloze-reader");
+  assert.equal(featured?.project_name, "cloze-reader");
+  assert.equal(featured?.headline, "A reading game for practicing comprehension.");
+  assert.equal(featured?.sort_order, 2);
+  assert.equal(typeof featured?.created_at, "string");
+  assert.equal(typeof featured?.updated_at, "string");
+
+  const disableForm = new FormData();
+  disableForm.set("formToken", formTokenMatch?.[1] ?? "");
+  disableForm.set("featureHeadline", "");
+  disableForm.set("featureSortOrder", "100");
+
+  const disableResponse = await fetchRaw(new Request("https://deploy.example/projects/cloze-reader/control/featured", {
+    method: "POST",
+    headers: {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    },
+    body: disableForm
+  }), env);
+  assert.equal(disableResponse.status, 302);
+  assert.equal(db.selectFeaturedProject("szweibel/cloze-reader"), null);
+});
+
 test("project deletion API removes the Kale project and its managed resources without touching GitHub", async (t) => {
   const { env, db, archive } = createTestContext({
     CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
@@ -1011,6 +1148,14 @@ test("project deletion API removes the Kale project and its managed resources wi
     maxAssetBytes: 90 * 1024 * 1024,
     createdAt: "2026-03-28T12:00:00.000Z",
     updatedAt: "2026-03-28T12:00:00.000Z"
+  });
+  db.putFeaturedProject({
+    github_repo: "szweibel/cail-assets-build-test",
+    project_name: "cail-assets-build-test",
+    headline: "A featured smoke test.",
+    sort_order: 10,
+    created_at: "2026-03-29T12:00:00.000Z",
+    updated_at: "2026-03-29T12:00:00.000Z"
   });
   db.putGitHubUserAuth({
     access_subject: "user:person@cuny.edu",
@@ -1140,6 +1285,7 @@ test("project deletion API removes the Kale project and its managed resources wi
   assert.equal(db.selectProjectDomain("cail-assets-build-test-history"), null);
   assert.equal(db.selectProjectDomain("cail-assets-build-test-old"), null);
   assert.equal(db.selectProjectPolicy("szweibel/cail-assets-build-test"), null);
+  assert.equal(db.selectFeaturedProject("szweibel/cail-assets-build-test"), null);
   assert.deepEqual(db.listDeployments("cail-assets-build-test"), []);
   assert.deepEqual(db.listDeployments("cail-assets-build-test-old"), []);
   assert.equal(archive.readText("deployments/cail-assets-build-test/dep-1/manifest.json"), null);

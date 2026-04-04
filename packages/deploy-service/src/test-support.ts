@@ -448,6 +448,7 @@ export class FakeD1Database {
   private readonly projectSecrets = new Map<string, Record<string, unknown>>();
   private readonly projectDomains = new Map<string, Record<string, unknown>>();
   private readonly projectDeletionBacklogs = new Map<string, Record<string, unknown>>();
+  private readonly featuredProjects = new Map<string, Record<string, unknown>>();
   private readonly usedOauthGrants = new Set<string>();
   private readonly usedOauthRefreshTokens = new Set<string>();
 
@@ -545,6 +546,17 @@ export class FakeD1Database {
     this.projectDeletionBacklogs.set(row.github_repo, row);
   }
 
+  putFeaturedProject(row: {
+    github_repo: string;
+    project_name: string;
+    headline: string | null;
+    sort_order: number;
+    created_at: string;
+    updated_at: string;
+  }): void {
+    this.featuredProjects.set(row.github_repo, row);
+  }
+
   upsertProjectFromParams(params: unknown[]): void {
     const project: ProjectRecord = {
       projectName: String(params[0]),
@@ -639,6 +651,10 @@ export class FakeD1Database {
     return this.projectDeletionBacklogs.get(githubRepo) ?? null;
   }
 
+  selectFeaturedProject(githubRepo: string): Record<string, unknown> | null {
+    return this.featuredProjects.get(githubRepo) ?? null;
+  }
+
   listProjectSecrets(githubRepo: string): Record<string, unknown>[] {
     return Array.from(this.projectSecrets.values())
       .filter((secret) => secret.github_repo === githubRepo)
@@ -649,6 +665,41 @@ export class FakeD1Database {
     return Array.from(this.projectDeletionBacklogs.values())
       .sort((left, right) => String(left.updated_at).localeCompare(String(right.updated_at)))
       .slice(0, limit);
+  }
+
+  listFeaturedProjects(): Record<string, unknown>[] {
+    const featuredRows: Array<Record<string, unknown> | null> = Array.from(this.featuredProjects.values())
+      .map((feature): Record<string, unknown> | null => {
+        const liveProject = Array.from(this.projects.values())
+          .filter((project) => project.githubRepo === feature.github_repo && Boolean(project.latestDeploymentId))
+          .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+        if (!liveProject) {
+          return null;
+        }
+
+        return {
+          github_repo: feature.github_repo,
+          project_name: liveProject.projectName,
+          headline: feature.headline ?? null,
+          sort_order: feature.sort_order,
+          created_at: feature.created_at,
+          updated_at: feature.updated_at,
+          owner_login: liveProject.ownerLogin,
+          deployment_url: liveProject.deploymentUrl,
+          description: liveProject.description ?? null,
+          runtime_lane: liveProject.runtimeLane ?? "dedicated_worker"
+        };
+      });
+
+    return featuredRows
+      .filter((feature): feature is Record<string, unknown> => feature !== null)
+      .sort((left, right) => {
+        const orderDiff = Number(left.sort_order) - Number(right.sort_order);
+        if (orderDiff !== 0) {
+          return orderDiff;
+        }
+        return String(right.updated_at).localeCompare(String(left.updated_at));
+      });
   }
 
   upsertGitHubUserAuthFromParams(params: unknown[]): void {
@@ -707,6 +758,18 @@ export class FakeD1Database {
       cache_namespace_ids_json: String(params[7]),
       artifact_prefixes_json: String(params[8]),
       last_error: nullableString(params[9])
+    });
+  }
+
+  upsertFeaturedProjectFromParams(params: unknown[]): void {
+    const existing = this.featuredProjects.get(String(params[0]));
+    this.putFeaturedProject({
+      github_repo: String(params[0]),
+      project_name: String(params[1]),
+      headline: nullableString(params[2]),
+      sort_order: Number(params[3]),
+      created_at: existing?.created_at ? String(existing.created_at) : String(params[4]),
+      updated_at: String(params[5])
     });
   }
 
@@ -820,6 +883,10 @@ export class FakeD1Database {
 
   deleteProjectDeletionBacklog(githubRepo: string): void {
     this.projectDeletionBacklogs.delete(githubRepo);
+  }
+
+  deleteFeaturedProject(githubRepo: string): void {
+    this.featuredProjects.delete(githubRepo);
   }
 
   updateDeploymentArchiveState(
@@ -1227,6 +1294,10 @@ class FakePreparedStatement {
       return this.db.selectProjectDeletionBacklog(String(this.params[0])) as T | null;
     }
 
+    if (normalized.includes("from featured_projects") && normalized.includes("where github_repo = ?")) {
+      return this.db.selectFeaturedProject(String(this.params[0])) as T | null;
+    }
+
     if (normalized.includes("from build_jobs") && normalized.includes("where job_id = ?")) {
       return this.db.selectBuildJob(String(this.params[0])) as T | null;
     }
@@ -1299,6 +1370,10 @@ class FakePreparedStatement {
 
     if (normalized.includes("from projects") && normalized.includes("where latest_deployment_id is not null")) {
       return { results: this.db.listProjects() as T[] };
+    }
+
+    if (normalized.includes("from featured_projects fp") && normalized.includes("join projects p")) {
+      return { results: this.db.listFeaturedProjects() as T[] };
     }
 
     if (normalized.includes("from project_secrets") && normalized.includes("where github_repo = ?")) {
@@ -1397,6 +1472,10 @@ class FakePreparedStatement {
       this.db.upsertProjectDeletionBacklogFromParams(this.params);
     }
 
+    if (normalized.includes("insert into featured_projects")) {
+      this.db.upsertFeaturedProjectFromParams(this.params);
+    }
+
     if (normalized.includes("insert into mcp_tokens")) {
       this.db.putMcpToken({
         token_hash: String(this.params[0]),
@@ -1467,6 +1546,10 @@ class FakePreparedStatement {
 
     if (normalized.includes("delete from project_deletion_backlogs") && normalized.includes("where github_repo = ?")) {
       this.db.deleteProjectDeletionBacklog(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from featured_projects") && normalized.includes("where github_repo = ?")) {
+      this.db.deleteFeaturedProject(String(this.params[0]));
     }
 
     if (normalized.includes("update deployments") && normalized.includes("set archive_kind = ?, manifest_key = ?") && normalized.includes("where deployment_id = ?")) {

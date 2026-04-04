@@ -42,11 +42,13 @@ import {
 } from "./project-control-ui";
 import {
   createProjectAdminEntryResponse,
+  createProjectControlFeaturedUpdateResponse,
   createProjectControlPanelResponse,
   createProjectControlProjectDeleteResponse,
   createProjectControlSecretDeleteResponse,
   createProjectControlSecretSetResponse
 } from "./project-control-controller";
+import { renderFeaturedProjectsPage } from "./featured-projects-ui";
 import {
   buildHarnessPromptContext,
   buildConnectionClientUpdatePolicy,
@@ -95,9 +97,11 @@ import {
   consumeOauthGrant,
   consumeOauthRefreshToken,
   deleteGitHubUserAuthByGitHubUserId,
+  deleteFeaturedProject,
   ensureProjectPolicy,
   getBuildJob,
   getBuildJobByDeliveryId,
+  getFeaturedProject,
   getDeployment,
   getLatestBuildJobForProject,
   getLatestProjectForRepository,
@@ -107,8 +111,10 @@ import {
   getProject,
   listActiveBuildJobsForRepository,
   listExpiredRetainedFailedDeployments,
+  listFeaturedProjects,
   listProjects,
   listRetainedSuccessfulDeploymentsForRepository,
+  putFeaturedProject,
   putGitHubUserAuth,
   putBuildJob,
   putProject,
@@ -776,8 +782,12 @@ deployServiceApp.get("/", async (c) => {
   const installUrl = appSlug ? githubAppInstallUrl(appSlug) : undefined;
   const runtimeManifestUrl = resolvePublicRuntimeManifestUrl(c.env, serviceBaseUrl);
   const repositoryUrl = "https://github.com/CUNY-AI-Lab/CAIL-deploy";
-  const liveProjects = (await listProjects(c.env.CONTROL_PLANE_DB)).slice(0, 6);
-  const liveProjectCount = liveProjects.length;
+  const featuredProjects = (await listFeaturedProjects(c.env.CONTROL_PLANE_DB)).slice(0, 6);
+  const showcaseProjects = featuredProjects.length > 0
+    ? featuredProjects
+    : (await listProjects(c.env.CONTROL_PLANE_DB)).slice(0, 6);
+  const showcaseProjectCount = showcaseProjects.length;
+  const showcaseLabel = featuredProjects.length > 0 ? "Featured projects" : "Live projects";
   const marketingName = "Kale Deploy";
   const marketingSource = "From the CUNY AI Lab";
   const buildPrompt = `Build me a small web app with ${marketingName} and put it online so I can see it live.`;
@@ -1319,10 +1329,10 @@ deployServiceApp.get("/", async (c) => {
         </form>
       </section>
 
-      ${liveProjectCount > 0 ? `
+      ${showcaseProjectCount > 0 ? `
       <section class="live-section">
-        <p class="live-label">Live projects</p>
-        <div class="live-list">${liveProjects.map((project) => `
+        <p class="live-label">${escapeHtml(showcaseLabel)}</p>
+        <div class="live-list">${showcaseProjects.map((project) => `
           <a class="live-chip" href="${escapeHtml(project.deploymentUrl)}">
             <span class="live-dot"></span>
             ${escapeHtml(project.projectName)}
@@ -1333,6 +1343,7 @@ deployServiceApp.get("/", async (c) => {
 
       <footer class="page-footer">
         ${installUrl ? `<a href="${escapeHtml(installUrl)}">Install GitHub App</a>` : ""}
+        <a href="${escapeHtml(`${serviceBaseUrl}/featured`)}">Featured Projects</a>
         <a href="${escapeHtml(`${serviceBaseUrl}/projects/control`)}">My Projects</a>
         <a href="${escapeHtml(repositoryUrl)}">GitHub</a>
       </footer>
@@ -1385,6 +1396,15 @@ deployServiceApp.get("/", async (c) => {
     </script>
   </body>
 </html>`);
+});
+
+deployServiceApp.get("/featured", async (c) => {
+  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
+  const projects = await listFeaturedProjects(c.env.CONTROL_PLANE_DB);
+  return c.html(renderFeaturedProjectsPage({
+    serviceBaseUrl,
+    projects
+  }));
 });
 
 deployServiceApp.get("/github/app", (c) => {
@@ -1853,6 +1873,39 @@ deployServiceApp.get("/projects/:projectName/control", async (c) => {
     ...PROJECT_CONTROL_ROUTE_DEPENDENCIES,
     buildProjectStatusResponse,
     buildProjectSecretsListPayload,
+    getFeaturedProject: (env, githubRepo) => getFeaturedProject(env.CONTROL_PLANE_DB, githubRepo),
+  });
+});
+
+deployServiceApp.post("/projects/:projectName/control/featured", async (c) => {
+  return createProjectControlFeaturedUpdateResponse({
+    env: c.env,
+    request: c.req.raw,
+    projectName: c.req.param("projectName"),
+    ...PROJECT_CONTROL_ROUTE_DEPENDENCIES,
+    updateFeaturedProject: async (env, authorization, input) => {
+      const now = new Date().toISOString();
+
+      if (!input.enabled) {
+        await deleteFeaturedProject(env.CONTROL_PLANE_DB, authorization.project.githubRepo);
+        return {
+          summary: `${authorization.project.projectName} is no longer featured.`
+        };
+      }
+
+      const existing = await getFeaturedProject(env.CONTROL_PLANE_DB, authorization.project.githubRepo);
+      await putFeaturedProject(env.CONTROL_PLANE_DB, {
+        githubRepo: authorization.project.githubRepo,
+        projectName: authorization.project.projectName,
+        headline: input.headline,
+        sortOrder: input.sortOrder,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      });
+      return {
+        summary: `${authorization.project.projectName} is now featured.`
+      };
+    }
   });
 });
 

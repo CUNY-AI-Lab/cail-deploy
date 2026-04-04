@@ -417,7 +417,53 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app with Kale Deploy and put it online so I can see it live/);
   assert.match(html, /smoke-test/);
+  assert.match(html, /Featured Projects/);
   assert.match(html, /href="https:\/\/deploy\.example\/projects\/control"/);
+});
+
+test("featured projects page lists curated live projects only", async () => {
+  const { env, db } = createTestContext();
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    description: "Interactive reading practice with live passages.",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+  db.putProject({
+    projectName: "langames",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/langames",
+    description: "Language games.",
+    deploymentUrl: "https://langames.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-2",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:20:00.000Z"
+  });
+  db.putFeaturedProject({
+    github_repo: "szweibel/cloze-reader",
+    project_name: "cloze-reader",
+    headline: "A reading game for practicing comprehension.",
+    sort_order: 2,
+    created_at: "2026-04-04T10:30:00.000Z",
+    updated_at: "2026-04-04T10:30:00.000Z"
+  });
+
+  const response = await fetchApp("GET", "/featured", env);
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /Featured Projects/);
+  assert.match(html, /cloze-reader/);
+  assert.match(html, /A reading game for practicing comprehension/);
+  assert.doesNotMatch(html, /langames/);
+  assert.match(html, /Open site/);
+  assert.match(html, /View code/);
 });
 
 test("mcp advertises OAuth metadata when unauthorized", async () => {
