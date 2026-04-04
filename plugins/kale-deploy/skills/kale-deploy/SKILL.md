@@ -154,12 +154,8 @@ Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. Th
 1. Check whether Kale tools are already available (`register_project`, `validate_project`, `get_project_status`, etc.). If the plugin is installed, the `kale` MCP server may already be configured and authenticated.
 2. If the tools are available, call `get_runtime_manifest` and prefer the returned `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` fields if they differ from local plugin instructions.
 3. If the tools are available, skip to step 6.
-4. If the server is not yet configured, add it. The method depends on the agent:
-   - **Claude Code**: See the `kale-connect` skill's "Agent notes > Claude Code" section for the full OAuth bootstrap and finalize steps.
-   - **Codex**: The Codex add-on bundles the Kale server config. If tools aren't available, run `codex mcp add kale --url https://cuny.qzz.io/kale/mcp` then `codex mcp login kale` and complete the browser sign-in.
-   - **Gemini CLI**: The server is declared in `.gemini/settings.json` in the repo. If it's not loaded, the user should restart Gemini CLI from the project directory.
-   - **Other agents**: Point the agent's MCP configuration at `https://cuny.qzz.io/kale/mcp` (HTTP transport with OAuth).
-5. If authentication fails, use the **token-paste fallback**: ask the user to visit `https://cuny.qzz.io/kale/connect`, sign in, generate a token, and paste it back. Configure the server with a static `Authorization: Bearer <the-token>` header. See `kale-connect` for harness-specific commands.
+4. If the server is not yet configured, switch to `kale-connect` for the harness-specific connection flow. That skill owns the auth/bootstrap details and its reference files cover Claude, Codex, Gemini, and connection-health interpretation.
+5. If authentication fails, use the **token-paste fallback** through `kale-connect`: ask the user to visit `https://cuny.qzz.io/kale/connect`, sign in, generate a token, and paste it back. Configure the server with a static `Authorization: Bearer <the-token>` header only if the harness supports that path.
 6. After the tools appear, call `get_runtime_manifest` so `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses` come from Kale itself rather than the local plugin copy.
 7. When calling `test_connection`, include `harness` and `localBundleVersion` when you can determine them from the installed wrapper metadata.
 8. Call `register_project` to determine the canonical project slug and install state.

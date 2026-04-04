@@ -29,79 +29,28 @@ This local skill is only the bootstrap layer.
 - If the live runtime manifest disagrees with this skill, follow the live runtime manifest.
 - Treat the local skill as the fallback path for first connection, not the long-term source of truth.
 
+## References
+
+Use these files when you need harness-specific connection details or live-policy interpretation:
+
+- [Claude Code](references/claude.md)
+- [Codex](references/codex.md)
+- [Gemini CLI](references/gemini.md)
+- [Connection health](references/connection-health.md)
+
 ## What to do
 
 1. Check whether Kale tools are already available. If `test_connection` and `register_project` are already present, call `get_runtime_manifest` first, read `dynamic_skill_policy`, `client_update_policy`, and `agent_harnesses`, then continue to verification.
 2. If the server is missing or disconnected, connect Kale Deploy. The official service is:
    - front door: `https://cuny.qzz.io/kale`
    - MCP endpoint: `https://cuny.qzz.io/kale/mcp`
-3. Prefer the agent's normal MCP or plugin flow first. In Claude Code, if the local Kale plugin is installed, do not search the MCP registry first. Start with the installed plugin guidance and `claude mcp list`. For Claude Code, use `mcp-remote` only to complete OAuth, then replace that temporary bridge with one direct HTTP `kale` server whose `headersHelper` reads and refreshes the latest valid Kale OAuth token. If that still fails or the server remains disconnected, use the token-paste fallback:
+3. Prefer the agent's normal MCP or plugin flow first. For harness-specific connection steps, use the reference that matches the current agent. In Claude Code, if the local Kale plugin is installed, do not search the MCP registry first. Start with the installed plugin guidance and `claude mcp list`. If the primary connection path fails or the server remains disconnected, use the token-paste fallback:
    - tell the user: "I need to connect to Kale Deploy. Please visit this link, sign in with your CUNY email, generate a token, and paste it back here."
    - give them: `https://cuny.qzz.io/kale/connect`
    - once they paste a token starting with `kale_pat_`, configure the Kale server with a static Bearer header if the agent supports that path
-4. After Kale is configured, call `get_runtime_manifest` and `test_connection`, then use the live `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` fields to decide what to do next. If you can determine the local harness id and bundle version from the installed wrapper metadata, include them in `test_connection`.
+4. After Kale is configured, call `get_runtime_manifest` and `test_connection`, then use the live `dynamicSkillPolicy`, `clientUpdatePolicy`, `harnesses`, `nextAction`, and `summary` fields to decide what to do next. If you can determine the local harness id and bundle version from the installed wrapper metadata, include them in `test_connection`. See [Connection health](references/connection-health.md) if the wrapper state or next step is unclear.
 5. Confirm that `register_project` is available.
 6. Explain GitHub status honestly. GitHub App approval is repository-specific, so if no repository has been chosen yet, do not claim every future repo is already approved. Instead, say whether the environment looks ready for the next GitHub-backed step and what handoff will happen later.
-
-## Agent notes
-
-### Claude Code
-
-- Prefer the installed Kale plugin surfaces over inventing ad hoc steps.
-- In Claude Code, if the local Kale plugin is installed, do not search the MCP registry first. Start with the installed plugin guidance and `claude mcp list`.
-- Use `mcp-remote` only long enough to complete the OAuth browser flow.
-- The preferred Claude ready state is one user-scope direct HTTP `kale` server at `https://cuny.qzz.io/kale/mcp`.
-- Do not invent `claude mcp auth`, `claude mcp login`, or `claude mcp authenticate` commands. Those are not real Claude CLI commands.
-- Bootstrap OAuth like this:
-
-```bash
-claude mcp remove kale -s local 2>/dev/null
-claude mcp remove kale -s user 2>/dev/null
-claude mcp add -s user kale -- npx -y mcp-remote https://cuny.qzz.io/kale/mcp --transport http-only
-```
-
-- After OAuth succeeds, immediately replace the temporary bridge with the direct HTTP server:
-
-```bash
-KALE_PLUGIN_PATH="$(claude plugins list --json | node -e 'const fs = require("node:fs"); const plugins = JSON.parse(fs.readFileSync(0, "utf8")); const plugin = plugins.find((entry) => entry.id === "kale-deploy@cuny-ai-lab"); if (!plugin?.installPath) { process.stderr.write("Kale plugin is not installed.\n"); process.exit(1); } process.stdout.write(plugin.installPath);')"
-node "$KALE_PLUGIN_PATH/scripts/kale-claude-connect.mjs" sync --mcp-endpoint https://cuny.qzz.io/kale/mcp
-```
-
-- That helper configures `headersHelper`, so Claude reuses the latest valid Kale OAuth token at connection time and refreshes it automatically when a valid refresh token is cached.
-- If the helper later reports that no valid Kale OAuth or refresh token exists, rerun the bootstrap and sync steps.
-
-- If token-paste is needed, the last-resort fallback is:
-
-```bash
-claude mcp remove kale -s local 2>/dev/null
-claude mcp remove kale -s user 2>/dev/null
-claude mcp add -t http -H "Authorization: Bearer <the-token>" -s user kale https://cuny.qzz.io/kale/mcp
-```
-
-### Codex
-
-- Prefer the installed Kale add-on path first when it is available in the Codex app.
-- Check `codex mcp list`.
-- If Kale is missing and you need the manual fallback, add it with:
-
-```bash
-codex mcp add kale --url https://cuny.qzz.io/kale/mcp
-```
-
-- If it is present but not authenticated, use:
-
-```bash
-codex mcp login kale
-```
-
-- If OAuth does not complete cleanly, fall back to the token-paste path.
-
-### Gemini CLI
-
-- Check `gemini mcp list`.
-- If Kale was installed as an extension, trust the live runtime manifest for current update policy rather than assuming the local extension copy is current.
-- If Kale is already declared in `.gemini/settings.json` but appears disconnected, continue with the auth flow rather than wandering into generic CLI help.
-- If OAuth/auth does not complete, use the same token-paste fallback.
 
 ## Success condition
 
