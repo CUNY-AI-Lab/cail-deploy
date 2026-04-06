@@ -165,8 +165,8 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Only rerun the mcp-remote bootstrap if the helper reports that no valid Kale OAuth or refresh token is available/i.test(note)));
   assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Last-resort token bridge:/i.test(note)));
   assert.equal(body.agent_harnesses[1]?.install_surface, "app_add_on");
-  assert.equal(body.agent_harnesses[1]?.install_mode, "app_ui");
-  assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /Install the Kale Deploy add-on in the Codex app/i);
+  assert.equal(body.agent_harnesses[1]?.install_mode, "command");
+  assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /codex mcp add kale/i);
   assert.equal(body.agent_harnesses[1]?.local_wrapper.update_mode, "unknown");
   assert.equal(body.agent_harnesses[1]?.manual_fallback?.auth_mode, "oauth_browser");
   assert.match(body.agent_harnesses[1]?.manual_fallback?.instruction ?? "", /codex mcp login kale/i);
@@ -376,7 +376,7 @@ test("public connection health explains the MCP auth handoff", async () => {
   assert.equal(body.localWrapperStatus, undefined);
   assert.deepEqual(body.harnesses.map((entry) => entry.id), ["claude", "codex", "gemini"]);
   assert.equal(body.harnesses[0]?.localWrapper.updateCommand, "claude plugins update kale-deploy@cuny-ai-lab -s user");
-  assert.equal(body.harnesses[1]?.installMode, "app_ui");
+  assert.equal(body.harnesses[1]?.installMode, "command");
   assert.equal(body.harnesses[2]?.localWrapper.updateCommand, "gemini extensions update kale-deploy");
 });
 
@@ -408,7 +408,7 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Use this install step once in your AI agent/i);
   assert.match(html, /\/plugin marketplace add CUNY-AI-Lab\/CAIL-deploy/);
   assert.match(html, /\/plugin install kale-deploy@cuny-ai-lab/);
-  assert.match(html, /Install the Kale Deploy add-on in the Codex app/);
+  assert.match(html, /codex mcp add kale/);
   assert.doesNotMatch(html, /Manual fallback/);
   assert.match(html, /\/extensions install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy --auto-update/);
   assert.match(html, /Already have a GitHub repo\?/);
