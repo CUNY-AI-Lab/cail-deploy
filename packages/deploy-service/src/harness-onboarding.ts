@@ -542,8 +542,8 @@ function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[]
       letter: "X",
       installSurface: "app_add_on",
       installMode: "app_ui",
-      instruction: `Install the Kale Deploy add-on in the Codex app or from the Kale homepage.\n\nIf you need the manual fallback:\ncodex mcp add kale --url ${input.mcpEndpoint}\ncodex mcp login kale`,
-      hint: "Use the add-on installer first; the MCP commands are the fallback",
+      instruction: `Install the Kale Deploy add-on in the Codex app.`,
+      hint: "Look for Kale Deploy in the add-on list",
       installNotes: [
         "Codex uses the Kale add-on as the normal install surface.",
         "The Codex CLI exposes MCP management, not plugin management."

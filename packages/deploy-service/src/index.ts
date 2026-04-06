@@ -821,7 +821,6 @@ deployServiceApp.get("/", async (c) => {
 
       return `<div class="tab-panel${index === 0 ? " active" : ""}" data-idx="${index}" role="tabpanel">
         <div class="install-ui-card">
-          <p class="install-ui-label">Primary path</p>
           <p class="install-ui-copy">${escapeHtml(agent.instruction)}</p>
         </div>
         <p class="tab-hint">${escapeHtml(agent.hint)}</p>
