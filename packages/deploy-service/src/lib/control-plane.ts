@@ -96,6 +96,14 @@ export type FeaturedProjectDisplayRecord = FeaturedProjectRecord & {
   runtimeLane: ProjectRecord["runtimeLane"];
 };
 
+export type OwnerCapacityOverrideRecord = {
+  ownerLogin: string;
+  maxLiveDedicatedWorkers: number;
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export const DEFAULT_PROJECT_POLICY: ProjectPolicySettings = Object.freeze({
   aiEnabled: false,
   vectorizeEnabled: false,
@@ -251,6 +259,14 @@ type FeaturedProjectDisplayRow = FeaturedProjectRow & {
   runtime_lane: "dedicated_worker" | "shared_static" | "shared_app" | null;
 };
 
+type OwnerCapacityOverrideRow = {
+  owner_login: string;
+  max_live_dedicated_workers: number;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export async function listProjects(db: D1Database): Promise<ProjectRecord[]> {
   const session = db.withSession("first-primary");
   const result = await session.prepare(`
@@ -275,6 +291,35 @@ export async function listProjects(db: D1Database): Promise<ProjectRecord[]> {
   `).all<ProjectRow>();
 
   return result.results.map(toProjectRecord);
+}
+
+export async function listLiveDedicatedWorkerProjectsForOwner(
+  db: D1Database,
+  ownerLogin: string,
+  options: { excludeGithubRepo?: string } = {}
+): Promise<ProjectRecord[]> {
+  const normalizedOwner = ownerLogin.trim().toLowerCase();
+  const excludedRepo = options.excludeGithubRepo?.trim().toLowerCase();
+  const latestByRepo = new Map<string, ProjectRecord>();
+
+  for (const project of await listProjects(db)) {
+    const projectOwner = project.ownerLogin.trim().toLowerCase();
+    const projectRepo = project.githubRepo.trim().toLowerCase();
+
+    if (projectOwner !== normalizedOwner || project.runtimeLane !== "dedicated_worker") {
+      continue;
+    }
+    if (excludedRepo && projectRepo === excludedRepo) {
+      continue;
+    }
+
+    const existing = latestByRepo.get(projectRepo);
+    if (!existing || project.updatedAt > existing.updatedAt) {
+      latestByRepo.set(projectRepo, project);
+    }
+  }
+
+  return [...latestByRepo.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 export async function listFeaturedProjects(db: D1Database): Promise<FeaturedProjectDisplayRecord[]> {
@@ -325,6 +370,41 @@ export async function getFeaturedProject(
   `).bind(githubRepo).first<FeaturedProjectRow>();
 
   return row ? toFeaturedProjectRecord(row) : null;
+}
+
+export async function listOwnerCapacityOverrides(db: D1Database): Promise<OwnerCapacityOverrideRecord[]> {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`
+    SELECT
+      owner_login,
+      max_live_dedicated_workers,
+      note,
+      created_at,
+      updated_at
+    FROM owner_capacity_overrides
+    ORDER BY owner_login ASC
+  `).all<OwnerCapacityOverrideRow>();
+
+  return result.results.map(toOwnerCapacityOverrideRecord);
+}
+
+export async function getOwnerCapacityOverride(
+  db: D1Database,
+  ownerLogin: string
+): Promise<OwnerCapacityOverrideRecord | null> {
+  const session = db.withSession("first-primary");
+  const row = await session.prepare(`
+    SELECT
+      owner_login,
+      max_live_dedicated_workers,
+      note,
+      created_at,
+      updated_at
+    FROM owner_capacity_overrides
+    WHERE owner_login = ?
+  `).bind(ownerLogin).first<OwnerCapacityOverrideRow>();
+
+  return row ? toOwnerCapacityOverrideRecord(row) : null;
 }
 
 export async function getProject(db: D1Database, projectName: string): Promise<ProjectRecord | null> {
@@ -952,6 +1032,13 @@ export async function putProject(db: D1Database, project: ProjectRecord): Promis
   ).run();
 }
 
+export async function deleteProjectByName(db: D1Database, projectName: string): Promise<void> {
+  await db.prepare(`
+    DELETE FROM projects
+    WHERE project_name = ?
+  `).bind(projectName).run();
+}
+
 export async function claimProjectName(db: D1Database, project: ProjectRecord): Promise<void> {
   await db.prepare(`
     INSERT INTO projects (
@@ -1425,6 +1512,42 @@ export async function deleteFeaturedProject(
   `).bind(githubRepo).run();
 }
 
+export async function putOwnerCapacityOverride(
+  db: D1Database,
+  override: OwnerCapacityOverrideRecord
+): Promise<void> {
+  await db.prepare(`
+    INSERT INTO owner_capacity_overrides (
+      owner_login,
+      max_live_dedicated_workers,
+      note,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(owner_login) DO UPDATE SET
+      max_live_dedicated_workers = excluded.max_live_dedicated_workers,
+      note = excluded.note,
+      updated_at = excluded.updated_at
+  `).bind(
+    override.ownerLogin,
+    override.maxLiveDedicatedWorkers,
+    override.note ?? null,
+    override.createdAt,
+    override.updatedAt
+  ).run();
+}
+
+export async function deleteOwnerCapacityOverride(
+  db: D1Database,
+  ownerLogin: string
+): Promise<void> {
+  await db.prepare(`
+    DELETE FROM owner_capacity_overrides
+    WHERE owner_login = ?
+  `).bind(ownerLogin).run();
+}
+
 export async function getBuildJob(db: D1Database, jobId: string): Promise<BuildJobRecord | null> {
   const session = db.withSession("first-primary");
   const row = await session.prepare(`
@@ -1706,6 +1829,16 @@ function toFeaturedProjectDisplayRecord(row: FeaturedProjectDisplayRow): Feature
     deploymentUrl: row.deployment_url,
     description: row.description ?? undefined,
     runtimeLane: row.runtime_lane ?? "dedicated_worker"
+  };
+}
+
+function toOwnerCapacityOverrideRecord(row: OwnerCapacityOverrideRow): OwnerCapacityOverrideRecord {
+  return {
+    ownerLogin: row.owner_login,
+    maxLiveDedicatedWorkers: row.max_live_dedicated_workers,
+    note: row.note ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   };
 }
 

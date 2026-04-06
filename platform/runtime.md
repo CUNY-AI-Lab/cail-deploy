@@ -204,11 +204,13 @@ Default caps are:
 - no daily deployment cap by default
 - 1 active build per repository at a time
 - 90 MiB for the total deployment upload bundle per build
+- 5 live dedicated-worker projects per GitHub owner by default
 
 Those caps are intentionally narrow:
 
 - the active-build cap protects a shared Kale-owned runner from being monopolized by one repository or agent loop
 - the upload cap protects Kale's current deploy transport, which receives each build as a single multipart upload and needs headroom under Cloudflare request-body limits
+- the dedicated-worker cap protects Kale-owned isolated runtime capacity while still leaving room for a small number of active Worker apps per owner
 - daily validate or deploy caps remain available as per-project overrides, but they are not enabled by default
 
 Assistants should not promise AI, vector search, realtime rooms, or large asset hosting unless the user has explicit approval.

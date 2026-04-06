@@ -3,6 +3,7 @@ import type { TestContext } from "node:test";
 import test from "node:test";
 
 import { CloudflareApiClient } from "./lib/cloudflare";
+import { listLiveDedicatedWorkerProjectsForOwner } from "./lib/control-plane";
 import {
   createTestContext,
   fetchApp,
@@ -761,6 +762,411 @@ test("deployments reject oversized total upload bundles before provisioning reso
   assert.equal(response.status, 413);
   const body = await response.json() as { error: string };
   assert.match(body.error, /deployment bundle is too large/i);
+});
+
+test("live dedicated-worker counting dedupes by repo and ignores shared-static projects", async () => {
+  const { db } = createTestContext();
+  db.putProject({
+    projectName: "worker-one",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/worker-one",
+    deploymentUrl: "https://worker-one.cuny.qzz.io",
+    runtimeLane: "dedicated_worker",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-05T10:00:00.000Z",
+    updatedAt: "2026-04-05T10:00:00.000Z"
+  });
+  db.putProject({
+    projectName: "worker-one-renamed",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/worker-one",
+    deploymentUrl: "https://worker-one-renamed.cuny.qzz.io",
+    runtimeLane: "dedicated_worker",
+    hasAssets: false,
+    latestDeploymentId: "dep-2",
+    createdAt: "2026-04-05T10:05:00.000Z",
+    updatedAt: "2026-04-05T10:05:00.000Z"
+  });
+  db.putProject({
+    projectName: "worker-two",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/worker-two",
+    deploymentUrl: "https://worker-two.cuny.qzz.io",
+    runtimeLane: "dedicated_worker",
+    hasAssets: false,
+    latestDeploymentId: "dep-3",
+    createdAt: "2026-04-05T10:10:00.000Z",
+    updatedAt: "2026-04-05T10:10:00.000Z"
+  });
+  db.putProject({
+    projectName: "static-site",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/static-site",
+    deploymentUrl: "https://static-site.cuny.qzz.io",
+    runtimeLane: "shared_static",
+    hasAssets: true,
+    latestDeploymentId: "dep-4",
+    createdAt: "2026-04-05T10:15:00.000Z",
+    updatedAt: "2026-04-05T10:15:00.000Z"
+  });
+
+  const counted = await listLiveDedicatedWorkerProjectsForOwner(
+    db as unknown as D1Database,
+    "szweibel"
+  );
+  assert.deepEqual(counted.map((project) => project.projectName), [
+    "worker-two",
+    "worker-one-renamed"
+  ]);
+});
+
+test("dedicated-worker cap blocks a sixth live worker for the same owner before provisioning", async (t: TestContext) => {
+  const { env, db } = createTestContext();
+  for (let index = 1; index <= 5; index += 1) {
+    db.putProject({
+      projectName: `worker-${index}`,
+      ownerLogin: "szweibel",
+      githubRepo: `szweibel/worker-${index}`,
+      deploymentUrl: `https://worker-${index}.cuny.qzz.io`,
+      runtimeLane: "dedicated_worker",
+      hasAssets: false,
+      latestDeploymentId: `dep-${index}`,
+      createdAt: `2026-04-05T10:0${index}:00.000Z`,
+      updatedAt: `2026-04-05T10:0${index}:00.000Z`
+    });
+  }
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    throw new Error(`Unexpected fetch during capacity rejection: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: buildDeploymentForm({
+      projectName: "worker-6",
+      ownerLogin: "szweibel",
+      githubRepo: "szweibel/worker-6",
+      workerUpload: {
+        main_module: "index.js",
+        compatibility_date: "2026-04-05",
+        bindings: []
+      }
+    }, [
+      {
+        name: "index.js",
+        fileName: "index.js",
+        content: "export default { fetch() { return new Response('worker six'); } };",
+        type: "application/javascript"
+      }
+    ])
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 429);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /caps live dedicated-worker projects at 5 per GitHub owner/i);
+  assert.match(body.error, /worker-1/);
+  assert.equal(db.selectProject("worker-6"), null);
+  assert.equal(db.selectProjectDomain("worker-6"), null);
+});
+
+test("owner capacity overrides can raise the dedicated-worker cap above the default", async (t: TestContext) => {
+  const { env, db } = createTestContext();
+  db.putOwnerCapacityOverride({
+    owner_login: "szweibel",
+    max_live_dedicated_workers: 6,
+    note: "Teaching week",
+    created_at: "2026-04-05T09:00:00.000Z",
+    updated_at: "2026-04-05T09:00:00.000Z"
+  });
+  for (let index = 1; index <= 5; index += 1) {
+    db.putProject({
+      projectName: `worker-${index}`,
+      ownerLogin: "szweibel",
+      githubRepo: `szweibel/worker-${index}`,
+      deploymentUrl: `https://worker-${index}.cuny.qzz.io`,
+      runtimeLane: "dedicated_worker",
+      hasAssets: false,
+      latestDeploymentId: `dep-${index}`,
+      createdAt: `2026-04-05T12:0${index}:00.000Z`,
+      updatedAt: `2026-04-05T12:0${index}:00.000Z`
+    });
+  }
+
+  const uploadedScripts: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname === "/client/v4/accounts/account-123/d1/database") {
+      return jsonResponse({ success: true, errors: [], result: [] });
+    }
+
+    if (request.method === "POST" && url.pathname === "/client/v4/accounts/account-123/d1/database") {
+      return jsonResponse({
+        success: true,
+        errors: [],
+        result: {
+          uuid: "db-worker-6",
+          name: "cail-szweibel-worker-6"
+        }
+      });
+    }
+
+    if (request.method === "PUT"
+      && url.pathname === "/client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/worker-6") {
+      uploadedScripts.push("worker-6");
+      return new Response("", { status: 200 });
+    }
+
+    throw new Error(`Unexpected fetch during overridden capacity deploy: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: buildDeploymentForm({
+      projectName: "worker-6",
+      ownerLogin: "szweibel",
+      githubRepo: "szweibel/worker-6",
+      workerUpload: {
+        main_module: "index.js",
+        compatibility_date: "2026-04-05",
+        bindings: []
+      }
+    }, [
+      {
+        name: "index.js",
+        fileName: "index.js",
+        content: "export default { fetch() { return new Response('worker six'); } };",
+        type: "application/javascript"
+      }
+    ])
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(uploadedScripts, ["worker-6"]);
+});
+
+test("redeploying an already-counted dedicated worker is still allowed at the owner cap", async (t: TestContext) => {
+  const { env, db } = createTestContext();
+  for (let index = 1; index <= 5; index += 1) {
+    db.putProject({
+      projectName: `worker-${index}`,
+      ownerLogin: "szweibel",
+      githubRepo: `szweibel/worker-${index}`,
+      deploymentUrl: `https://worker-${index}.cuny.qzz.io`,
+      databaseId: `db-${index}`,
+      filesBucketName: `kale-files-worker-${index}`,
+      cacheNamespaceId: `kv-${index}`,
+      runtimeLane: "dedicated_worker",
+      recommendedRuntimeLane: "dedicated_worker",
+      hasAssets: false,
+      latestDeploymentId: `dep-${index}`,
+      createdAt: `2026-04-05T10:1${index}:00.000Z`,
+      updatedAt: `2026-04-05T10:1${index}:00.000Z`
+    });
+  }
+
+  const uploadedScripts: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (request.method === "PUT"
+      && url.pathname === "/client/v4/accounts/account-123/workers/dispatch/namespaces/cail-production/scripts/worker-5") {
+      uploadedScripts.push("worker-5");
+      return new Response("", { status: 200 });
+    }
+
+    throw new Error(`Unexpected fetch during dedicated redeploy at capacity: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: buildDeploymentForm({
+      projectName: "worker-5",
+      ownerLogin: "szweibel",
+      githubRepo: "szweibel/worker-5",
+      workerUpload: {
+        main_module: "index.js",
+        compatibility_date: "2026-04-05",
+        bindings: []
+      }
+    }, [
+      {
+        name: "index.js",
+        fileName: "index.js",
+        content: "export default { fetch() { return new Response('redeploy'); } };",
+        type: "application/javascript"
+      }
+    ])
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(uploadedScripts, ["worker-5"]);
+});
+
+test("shared-static fallback over the worker cap rolls back the temporary dedicated deploy", async (t: TestContext) => {
+  const { env, db, archive } = createTestContext();
+  for (let index = 1; index <= 5; index += 1) {
+    db.putProject({
+      projectName: `worker-${index}`,
+      ownerLogin: "szweibel",
+      githubRepo: `szweibel/worker-${index}`,
+      deploymentUrl: `https://worker-${index}.cuny.qzz.io`,
+      runtimeLane: "dedicated_worker",
+      recommendedRuntimeLane: "dedicated_worker",
+      hasAssets: false,
+      latestDeploymentId: `dep-${index}`,
+      createdAt: `2026-04-05T11:0${index}:00.000Z`,
+      updatedAt: `2026-04-05T11:0${index}:00.000Z`
+    });
+  }
+
+  const uploadedScripts: string[] = [];
+  const deletedScripts: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+    const uploadSessionMatch = url.pathname.match(/\/workers\/dispatch\/namespaces\/cail-production\/scripts\/([^/]+)\/assets-upload-session$/);
+    const scriptMatch = url.pathname.match(/\/workers\/dispatch\/namespaces\/cail-production\/scripts\/([^/]+)$/);
+
+    if (request.method === "POST" && uploadSessionMatch) {
+      return jsonResponse({
+        success: true,
+        errors: [],
+        result: {
+          jwt: "assets-upload-jwt",
+          buckets: []
+        }
+      });
+    }
+
+    if (request.method === "PUT" && scriptMatch) {
+      uploadedScripts.push(scriptMatch[1]!);
+      return new Response("", { status: 200 });
+    }
+
+    if (request.method === "GET" && url.origin === "https://shared-static-over-cap.cuny.qzz.io") {
+      if (url.pathname === "/") {
+        return new Response("<h1>Wrong body</h1>", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" }
+        });
+      }
+
+      if (isSharedStaticRuntimeProbePath(url.pathname) || url.pathname.endsWith("/__kale_missing_page__")) {
+        return sharedStaticNotFoundResponse();
+      }
+    }
+
+    if (request.method === "DELETE" && scriptMatch) {
+      deletedScripts.push(scriptMatch[1]!);
+      return new Response("", { status: 200 });
+    }
+
+    if (url.pathname.includes("/client/v4/accounts/account-123/d1/database")
+      || url.pathname.includes("/storage/kv/namespaces")
+      || url.pathname.includes("/r2/buckets")) {
+      throw new Error(`Unexpected project provisioning during shared-static-cap rollback: ${request.method} ${request.url}`);
+    }
+
+    throw new Error(`Unexpected fetch during shared-static-cap rollback: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: buildDeploymentForm({
+      projectName: "shared-static-over-cap",
+      ownerLogin: "szweibel",
+      githubRepo: "szweibel/shared-static-over-cap",
+      runtimeEvidence: sharedStaticRuntimeEvidence(),
+      workerUpload: {
+        main_module: "index.js",
+        compatibility_date: "2026-04-05",
+        bindings: []
+      },
+      staticAssets: {
+        config: {
+          html_handling: "auto-trailing-slash",
+          not_found_handling: "404-page"
+        },
+        files: [
+          {
+            path: "/index.html",
+            partName: "asset-0",
+            contentType: "text/html; charset=utf-8"
+          }
+        ]
+      }
+    }, [
+      {
+        name: "index.js",
+        fileName: "index.js",
+        content: "export default { fetch() { return new Response('preview worker'); } };",
+        type: "application/javascript"
+      },
+      {
+        name: "asset-0",
+        fileName: "index.html",
+        content: "<h1>Expected body</h1>",
+        type: "text/html; charset=utf-8"
+      }
+    ])
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 429);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /caps live dedicated-worker projects at 5 per GitHub owner/i);
+  assert.deepEqual(uploadedScripts, ["shared-static-over-cap"]);
+  assert.deepEqual(deletedScripts, ["shared-static-over-cap"]);
+  assert.equal(db.selectProject("shared-static-over-cap"), null);
+  assert.equal(db.selectProjectDomain("shared-static-over-cap"), null);
+  const archivedObjects = await archive.list({
+    prefix: "deployments/repos/szweibel/shared-static-over-cap/"
+  });
+  assert.deepEqual(archivedObjects.objects, []);
 });
 
 test("shared static candidates auto-demote after validation without project resource provisioning", async (t: TestContext) => {

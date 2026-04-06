@@ -193,10 +193,12 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     max_validations_per_day: null,
     max_deployments_per_day: null,
     max_concurrent_builds: 1,
-    max_asset_bytes: 94371840
+    max_asset_bytes: 94371840,
+    max_live_dedicated_workers_per_owner: 5
   });
   assert.match(body.limit_rationale.max_validations_per_day, /Not capped by default/i);
   assert.match(body.limit_rationale.max_asset_bytes, /multipart upload/i);
+  assert.match(body.limit_rationale.max_live_dedicated_workers_per_owner, /per GitHub owner/i);
   assert.deepEqual(body.approval_required_bindings, ["AI", "VECTORIZE", "ROOMS"]);
   assert.deepEqual(body.self_service_bindings, ["DB", "FILES", "CACHE"]);
   assert.match(body.binding_rationale.FILES, /repo-scoped R2 bucket/i);
@@ -784,6 +786,8 @@ test("mcp exposes admin tools only to allowlisted OAuth admins and supports feat
   assert.ok(adminToolList.result.tools.some((tool) => tool.name === "get_admin_overview"));
   assert.ok(adminToolList.result.tools.some((tool) => tool.name === "set_featured_project"));
   assert.ok(adminToolList.result.tools.some((tool) => tool.name === "unfeature_project"));
+  assert.ok(adminToolList.result.tools.some((tool) => tool.name === "set_owner_capacity_override"));
+  assert.ok(adminToolList.result.tools.some((tool) => tool.name === "clear_owner_capacity_override"));
 
   const nonAdminToolListResponse = await fetchApp(
     "POST",
@@ -809,6 +813,7 @@ test("mcp exposes admin tools only to allowlisted OAuth admins and supports feat
   };
   assert.ok(!nonAdminToolList.result.tools.some((tool) => tool.name === "get_admin_overview"));
   assert.ok(!nonAdminToolList.result.tools.some((tool) => tool.name === "set_featured_project"));
+  assert.ok(!nonAdminToolList.result.tools.some((tool) => tool.name === "set_owner_capacity_override"));
 
   const setFeaturedResponse = await fetchApp(
     "POST",
@@ -884,13 +889,52 @@ test("mcp exposes admin tools only to allowlisted OAuth admins and supports feat
   assert.equal(overviewBody.result.structuredContent.projects[0]?.featured.enabled, true);
   assert.equal(overviewBody.result.structuredContent.projects[0]?.featured.sortOrder, 2);
 
-  const unfeatureResponse = await fetchApp(
+  const setCapacityResponse = await fetchApp(
     "POST",
     "/mcp",
     env,
     {
       jsonrpc: "2.0",
       id: 24,
+      method: "tools/call",
+      params: {
+        name: "set_owner_capacity_override",
+        arguments: {
+          ownerLogin: "course-org",
+          maxLiveDedicatedWorkers: 12,
+          note: "Showcase week"
+        }
+      }
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${adminAccessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(setCapacityResponse.status, 200);
+  const setCapacityBody = await setCapacityResponse.json() as {
+    result: {
+      structuredContent: {
+        ownerLogin: string;
+        capacityOverride: {
+          maxLiveDedicatedWorkers: number;
+          note?: string;
+        };
+      };
+    };
+  };
+  assert.equal(setCapacityBody.result.structuredContent.ownerLogin, "course-org");
+  assert.equal(setCapacityBody.result.structuredContent.capacityOverride.maxLiveDedicatedWorkers, 12);
+  assert.equal(setCapacityBody.result.structuredContent.capacityOverride.note, "Showcase week");
+
+  const unfeatureResponse = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 25,
       method: "tools/call",
       params: {
         name: "unfeature_project",
@@ -907,6 +951,30 @@ test("mcp exposes admin tools only to allowlisted OAuth admins and supports feat
   );
   assert.equal(unfeatureResponse.status, 200);
   assert.equal(db.selectFeaturedProject("szweibel/cloze-reader"), null);
+
+  const clearCapacityResponse = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 26,
+      method: "tools/call",
+      params: {
+        name: "clear_owner_capacity_override",
+        arguments: {
+          ownerLogin: "course-org"
+        }
+      }
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${adminAccessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(clearCapacityResponse.status, 200);
+  assert.equal(db.selectOwnerCapacityOverride("course-org"), null);
 });
 
 test("mcp does not expose admin tools to legacy featured editors without KALE_ADMIN_EMAILS", async () => {
@@ -951,6 +1019,8 @@ test("mcp does not expose admin tools to legacy featured editors without KALE_AD
   assert.ok(!toolList.result.tools.some((tool) => tool.name === "get_admin_overview"));
   assert.ok(!toolList.result.tools.some((tool) => tool.name === "set_featured_project"));
   assert.ok(!toolList.result.tools.some((tool) => tool.name === "unfeature_project"));
+  assert.ok(!toolList.result.tools.some((tool) => tool.name === "set_owner_capacity_override"));
+  assert.ok(!toolList.result.tools.some((tool) => tool.name === "clear_owner_capacity_override"));
 });
 
 test("connection health reports a stale local wrapper when the harness version is older", async () => {

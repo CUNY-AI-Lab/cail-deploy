@@ -102,8 +102,11 @@ import {
   countBuildJobsForRepositoryOnDate,
   consumeOauthGrant,
   consumeOauthRefreshToken,
+  deleteProjectByName,
+  deleteProjectDomain,
   deleteGitHubUserAuthByGitHubUserId,
   deleteFeaturedProject,
+  deleteOwnerCapacityOverride,
   ensureProjectPolicy,
   getBuildJob,
   getBuildJobByDeliveryId,
@@ -111,8 +114,12 @@ import {
   getDeployment,
   getLatestBuildJobForProject,
   getLatestProjectForRepository,
+  getOwnerCapacityOverride,
+  getPrimaryProjectDomainForProject,
   getProjectDeletionBacklog,
   listProjectDeletionBacklogs,
+  listLiveDedicatedWorkerProjectsForOwner,
+  listOwnerCapacityOverrides,
   getPreferredProjectNameForRepository,
   getProjectDomain,
   getProject,
@@ -124,6 +131,8 @@ import {
   putFeaturedProject,
   putGitHubUserAuth,
   putBuildJob,
+  putOwnerCapacityOverride,
+  putProjectDomain,
   putProject,
   releaseWebhookDelivery,
   insertDeployment,
@@ -208,6 +217,7 @@ type Env = {
   CLOUDFLARE_ACCESS_TEAM_DOMAIN?: string;
   KALE_ADMIN_EMAILS?: string;
   FEATURED_PROJECT_ADMIN_EMAILS?: string;
+  DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER?: string;
   MCP_OAUTH_BASE_URL?: string;
   MCP_OAUTH_TOKEN_SECRET?: string;
   MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
@@ -304,6 +314,7 @@ type ApiResponseStatus = 200 | 202 | 400 | 401 | 403 | 404 | 409 | 413 | 429 | 5
 export const deployServiceApp = new Hono<{ Bindings: Env }>();
 const DEFAULT_SUCCESSFUL_ARTIFACT_RETENTION = 2;
 const DEFAULT_FAILED_ARTIFACT_RETENTION_DAYS = 7;
+const DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER = 5;
 const STALE_QUEUED_BUILD_WINDOW_MS = 10 * 60 * 1000;
 const STALE_STARTED_BUILD_WINDOW_MS = 2 * 60 * 60 * 1000;
 const MAX_PROJECT_NAME_LENGTH = 63;
@@ -1447,6 +1458,48 @@ deployServiceApp.get("/api/admin/overview", async (c) => {
   });
 });
 
+deployServiceApp.put("/api/admin/owners/:ownerLogin/capacity", async (c) => {
+  return runProtectedAdminApiAction(c, async () => {
+    const ownerLogin = normalizeOwnerLoginRouteParam(c.req.param("ownerLogin"));
+    const body = await parseAdminOwnerCapacityOverrideRequestBody(c.req.raw);
+    const now = new Date().toISOString();
+    const existing = await getOwnerCapacityOverride(c.env.CONTROL_PLANE_DB, ownerLogin);
+    const override = {
+      ownerLogin,
+      maxLiveDedicatedWorkers: parseAdminOwnerCapacityLimit(body.maxLiveDedicatedWorkers),
+      note: typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    };
+    await putOwnerCapacityOverride(c.env.CONTROL_PLANE_DB, override);
+
+    return c.json({
+      ok: true,
+      summary: override.maxLiveDedicatedWorkers === 0
+        ? `${ownerLogin} now has no dedicated-worker cap override limit.`
+        : `${ownerLogin} can now run up to ${override.maxLiveDedicatedWorkers} live dedicated-worker projects.`,
+      ownerLogin: override.ownerLogin,
+      capacityOverride: {
+        maxLiveDedicatedWorkers: override.maxLiveDedicatedWorkers,
+        note: override.note
+      }
+    });
+  });
+});
+
+deployServiceApp.delete("/api/admin/owners/:ownerLogin/capacity", async (c) => {
+  return runProtectedAdminApiAction(c, async () => {
+    const ownerLogin = normalizeOwnerLoginRouteParam(c.req.param("ownerLogin"));
+    await deleteOwnerCapacityOverride(c.env.CONTROL_PLANE_DB, ownerLogin);
+    return c.json({
+      ok: true,
+      summary: `${ownerLogin} now uses the default dedicated-worker cap again.`,
+      ownerLogin,
+      capacityOverride: null
+    });
+  });
+});
+
 deployServiceApp.put("/api/admin/projects/:projectName/featured", async (c) => {
   return runProtectedAdminApiAction(c, async () => {
     const body = await parseAdminFeaturedProjectRequestBody(c.req.raw);
@@ -2059,21 +2112,24 @@ async function runProtectedAgentApiAction(
 }
 
 async function buildAdminOverviewPayload(env: Env) {
-  const [projects, featuredProjects, deletionBacklogs] = await Promise.all([
+  const [projects, featuredProjects, deletionBacklogs, ownerCapacityOverrides] = await Promise.all([
     listProjects(env.CONTROL_PLANE_DB),
     listFeaturedProjects(env.CONTROL_PLANE_DB),
-    listProjectDeletionBacklogs(env.CONTROL_PLANE_DB, 100)
+    listProjectDeletionBacklogs(env.CONTROL_PLANE_DB, 100),
+    listOwnerCapacityOverrides(env.CONTROL_PLANE_DB)
   ]);
   const adminProjects = buildFeaturedProjectsAdminRecords(projects, featuredProjects);
 
   return {
-    summary: `${adminProjects.length} live repositories, ${featuredProjects.length} featured projects, ${deletionBacklogs.length} pending deletion cleanups.`,
+    summary: `${adminProjects.length} live repositories, ${featuredProjects.length} featured projects, ${deletionBacklogs.length} pending deletion cleanups, ${ownerCapacityOverrides.length} owner cap overrides.`,
     projectCount: adminProjects.length,
     featuredProjectCount: featuredProjects.length,
     deletionBacklogCount: deletionBacklogs.length,
+    ownerCapacityOverrideCount: ownerCapacityOverrides.length,
     projects: adminProjects,
     featuredProjects,
-    deletionBacklogs
+    deletionBacklogs,
+    ownerCapacityOverrides
   };
 }
 
@@ -2115,6 +2171,46 @@ function parseAdminFeaturedProjectSortOrder(value: number | string | undefined):
   }
 
   return 100;
+}
+
+async function parseAdminOwnerCapacityOverrideRequestBody(
+  request: Request
+): Promise<{ maxLiveDedicatedWorkers?: number | string; note?: string }> {
+  let rawBody: unknown;
+  try {
+    rawBody = await request.json();
+  } catch {
+    throw new HttpError(400, "Admin owner capacity updates require a valid JSON body.");
+  }
+
+  if (typeof rawBody !== "object" || rawBody === null || Array.isArray(rawBody)) {
+    throw new HttpError(400, "Admin owner capacity updates require a JSON object body.");
+  }
+
+  return rawBody as { maxLiveDedicatedWorkers?: number | string; note?: string };
+}
+
+function parseAdminOwnerCapacityLimit(value: number | string | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  throw new HttpError(400, "maxLiveDedicatedWorkers must be a non-negative integer.");
+}
+
+function normalizeOwnerLoginRouteParam(value: string): string {
+  const ownerLogin = value.trim().toLowerCase();
+  if (!ownerLogin || !/^[a-z0-9](?:-?[a-z0-9]){0,38}$/i.test(ownerLogin)) {
+    throw new HttpError(400, "Owner login must be a valid GitHub owner name.");
+  }
+
+  return ownerLogin;
 }
 
 deployServiceApp.get("/api/build-jobs/:jobId/status", async (c) => {
@@ -2759,13 +2855,6 @@ async function deployArtifact(
   assertAllowedProjectName(metadata.projectName, env, env.DEPLOY_SERVICE_BASE_URL);
   const repositoryFullName = formatRepositoryFullName(metadata.ownerLogin, metadata.githubRepo);
   const now = new Date().toISOString();
-  const primaryDomainLabel = await ensurePrimaryProjectDomainLabel(
-    env,
-    metadata.projectName,
-    repositoryFullName,
-    now
-  );
-  const deploymentUrl = buildProjectDeploymentUrl(env, primaryDomainLabel);
   const policy = await ensureProjectPolicy(env.CONTROL_PLANE_DB, repositoryFullName, metadata.projectName, now);
   assertDeploymentPolicy(metadata, policy);
   const projectClaim = await getProjectClaim(env.CONTROL_PLANE_DB, metadata.projectName, repositoryFullName);
@@ -2780,6 +2869,22 @@ async function deployArtifact(
   if (projectClaim.conflict) {
     throw new HttpError(409, `Project name '${metadata.projectName}' is already claimed by another GitHub repository.`);
   }
+  const alreadyCountedDedicatedRepo = laneSourceRecord?.runtimeLane === "dedicated_worker";
+  if (!sharedStaticCandidate && !alreadyCountedDedicatedRepo) {
+    await assertOwnerWithinDedicatedWorkerCapacity(env, metadata.ownerLogin, repositoryFullName);
+  }
+
+  const priorProjectNameDomain = await getProjectDomain(env.CONTROL_PLANE_DB, metadata.projectName);
+  const hadPrimaryProjectDomain = Boolean(
+    await getPrimaryProjectDomainForProject(env.CONTROL_PLANE_DB, metadata.projectName)
+  );
+  const primaryDomainLabel = await ensurePrimaryProjectDomainLabel(
+    env,
+    metadata.projectName,
+    repositoryFullName,
+    now
+  );
+  const deploymentUrl = buildProjectDeploymentUrl(env, primaryDomainLabel);
 
   const reservedRecord: ProjectRecord = existingRecord ?? {
     projectName: metadata.projectName,
@@ -2926,6 +3031,28 @@ async function deployArtifact(
         `Shared static validation kept the deployment on a dedicated Worker after ${validation.attemptsUsed} attempts.`,
         validation.reason
       );
+    }
+  }
+
+  if (currentRuntimeLane === "dedicated_worker" && sharedStaticCandidate && !alreadyCountedDedicatedRepo) {
+    try {
+      await assertOwnerWithinDedicatedWorkerCapacity(env, metadata.ownerLogin, repositoryFullName);
+    } catch (error) {
+      await rollbackCapacityRejectedDedicatedWorkerDeploy(
+        env,
+        client,
+        {
+          repositoryFullName,
+          projectName: metadata.projectName,
+          primaryDomainLabel,
+          createdProjectClaim: !existingRecord,
+          priorProjectNameDomain,
+          hadPrimaryProjectDomain,
+          existingRecord,
+          artifactPrefix
+        }
+      );
+      throw error;
     }
   }
 
@@ -4101,6 +4228,22 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
   return parsed > 0 ? parsed : fallback;
 }
 
+function resolveMaxLiveDedicatedWorkersPerOwner(env: Pick<Env, "DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER">): number {
+  return parseNonNegativeInteger(
+    env.DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER,
+    DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER
+  );
+}
+
+async function resolveMaxLiveDedicatedWorkersPerOwnerForOwner(
+  env: Pick<Env, "CONTROL_PLANE_DB" | "DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER">,
+  ownerLogin: string
+): Promise<number> {
+  const normalizedOwner = ownerLogin.trim().toLowerCase();
+  const override = await getOwnerCapacityOverride(env.CONTROL_PLANE_DB, normalizedOwner);
+  return override?.maxLiveDedicatedWorkers ?? resolveMaxLiveDedicatedWorkersPerOwner(env);
+}
+
 function sanitizeArtifactPath(path: string): string {
   return path.replace(/^\/+/, "");
 }
@@ -4940,13 +5083,15 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
       max_validations_per_day: DEFAULT_PROJECT_POLICY.maxValidationsPerDay || null,
       max_deployments_per_day: DEFAULT_PROJECT_POLICY.maxDeploymentsPerDay || null,
       max_concurrent_builds: DEFAULT_PROJECT_POLICY.maxConcurrentBuilds,
-      max_asset_bytes: DEFAULT_PROJECT_POLICY.maxAssetBytes
+      max_asset_bytes: DEFAULT_PROJECT_POLICY.maxAssetBytes,
+      max_live_dedicated_workers_per_owner: resolveMaxLiveDedicatedWorkersPerOwner(env)
     },
     limit_rationale: {
       max_validations_per_day: "Not capped by default. Set only as an abuse-control override for a specific repository.",
       max_deployments_per_day: "Not capped by default. Set only as an abuse-control override for a specific repository.",
       max_concurrent_builds: "Limited because builds run on a shared Kale-owned runner.",
-      max_asset_bytes: "Limited because Kale Deploy currently receives each build artifact as one multipart upload and must stay within Cloudflare request-body limits with headroom for Worker code and metadata."
+      max_asset_bytes: "Limited because Kale Deploy currently receives each build artifact as one multipart upload and must stay within Cloudflare request-body limits with headroom for Worker code and metadata.",
+      max_live_dedicated_workers_per_owner: "Limited because dedicated workers consume Kale-owned isolated runtime capacity. The default cap is applied per GitHub owner."
     },
     approval_required_bindings: [
       "AI",
@@ -5179,6 +5324,50 @@ function createDeployServiceMcpServer(
               featured: {
                 enabled: false
               }
+            }
+          };
+        }
+      : undefined,
+    setOwnerCapacityOverride: adminEnabled
+      ? async (ownerLogin, maxLiveDedicatedWorkers, note) => {
+          const normalizedOwnerLogin = normalizeOwnerLoginRouteParam(ownerLogin);
+          const now = new Date().toISOString();
+          const existing = await getOwnerCapacityOverride(env.CONTROL_PLANE_DB, normalizedOwnerLogin);
+          const override = {
+            ownerLogin: normalizedOwnerLogin,
+            maxLiveDedicatedWorkers: parseAdminOwnerCapacityLimit(maxLiveDedicatedWorkers),
+            note: typeof note === "string" && note.trim() ? note.trim() : undefined,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now
+          };
+          await putOwnerCapacityOverride(env.CONTROL_PLANE_DB, override);
+          return {
+            status: 200,
+            summary: override.maxLiveDedicatedWorkers === 0
+              ? `${override.ownerLogin} now has no dedicated-worker cap override limit.`
+              : `${override.ownerLogin} can now run up to ${override.maxLiveDedicatedWorkers} live dedicated-worker projects.`,
+            body: {
+              ok: true,
+              ownerLogin: override.ownerLogin,
+              capacityOverride: {
+                maxLiveDedicatedWorkers: override.maxLiveDedicatedWorkers,
+                note: override.note
+              }
+            }
+          };
+        }
+      : undefined,
+    clearOwnerCapacityOverride: adminEnabled
+      ? async (ownerLogin) => {
+          const normalizedOwnerLogin = normalizeOwnerLoginRouteParam(ownerLogin);
+          await deleteOwnerCapacityOverride(env.CONTROL_PLANE_DB, normalizedOwnerLogin);
+          return {
+            status: 200,
+            summary: `${normalizedOwnerLogin} now uses the default dedicated-worker cap again.`,
+            body: {
+              ok: true,
+              ownerLogin: normalizedOwnerLogin,
+              capacityOverride: null
             }
           };
         }
@@ -5714,6 +5903,74 @@ async function assertRepositoryWithinJobLimits(
       eventName === "validate"
         ? `This repository has reached its daily validation limit (${limit}/day). Try again tomorrow or reduce how often you run validate.`
         : `This repository has reached its daily deployment limit (${limit}/day). Push again tomorrow or wait until the limit is raised.`
+    );
+  }
+}
+
+async function assertOwnerWithinDedicatedWorkerCapacity(
+  env: Env,
+  ownerLogin: string,
+  githubRepoToExclude: string
+): Promise<void> {
+  const limit = await resolveMaxLiveDedicatedWorkersPerOwnerForOwner(env, ownerLogin);
+  if (limit <= 0) {
+    return;
+  }
+
+  const liveDedicatedWorkers = await listLiveDedicatedWorkerProjectsForOwner(
+    env.CONTROL_PLANE_DB,
+    ownerLogin,
+    { excludeGithubRepo: githubRepoToExclude }
+  );
+  if (liveDedicatedWorkers.length < limit) {
+    return;
+  }
+
+  const activeProjectNames = liveDedicatedWorkers
+    .map((project) => project.projectName)
+    .filter(Boolean)
+    .slice(0, limit + 1)
+    .join(", ");
+
+  throw new HttpError(
+    429,
+    `Kale Deploy caps live dedicated-worker projects at ${limit} per GitHub owner. ${ownerLogin} already has ${liveDedicatedWorkers.length} live dedicated-worker project${liveDedicatedWorkers.length === 1 ? "" : "s"}${activeProjectNames ? `: ${activeProjectNames}.` : "."} Delete one or move one onto the shared static lane before deploying another dedicated worker.`
+  );
+}
+
+async function rollbackCapacityRejectedDedicatedWorkerDeploy(
+  env: Env,
+  client: CloudflareApiClient,
+  input: {
+    repositoryFullName: string;
+    projectName: string;
+    primaryDomainLabel: string;
+    createdProjectClaim: boolean;
+    priorProjectNameDomain: Awaited<ReturnType<typeof getProjectDomain>>;
+    hadPrimaryProjectDomain: boolean;
+    existingRecord: ProjectRecord | null;
+    artifactPrefix: string;
+  }
+): Promise<void> {
+  try {
+    await tryDeleteWorkerScript(client, env.WFP_NAMESPACE, input.projectName, "capacity-rejected dedicated Worker preview");
+    await deleteArtifactPrefix(env.DEPLOYMENT_ARCHIVE, input.artifactPrefix);
+
+    if (input.createdProjectClaim) {
+      await deleteProjectByName(env.CONTROL_PLANE_DB, input.projectName);
+
+      if (input.priorProjectNameDomain) {
+        await putProjectDomain(env.CONTROL_PLANE_DB, input.priorProjectNameDomain);
+      } else if (!input.hadPrimaryProjectDomain) {
+        await deleteProjectDomain(env.CONTROL_PLANE_DB, input.primaryDomainLabel);
+      }
+    } else if (input.existingRecord?.runtimeLane === "shared_static") {
+      await putProject(env.CONTROL_PLANE_DB, input.existingRecord);
+    }
+  } catch (cleanupError) {
+    console.error(
+      `Failed to fully roll back a capacity-rejected dedicated-worker deploy for ${input.repositoryFullName}.`,
+      cleanupError
     );
   }
 }

@@ -1251,6 +1251,13 @@ test("admin overview API returns deduped live repositories and pending deletion 
     artifact_prefixes_json: JSON.stringify([]),
     last_error: "Timed out deleting files bucket."
   });
+  db.putOwnerCapacityOverride({
+    owner_login: "course-org",
+    max_live_dedicated_workers: 12,
+    note: "Class showcase week.",
+    created_at: "2026-04-04T08:00:00.000Z",
+    updated_at: "2026-04-04T08:00:00.000Z"
+  });
 
   const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
   const response = await fetchApp(
@@ -1268,18 +1275,79 @@ test("admin overview API returns deduped live repositories and pending deletion 
     projectCount: number;
     featuredProjectCount: number;
     deletionBacklogCount: number;
+    ownerCapacityOverrideCount: number;
     projects: Array<{ projectName: string; githubRepo: string; featured: { enabled: boolean; sortOrder: number } }>;
     deletionBacklogs: Array<{ githubRepo: string; projectName: string; lastError?: string }>;
+    ownerCapacityOverrides: Array<{ ownerLogin: string; maxLiveDedicatedWorkers: number; note?: string; createdAt: string; updatedAt: string }>;
   };
   assert.equal(body.projectCount, 1);
   assert.equal(body.featuredProjectCount, 1);
   assert.equal(body.deletionBacklogCount, 1);
+  assert.equal(body.ownerCapacityOverrideCount, 1);
   assert.deepEqual(body.projects.map((project) => project.projectName), ["cloze-reader"]);
   assert.deepEqual(body.projects.map((project) => project.githubRepo), ["szweibel/cloze-reader"]);
   assert.equal(body.projects[0]?.featured.enabled, true);
   assert.equal(body.projects[0]?.featured.sortOrder, 4);
   assert.equal(body.deletionBacklogs[0]?.githubRepo, "szweibel/kale-files-smoke-test");
   assert.match(body.deletionBacklogs[0]?.lastError ?? "", /files bucket/i);
+  assert.deepEqual(body.ownerCapacityOverrides, [{
+    ownerLogin: "course-org",
+    maxLiveDedicatedWorkers: 12,
+    note: "Class showcase week.",
+    createdAt: "2026-04-04T08:00:00.000Z",
+    updatedAt: "2026-04-04T08:00:00.000Z"
+  }]);
+});
+
+test("admin capacity override API can set and clear a per-owner dedicated-worker cap", async () => {
+  const { env, db } = createTestContext({
+    KALE_ADMIN_EMAILS: "person@cuny.edu"
+  });
+
+  const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
+  const setResponse = await fetchRaw(new Request("https://deploy.example/api/admin/owners/course-org/capacity", {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      maxLiveDedicatedWorkers: 12,
+      note: "Class showcase week."
+    })
+  }), env);
+
+  assert.equal(setResponse.status, 200);
+  const setBody = await setResponse.json() as {
+    ownerLogin: string;
+    capacityOverride: {
+      maxLiveDedicatedWorkers: number;
+      note?: string;
+    };
+  };
+  assert.equal(setBody.ownerLogin, "course-org");
+  assert.equal(setBody.capacityOverride.maxLiveDedicatedWorkers, 12);
+  assert.equal(setBody.capacityOverride.note, "Class showcase week.");
+  const storedOverride = db.selectOwnerCapacityOverride("course-org") as {
+    owner_login: string;
+    max_live_dedicated_workers: number;
+    note: string | null;
+  } | null;
+  assert.equal(storedOverride?.owner_login, "course-org");
+  assert.equal(storedOverride?.max_live_dedicated_workers, 12);
+  assert.equal(storedOverride?.note, "Class showcase week.");
+
+  const clearResponse = await fetchApp(
+    "DELETE",
+    "/api/admin/owners/course-org/capacity",
+    env,
+    undefined,
+    {
+      authorization: `Bearer ${accessToken}`
+    }
+  );
+  assert.equal(clearResponse.status, 200);
+  assert.equal(db.selectOwnerCapacityOverride("course-org"), null);
 });
 
 test("admin featured update rejects malformed JSON without changing featured state", async () => {

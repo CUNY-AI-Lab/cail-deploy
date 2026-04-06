@@ -200,13 +200,15 @@
     "max_validations_per_day": null,
     "max_deployments_per_day": null,
     "max_concurrent_builds": 1,
-    "max_asset_bytes": 94371840
+    "max_asset_bytes": 94371840,
+    "max_live_dedicated_workers_per_owner": 5
   },
   "limit_rationale": {
     "max_validations_per_day": "Not capped by default. Set only as an abuse-control override for a specific repository.",
     "max_deployments_per_day": "Not capped by default. Set only as an abuse-control override for a specific repository.",
     "max_concurrent_builds": "Limited because builds run on a shared Kale-owned runner.",
-    "max_asset_bytes": "Limited because Kale Deploy currently receives each build artifact as one multipart upload and must stay within Cloudflare request-body limits with headroom for Worker code and metadata."
+    "max_asset_bytes": "Limited because Kale Deploy currently receives each build artifact as one multipart upload and must stay within Cloudflare request-body limits with headroom for Worker code and metadata.",
+    "max_live_dedicated_workers_per_owner": "Limited because dedicated workers consume Kale-owned isolated runtime capacity. The default cap is applied per GitHub owner."
   },
   "approval_required_bindings": [
     "AI",

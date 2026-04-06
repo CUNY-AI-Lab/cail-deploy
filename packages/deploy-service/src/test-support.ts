@@ -51,6 +51,7 @@ export type TestEnv = {
   CLOUDFLARE_ACCESS_TEAM_DOMAIN?: string;
   KALE_ADMIN_EMAILS?: string;
   FEATURED_PROJECT_ADMIN_EMAILS?: string;
+  DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER?: string;
   MCP_OAUTH_BASE_URL?: string;
   WFP_NAMESPACE: string;
   PROJECT_BASE_URL: string;
@@ -96,6 +97,7 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
     SHARED_STATIC_VALIDATION_ATTEMPTS: "1",
     SHARED_STATIC_VALIDATION_RETRY_MS: "0",
     DEPLOY_SERVICE_BASE_URL: "https://deploy.example",
+    DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER: "5",
     MCP_OAUTH_BASE_URL: "https://auth.example",
     MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS: "86400",
     MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS: "2592000",
@@ -451,6 +453,7 @@ export class FakeD1Database {
   private readonly projectDomains = new Map<string, Record<string, unknown>>();
   private readonly projectDeletionBacklogs = new Map<string, Record<string, unknown>>();
   private readonly featuredProjects = new Map<string, Record<string, unknown>>();
+  private readonly ownerCapacityOverrides = new Map<string, Record<string, unknown>>();
   private readonly usedOauthGrants = new Set<string>();
   private readonly usedOauthRefreshTokens = new Set<string>();
 
@@ -559,6 +562,16 @@ export class FakeD1Database {
     this.featuredProjects.set(row.github_repo, row);
   }
 
+  putOwnerCapacityOverride(row: {
+    owner_login: string;
+    max_live_dedicated_workers: number;
+    note: string | null;
+    created_at: string;
+    updated_at: string;
+  }): void {
+    this.ownerCapacityOverrides.set(row.owner_login, row);
+  }
+
   upsertProjectFromParams(params: unknown[]): void {
     const project: ProjectRecord = {
       projectName: String(params[0]),
@@ -657,6 +670,10 @@ export class FakeD1Database {
     return this.featuredProjects.get(githubRepo) ?? null;
   }
 
+  selectOwnerCapacityOverride(ownerLogin: string): Record<string, unknown> | null {
+    return this.ownerCapacityOverrides.get(ownerLogin) ?? null;
+  }
+
   listProjectSecrets(githubRepo: string): Record<string, unknown>[] {
     return Array.from(this.projectSecrets.values())
       .filter((secret) => secret.github_repo === githubRepo)
@@ -702,6 +719,11 @@ export class FakeD1Database {
         }
         return String(right.updated_at).localeCompare(String(left.updated_at));
       });
+  }
+
+  listOwnerCapacityOverrides(): Record<string, unknown>[] {
+    return Array.from(this.ownerCapacityOverrides.values())
+      .sort((left, right) => String(left.owner_login).localeCompare(String(right.owner_login)));
   }
 
   upsertGitHubUserAuthFromParams(params: unknown[]): void {
@@ -772,6 +794,17 @@ export class FakeD1Database {
       sort_order: Number(params[3]),
       created_at: existing?.created_at ? String(existing.created_at) : String(params[4]),
       updated_at: String(params[5])
+    });
+  }
+
+  upsertOwnerCapacityOverrideFromParams(params: unknown[]): void {
+    const existing = this.ownerCapacityOverrides.get(String(params[0]));
+    this.putOwnerCapacityOverride({
+      owner_login: String(params[0]),
+      max_live_dedicated_workers: Number(params[1]),
+      note: nullableString(params[2]),
+      created_at: existing?.created_at ? String(existing.created_at) : String(params[3]),
+      updated_at: String(params[4])
     });
   }
 
@@ -889,6 +922,10 @@ export class FakeD1Database {
 
   deleteFeaturedProject(githubRepo: string): void {
     this.featuredProjects.delete(githubRepo);
+  }
+
+  deleteOwnerCapacityOverride(ownerLogin: string): void {
+    this.ownerCapacityOverrides.delete(ownerLogin);
   }
 
   updateDeploymentArchiveState(
@@ -1300,6 +1337,10 @@ class FakePreparedStatement {
       return this.db.selectFeaturedProject(String(this.params[0])) as T | null;
     }
 
+    if (normalized.includes("from owner_capacity_overrides") && normalized.includes("where owner_login = ?")) {
+      return this.db.selectOwnerCapacityOverride(String(this.params[0])) as T | null;
+    }
+
     if (normalized.includes("from build_jobs") && normalized.includes("where job_id = ?")) {
       return this.db.selectBuildJob(String(this.params[0])) as T | null;
     }
@@ -1376,6 +1417,10 @@ class FakePreparedStatement {
 
     if (normalized.includes("from featured_projects fp") && normalized.includes("join projects p")) {
       return { results: this.db.listFeaturedProjects() as T[] };
+    }
+
+    if (normalized.includes("from owner_capacity_overrides") && normalized.includes("order by owner_login asc")) {
+      return { results: this.db.listOwnerCapacityOverrides() as T[] };
     }
 
     if (normalized.includes("from project_secrets") && normalized.includes("where github_repo = ?")) {
@@ -1478,6 +1523,10 @@ class FakePreparedStatement {
       this.db.upsertFeaturedProjectFromParams(this.params);
     }
 
+    if (normalized.includes("insert into owner_capacity_overrides")) {
+      this.db.upsertOwnerCapacityOverrideFromParams(this.params);
+    }
+
     if (normalized.includes("insert into mcp_tokens")) {
       this.db.putMcpToken({
         token_hash: String(this.params[0]),
@@ -1552,6 +1601,10 @@ class FakePreparedStatement {
 
     if (normalized.includes("delete from featured_projects") && normalized.includes("where github_repo = ?")) {
       this.db.deleteFeaturedProject(String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from owner_capacity_overrides") && normalized.includes("where owner_login = ?")) {
+      this.db.deleteOwnerCapacityOverride(String(this.params[0]));
     }
 
     if (normalized.includes("update deployments") && normalized.includes("set archive_kind = ?, manifest_key = ?") && normalized.includes("where deployment_id = ?")) {

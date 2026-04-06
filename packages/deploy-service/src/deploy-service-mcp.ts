@@ -52,6 +52,8 @@ export function createDeployServiceMcpServer(input: {
   getAdminOverview?: () => Promise<McpStatusResponse & { summary: string }>;
   setFeaturedProject?: (projectName: string, headline?: string, sortOrder?: number) => Promise<McpStatusResponse & { summary: string }>;
   unfeatureProject?: (projectName: string) => Promise<McpStatusResponse & { summary: string }>;
+  setOwnerCapacityOverride?: (ownerLogin: string, maxLiveDedicatedWorkers: number, note?: string) => Promise<McpStatusResponse & { summary: string }>;
+  clearOwnerCapacityOverride?: (ownerLogin: string) => Promise<McpStatusResponse & { summary: string }>;
 }): McpServer {
   const server = new McpServer(
     {
@@ -302,10 +304,18 @@ export function createDeployServiceMcpServer(input: {
     }
   );
 
-  if (input.getAdminOverview && input.setFeaturedProject && input.unfeatureProject) {
+  if (
+    input.getAdminOverview
+    && input.setFeaturedProject
+    && input.unfeatureProject
+    && input.setOwnerCapacityOverride
+    && input.clearOwnerCapacityOverride
+  ) {
     const getAdminOverview = input.getAdminOverview;
     const setFeaturedProject = input.setFeaturedProject;
     const unfeatureProject = input.unfeatureProject;
+    const setOwnerCapacityOverride = input.setOwnerCapacityOverride;
+    const clearOwnerCapacityOverride = input.clearOwnerCapacityOverride;
 
     server.registerTool(
       "get_admin_overview",
@@ -356,6 +366,46 @@ export function createDeployServiceMcpServer(input: {
       },
       async ({ projectName }) => {
         const result = await unfeatureProject(projectName);
+        if (result.status >= 400) {
+          return createMcpToolErrorResult(result.summary, result.body);
+        }
+
+        return createMcpToolResult(result.summary, result.body);
+      }
+    );
+
+    server.registerTool(
+      "set_owner_capacity_override",
+      {
+        title: "Set owner capacity override",
+        description: "Override the dedicated-worker cap for a GitHub owner login.",
+        inputSchema: {
+          ownerLogin: z.string().describe("GitHub owner login to override, such as a user or org name."),
+          maxLiveDedicatedWorkers: z.number().int().nonnegative().describe("Non-negative override limit for live dedicated-worker projects. Use 0 to remove the cap for that owner."),
+          note: z.string().optional().describe("Optional admin note explaining why this override exists.")
+        }
+      },
+      async ({ ownerLogin, maxLiveDedicatedWorkers, note }) => {
+        const result = await setOwnerCapacityOverride(ownerLogin, maxLiveDedicatedWorkers, note);
+        if (result.status >= 400) {
+          return createMcpToolErrorResult(result.summary, result.body);
+        }
+
+        return createMcpToolResult(result.summary, result.body);
+      }
+    );
+
+    server.registerTool(
+      "clear_owner_capacity_override",
+      {
+        title: "Clear owner capacity override",
+        description: "Remove a dedicated-worker cap override and return a GitHub owner to the Kale default.",
+        inputSchema: {
+          ownerLogin: z.string().describe("GitHub owner login to reset back to the default cap.")
+        }
+      },
+      async ({ ownerLogin }) => {
+        const result = await clearOwnerCapacityOverride(ownerLogin);
         if (result.status >= 400) {
           return createMcpToolErrorResult(result.summary, result.body);
         }
