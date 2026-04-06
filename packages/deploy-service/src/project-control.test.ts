@@ -1149,6 +1149,63 @@ test("featured projects admin page dedupes multiple live slugs for the same repo
   assert.match(html, /Current featured headline\./);
 });
 
+test("admin overview API returns structured auth bootstrap metadata when no MCP token is present", async () => {
+  const { env } = createTestContext({
+    KALE_ADMIN_EMAILS: "person@cuny.edu"
+  });
+
+  const response = await fetchApp("GET", "/api/admin/overview", env);
+
+  assert.equal(response.status, 401);
+  const body = await response.json() as {
+    error: string;
+    summary: string;
+    nextAction: string;
+    mcpEndpoint: string;
+    oauthProtectedResourceMetadata: string;
+    oauthAuthorizationMetadata: string;
+    authorizationUrl: string;
+  };
+  assert.match(body.error, /missing bearer token/i);
+  assert.equal(body.nextAction, "complete_browser_login");
+  assert.match(body.summary, /not authenticated yet/i);
+  assert.equal(body.mcpEndpoint, "https://deploy.example/mcp");
+  assert.equal(body.oauthProtectedResourceMetadata, "https://deploy.example/.well-known/oauth-protected-resource/mcp");
+  assert.equal(body.oauthAuthorizationMetadata, "https://auth.example/.well-known/oauth-authorization-server");
+  assert.equal(body.authorizationUrl, "https://deploy.example/api/oauth/authorize");
+});
+
+test("admin overview API does not treat featured editors as full Kale admins", async () => {
+  const { env, db } = createTestContext({
+    FEATURED_PROJECT_ADMIN_EMAILS: "person@cuny.edu"
+  });
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+
+  const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
+  const response = await fetchApp(
+    "GET",
+    "/api/admin/overview",
+    env,
+    undefined,
+    {
+      authorization: `Bearer ${accessToken}`
+    }
+  );
+
+  assert.equal(response.status, 503);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /not configured on this deployment/i);
+});
+
 test("admin overview API returns deduped live repositories and pending deletion cleanup for Kale admins", async () => {
   const { env, db } = createTestContext({
     KALE_ADMIN_EMAILS: "person@cuny.edu"
@@ -1223,6 +1280,37 @@ test("admin overview API returns deduped live repositories and pending deletion 
   assert.equal(body.projects[0]?.featured.sortOrder, 4);
   assert.equal(body.deletionBacklogs[0]?.githubRepo, "szweibel/kale-files-smoke-test");
   assert.match(body.deletionBacklogs[0]?.lastError ?? "", /files bucket/i);
+});
+
+test("admin featured update rejects malformed JSON without changing featured state", async () => {
+  const { env, db } = createTestContext({
+    KALE_ADMIN_EMAILS: "person@cuny.edu"
+  });
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+
+  const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
+  const response = await fetchRaw(new Request("https://deploy.example/api/admin/projects/cloze-reader/featured", {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json"
+    },
+    body: "{"
+  }), env);
+
+  assert.equal(response.status, 400);
+  const body = await response.json() as { error: string };
+  assert.match(body.error, /valid JSON body/i);
+  assert.equal(db.selectFeaturedProject("szweibel/cloze-reader"), null);
 });
 
 test("admin overview API rejects PAT tokens even for allowlisted admins", async () => {

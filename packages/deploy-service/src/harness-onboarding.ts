@@ -286,8 +286,8 @@ function buildLandingPageHarnessInstallInstructionFromConnection(
     installMode: entry.installMode,
     instruction: entry.installInstruction,
     hint: entry.installHint,
-    installNotes: entry.installNotes,
-    manualFallback: buildLandingPageManualFallbackFromConnection(entry.manualFallback)
+    installNotes: [],
+    manualFallback: undefined
   };
 }
 
@@ -301,7 +301,7 @@ function buildLandingPageManualFallbackFromConnection(
   return {
     instruction: fallback.instruction,
     hint: fallback.hint,
-    notes: fallback.notes
+    notes: []
   };
 }
 

@@ -408,11 +408,8 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Use this install step once in your AI agent/i);
   assert.match(html, /\/plugin marketplace add CUNY-AI-Lab\/CAIL-deploy/);
   assert.match(html, /\/plugin install kale-deploy@cuny-ai-lab/);
-  assert.match(html, /Primary path/);
   assert.match(html, /Install the Kale Deploy add-on in the Codex app/);
-  assert.match(html, /Manual fallback/);
-  assert.match(html, /codex mcp add kale --url https:\/\/deploy\.example\/mcp/);
-  assert.match(html, /codex mcp login kale/);
+  assert.doesNotMatch(html, /Manual fallback/);
   assert.match(html, /\/extensions install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy --auto-update/);
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app with Kale Deploy and put it online so I can see it live/);
@@ -910,6 +907,50 @@ test("mcp exposes admin tools only to allowlisted OAuth admins and supports feat
   );
   assert.equal(unfeatureResponse.status, 200);
   assert.equal(db.selectFeaturedProject("szweibel/cloze-reader"), null);
+});
+
+test("mcp does not expose admin tools to legacy featured editors without KALE_ADMIN_EMAILS", async () => {
+  const { env, db } = createTestContext({
+    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
+    FEATURED_PROJECT_ADMIN_EMAILS: "person@cuny.edu"
+  });
+  db.putProject({
+    projectName: "cloze-reader",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/cloze-reader",
+    deploymentUrl: "https://cloze-reader.cuny.qzz.io",
+    hasAssets: false,
+    latestDeploymentId: "dep-1",
+    createdAt: "2026-04-04T10:00:00.000Z",
+    updatedAt: "2026-04-04T10:10:00.000Z"
+  });
+
+  const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
+  const toolListResponse = await fetchApp(
+    "POST",
+    "/mcp",
+    env,
+    {
+      jsonrpc: "2.0",
+      id: 25,
+      method: "tools/list",
+      params: {}
+    },
+    {
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(toolListResponse.status, 200);
+  const toolList = await toolListResponse.json() as {
+    result: {
+      tools: Array<{ name: string }>;
+    };
+  };
+  assert.ok(!toolList.result.tools.some((tool) => tool.name === "get_admin_overview"));
+  assert.ok(!toolList.result.tools.some((tool) => tool.name === "set_featured_project"));
+  assert.ok(!toolList.result.tools.some((tool) => tool.name === "unfeature_project"));
 });
 
 test("connection health reports a stale local wrapper when the harness version is older", async () => {

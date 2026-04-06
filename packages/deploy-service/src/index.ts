@@ -1450,10 +1450,7 @@ deployServiceApp.get("/api/admin/overview", async (c) => {
 
 deployServiceApp.put("/api/admin/projects/:projectName/featured", async (c) => {
   return runProtectedAdminApiAction(c, async () => {
-    const rawBody: unknown = await c.req.json().catch(() => ({}));
-    const body = typeof rawBody === "object" && rawBody !== null
-      ? rawBody as { headline?: string; sortOrder?: number | string }
-      : {};
+    const body = await parseAdminFeaturedProjectRequestBody(c.req.raw);
     const { project, feature } = await setFeaturedProjectForLiveProject({
       env: c.env,
       projectName: c.req.param("projectName"),
@@ -2030,7 +2027,7 @@ async function runProtectedAdminApiAction(
     identity = await requireKaleAdminMcpIdentity(c.req.raw, c.env);
   } catch (error) {
     const httpError = asHttpError(error);
-    return c.json({ error: httpError.message }, { status: httpError.status });
+    return protectedAdminApiAuthErrorResponse(c, c.env, httpError);
   }
 
   try {
@@ -2079,6 +2076,23 @@ async function buildAdminOverviewPayload(env: Env) {
     featuredProjects,
     deletionBacklogs
   };
+}
+
+async function parseAdminFeaturedProjectRequestBody(
+  request: Request
+): Promise<{ headline?: string; sortOrder?: number | string }> {
+  let rawBody: unknown;
+  try {
+    rawBody = await request.json();
+  } catch {
+    throw new HttpError(400, "Admin featured project updates require a valid JSON body.");
+  }
+
+  if (typeof rawBody !== "object" || rawBody === null || Array.isArray(rawBody)) {
+    throw new HttpError(400, "Admin featured project updates require a JSON object body.");
+  }
+
+  return rawBody as { headline?: string; sortOrder?: number | string };
 }
 
 function parseAdminFeaturedProjectSortOrder(value: number | string | undefined): number {
@@ -4204,7 +4218,7 @@ async function requireFeaturedProjectAdminIdentity(
   env: Env
 ): Promise<CloudflareAccessRequestIdentity> {
   const identity = await requireCloudflareAccessIdentity(request, env);
-  assertKaleAdminEmail(identity.email, env, {
+  assertConfiguredEmail(identity.email, resolveFeaturedProjectAdminEmails(env), {
     unavailableMessage: "Featured project curation is not configured on this deployment.",
     forbiddenMessage: "Featured project curation is only available to Kale editors."
   });
@@ -4220,7 +4234,7 @@ async function requireKaleAdminMcpIdentity(
   if (identity.type !== "mcp_oauth") {
     throw new HttpError(403, "Kale admin operations require a short-lived MCP OAuth session, not a personal access token.");
   }
-  assertKaleAdminEmail(identity.email, env, {
+  assertConfiguredEmail(identity.email, resolveKaleAdminEmails(env), {
     unavailableMessage: "Kale admin operations are not configured on this deployment.",
     forbiddenMessage: "Kale admin operations are only available to Kale administrators."
   });
@@ -4238,6 +4252,14 @@ function resolveAccessConfigFromEnv(env: Env) {
 
 function resolveKaleAdminEmails(env: Env): Set<string> {
   return new Set(
+    splitConfiguredList(resolveConfiguredEnvValue(env.KALE_ADMIN_EMAILS)).map((value) =>
+      value.toLowerCase()
+    )
+  );
+}
+
+function resolveFeaturedProjectAdminEmails(env: Env): Set<string> {
+  return new Set(
     [
       ...splitConfiguredList(resolveConfiguredEnvValue(env.KALE_ADMIN_EMAILS)),
       ...splitConfiguredList(resolveConfiguredEnvValue(env.FEATURED_PROJECT_ADMIN_EMAILS))
@@ -4247,15 +4269,14 @@ function resolveKaleAdminEmails(env: Env): Set<string> {
   );
 }
 
-function assertKaleAdminEmail(
+function assertConfiguredEmail(
   email: string,
-  env: Env,
+  allowedEmails: Set<string>,
   messages: {
     unavailableMessage: string;
     forbiddenMessage: string;
   }
 ): void {
-  const allowedEmails = resolveKaleAdminEmails(env);
   if (allowedEmails.size === 0) {
     throw new HttpError(503, messages.unavailableMessage);
   }
@@ -4490,6 +4511,19 @@ function protectedAgentApiAuthErrorResponse(
   return c.json(buildProtectedAgentApiAuthErrorPayload(env, serviceBaseUrl, error), { status: error.status });
 }
 
+function protectedAdminApiAuthErrorResponse(
+  c: Context<{ Bindings: Env }>,
+  env: Env,
+  error: HttpError
+): Response {
+  if (error.status !== 401 && error.status !== 403) {
+    return c.json({ error: error.message }, { status: error.status });
+  }
+
+  const serviceBaseUrl = resolveServiceBaseUrl(env, c.req.raw.url);
+  return c.json(buildProtectedAdminApiAuthErrorPayload(env, serviceBaseUrl, error), { status: error.status });
+}
+
 function buildProtectedAgentApiAuthErrorPayload(env: Env, serviceBaseUrl: string, error: HttpError) {
   const service = buildPublicServiceMetadata(env, serviceBaseUrl);
   const notAllowed = error.status === 403;
@@ -4500,6 +4534,48 @@ function buildProtectedAgentApiAuthErrorPayload(env: Env, serviceBaseUrl: string
       ? "Kale Deploy reached the institutional login layer, but this identity is not allowed to use the protected agent API."
       : "Kale Deploy is reachable, but this request is not authenticated yet.",
     nextAction: notAllowed ? "sign_in_with_allowed_cuny_email" : "complete_browser_login",
+    mcpEndpoint: service.mcpEndpoint,
+    connectionHealthUrl: service.connectionHealthUrl,
+    oauthProtectedResourceMetadata: service.oauthProtectedResourceMetadata,
+    oauthAuthorizationMetadata: service.oauthAuthorizationMetadata,
+    authorizationUrl: service.authorizationUrl
+  };
+}
+
+function buildProtectedAdminApiAuthErrorPayload(env: Env, serviceBaseUrl: string, error: HttpError) {
+  const service = buildPublicServiceMetadata(env, serviceBaseUrl);
+  const message = error.message;
+
+  if (error.status === 403 && /short-lived MCP OAuth session/i.test(message)) {
+    return {
+      error: message,
+      summary: "Kale admin operations require a short-lived MCP OAuth session before the admin API can continue.",
+      nextAction: "complete_browser_login",
+      mcpEndpoint: service.mcpEndpoint,
+      connectionHealthUrl: service.connectionHealthUrl,
+      oauthProtectedResourceMetadata: service.oauthProtectedResourceMetadata,
+      oauthAuthorizationMetadata: service.oauthAuthorizationMetadata,
+      authorizationUrl: service.authorizationUrl
+    };
+  }
+
+  if (error.status === 403) {
+    return {
+      error: message,
+      summary: "Kale reached the admin API, but this signed-in identity is not allowlisted for Kale administration.",
+      nextAction: "sign_in_with_allowed_admin_account",
+      mcpEndpoint: service.mcpEndpoint,
+      connectionHealthUrl: service.connectionHealthUrl,
+      oauthProtectedResourceMetadata: service.oauthProtectedResourceMetadata,
+      oauthAuthorizationMetadata: service.oauthAuthorizationMetadata,
+      authorizationUrl: service.authorizationUrl
+    };
+  }
+
+  return {
+    error: message,
+    summary: "Kale admin operations are reachable, but this request is not authenticated yet.",
+    nextAction: "complete_browser_login",
     mcpEndpoint: service.mcpEndpoint,
     connectionHealthUrl: service.connectionHealthUrl,
     oauthProtectedResourceMetadata: service.oauthProtectedResourceMetadata,
