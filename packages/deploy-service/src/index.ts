@@ -319,6 +319,9 @@ export const deployServiceApp = new Hono<{ Bindings: Env }>();
 const DEFAULT_SUCCESSFUL_ARTIFACT_RETENTION = 2;
 const DEFAULT_FAILED_ARTIFACT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER = 5;
+const DEFAULT_SHARED_STATIC_VALIDATION_ATTEMPTS = 15;
+const DEFAULT_SHARED_STATIC_VALIDATION_RETRY_MS = 8_000;
+const SHARED_STATIC_VALIDATION_FETCH_BUDGET = 30;
 const STALE_QUEUED_BUILD_WINDOW_MS = 10 * 60 * 1000;
 const STALE_STARTED_BUILD_WINDOW_MS = 2 * 60 * 60 * 1000;
 const MAX_PROJECT_NAME_LENGTH = 63;
@@ -2825,17 +2828,21 @@ async function completeBuildJobFailure(
     errorDetail: payload?.text
   };
   await putBuildJob(env.CONTROL_PLANE_DB, failedJob);
-  await updateJobCheckRun(env, failedJob, {
-    status: "completed",
-    conclusion,
-    completedAt,
-    detailsUrl: payload?.buildLogUrl ?? job.buildLogUrl ?? buildJobStatusUrl(serviceBaseUrl, job.jobId),
-    output: checkRunOutput(
-      title,
-      payload?.summary ?? errorMessage,
-      payload?.text
-    )
-  });
+  try {
+    await updateJobCheckRun(env, failedJob, {
+      status: "completed",
+      conclusion,
+      completedAt,
+      detailsUrl: payload?.buildLogUrl ?? job.buildLogUrl ?? buildJobStatusUrl(serviceBaseUrl, job.jobId),
+      output: checkRunOutput(
+        title,
+        payload?.summary ?? errorMessage,
+        payload?.text
+      )
+    });
+  } catch (error) {
+    console.error(`[deploy-service] failed to update failed build check-run for job=${job.jobId}`, error);
+  }
 
   return failedJob;
 }
@@ -3018,10 +3025,7 @@ async function deployArtifact(
       staticAssets,
       files,
       deploymentId,
-      {
-        attempts: resolvePositiveInteger(env.SHARED_STATIC_VALIDATION_ATTEMPTS) ?? 120,
-        retryMs: resolvePositiveInteger(env.SHARED_STATIC_VALIDATION_RETRY_MS) ?? 1000
-      }
+      resolveSharedStaticValidationOptions(env)
     );
     if (validation.matches) {
       if (validation.attemptsUsed > 1) {
@@ -3333,8 +3337,20 @@ async function validateSharedStaticCandidate(
   options: {
     attempts: number;
     retryMs: number;
+    maxFetches: number;
   }
 ): Promise<{ matches: boolean; reason?: string; attemptsUsed: number }> {
+  const manifest = buildLoadedSharedStaticManifest({
+    staticAssets: staticAssets.files,
+    metadata: {
+      staticAssets: {
+        config: staticAssets.config
+      }
+    }
+  });
+  const assetBodies = await loadSharedStaticAssetBodies(staticAssets, files);
+  const probePaths = collectSharedStaticValidationPaths(manifest);
+  let remainingFetches = options.maxFetches;
   let lastFailure: { matches: boolean; reason?: string; attemptsUsed: number } = {
     matches: false,
     reason: "Shared static validation did not run.",
@@ -3342,12 +3358,23 @@ async function validateSharedStaticCandidate(
   };
 
   for (let attempt = 0; attempt < options.attempts; attempt += 1) {
+    if (remainingFetches <= 0) {
+      return {
+        matches: false,
+        reason: "Shared static validation reached its public fetch budget before confirming the deployment.",
+        attemptsUsed: attempt
+      };
+    }
+
     const result = await validateSharedStaticCandidateOnce(
       deploymentUrl,
-      staticAssets,
-      files,
-      `${cacheBustKey}-${attempt}`
+      manifest,
+      assetBodies,
+      probePaths,
+      `${cacheBustKey}-${attempt}`,
+      remainingFetches
     );
+    remainingFetches -= result.fetchesUsed;
     if (result.matches) {
       return {
         ...result,
@@ -3359,6 +3386,15 @@ async function validateSharedStaticCandidate(
       ...result,
       attemptsUsed: attempt + 1
     };
+    if (remainingFetches <= 0) {
+      return {
+        ...lastFailure,
+        reason: lastFailure.reason
+          ? `${lastFailure.reason} Shared static validation stopped at the public fetch budget.`
+          : "Shared static validation reached its public fetch budget before confirming the deployment."
+      };
+    }
+
     if (attempt < options.attempts - 1 && options.retryMs > 0) {
       await delay(options.retryMs);
     }
@@ -3369,56 +3405,59 @@ async function validateSharedStaticCandidate(
 
 async function validateSharedStaticCandidateOnce(
   deploymentUrl: string,
-  staticAssets: StaticAssetUpload,
-  files: Array<{ name: string; file: File }>,
-  cacheBustKey: string
-): Promise<{ matches: boolean; reason?: string }> {
-  const manifest = buildLoadedSharedStaticManifest({
-    staticAssets: staticAssets.files,
-    metadata: {
-      staticAssets: {
-        config: staticAssets.config
-      }
-    }
-  });
-  const assetBodies = await loadSharedStaticAssetBodies(staticAssets, files);
-  const probePaths = collectSharedStaticValidationPaths(manifest);
+  manifest: ReturnType<typeof buildLoadedSharedStaticManifest>,
+  assetBodies: Map<string, Uint8Array>,
+  probePaths: string[],
+  cacheBustKey: string,
+  maxFetches: number
+): Promise<{ matches: boolean; reason?: string; fetchesUsed: number }> {
+  let fetchesUsed = 0;
 
   for (const probePath of probePaths) {
     const normalizedPath = normalizeSharedStaticPath(probePath);
     if (!normalizedPath) {
-      return { matches: false, reason: `Invalid shared static probe path '${probePath}'.` };
+      return { matches: false, reason: `Invalid shared static probe path '${probePath}'.`, fetchesUsed };
     }
 
+    if (fetchesUsed >= maxFetches) {
+      return {
+        matches: false,
+        reason: "Shared static validation reached its public fetch budget before checking all probe paths.",
+        fetchesUsed
+      };
+    }
     const expected = resolveSharedStaticRequest(manifest, normalizedPath);
     const actual = await fetchSharedStaticValidationResponse(deploymentUrl, probePath, cacheBustKey);
+    fetchesUsed += 1;
     if (!actual) {
-      return { matches: false, reason: `Validation fetch failed for '${probePath}'.` };
+      return { matches: false, reason: `Validation fetch failed for '${probePath}'.`, fetchesUsed };
     }
 
     const unexpectedHeader = findUnexpectedSharedStaticHeader(actual.headers);
     if (unexpectedHeader) {
       return {
         matches: false,
-        reason: `Response for '${probePath}' included '${unexpectedHeader}', which indicates request-time Worker behavior that shared static hosting would drop.`
+        reason: `Response for '${probePath}' included '${unexpectedHeader}', which indicates request-time Worker behavior that shared static hosting would drop.`,
+        fetchesUsed
       };
     }
 
     if (expected.kind === "redirect") {
       if (actual.status < 300 || actual.status >= 400) {
-        return { matches: false, reason: `Expected a redirect for '${probePath}' but received ${actual.status}.` };
+        return { matches: false, reason: `Expected a redirect for '${probePath}' but received ${actual.status}.`, fetchesUsed };
       }
 
       const location = actual.headers.get("location");
       if (!location) {
-        return { matches: false, reason: `Redirect for '${probePath}' did not include a Location header.` };
+        return { matches: false, reason: `Redirect for '${probePath}' did not include a Location header.`, fetchesUsed };
       }
 
       const resolvedLocation = new URL(location, deploymentUrl).pathname;
       if (resolvedLocation !== expected.locationPath) {
         return {
           matches: false,
-          reason: `Expected '${probePath}' to redirect to '${expected.locationPath}' but received '${resolvedLocation}'.`
+          reason: `Expected '${probePath}' to redirect to '${expected.locationPath}' but received '${resolvedLocation}'.`,
+          fetchesUsed
         };
       }
       continue;
@@ -3426,11 +3465,15 @@ async function validateSharedStaticCandidateOnce(
 
     if (expected.kind === "not_found") {
       if (actual.status !== 404) {
-        return { matches: false, reason: `Expected '${probePath}' to return 404 but received ${actual.status}.` };
+        return { matches: false, reason: `Expected '${probePath}' to return 404 but received ${actual.status}.`, fetchesUsed };
       }
 
       if (!matchesSharedStaticNotFoundBody(await actual.text())) {
-        return { matches: false, reason: `Expected '${probePath}' to match the shared static 404 response body.` };
+        return {
+          matches: false,
+          reason: `Expected '${probePath}' to match the shared static 404 response body.`,
+          fetchesUsed
+        };
       }
       continue;
     }
@@ -3438,30 +3481,40 @@ async function validateSharedStaticCandidateOnce(
     if (actual.status !== expected.status) {
       return {
         matches: false,
-        reason: `Expected '${probePath}' to return ${expected.status} but received ${actual.status}.`
+        reason: `Expected '${probePath}' to return ${expected.status} but received ${actual.status}.`,
+        fetchesUsed
       };
     }
 
     const expectedBody = assetBodies.get(expected.assetPath);
     if (!expectedBody) {
-      return { matches: false, reason: `Static asset '${expected.assetPath}' was missing from the validation set.` };
+      return {
+        matches: false,
+        reason: `Static asset '${expected.assetPath}' was missing from the validation set.`,
+        fetchesUsed
+      };
     }
 
     const expectedContentType = manifest.assets.get(expected.assetPath)?.contentType;
     if (!matchesExpectedContentType(actual.headers.get("content-type"), expectedContentType)) {
       return {
         matches: false,
-        reason: `Expected '${probePath}' to return content type '${expectedContentType ?? "unknown"}', but received '${actual.headers.get("content-type") ?? "none"}'.`
+        reason: `Expected '${probePath}' to return content type '${expectedContentType ?? "unknown"}', but received '${actual.headers.get("content-type") ?? "none"}'.`,
+        fetchesUsed
       };
     }
 
     const actualBody = new Uint8Array(await actual.arrayBuffer());
     if (!equalUint8Arrays(actualBody, expectedBody)) {
-      return { matches: false, reason: `Response body for '${probePath}' did not match the shared static asset.` };
+      return {
+        matches: false,
+        reason: `Response body for '${probePath}' did not match the shared static asset.`,
+        fetchesUsed
+      };
     }
   }
 
-  return { matches: true };
+  return { matches: true, fetchesUsed };
 }
 
 const SHARED_STATIC_DISALLOWED_RESPONSE_HEADERS = [
@@ -3586,6 +3639,22 @@ function resolvePositiveInteger(value: string | undefined): number | undefined {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function resolveSharedStaticValidationOptions(
+  env: Pick<Env, "SHARED_STATIC_VALIDATION_ATTEMPTS" | "SHARED_STATIC_VALIDATION_RETRY_MS">
+): { attempts: number; retryMs: number; maxFetches: number } {
+  const requestedAttempts = resolvePositiveInteger(env.SHARED_STATIC_VALIDATION_ATTEMPTS)
+    ?? DEFAULT_SHARED_STATIC_VALIDATION_ATTEMPTS;
+
+  return {
+    attempts: Math.min(requestedAttempts, DEFAULT_SHARED_STATIC_VALIDATION_ATTEMPTS),
+    retryMs: parseNonNegativeInteger(
+      env.SHARED_STATIC_VALIDATION_RETRY_MS,
+      DEFAULT_SHARED_STATIC_VALIDATION_RETRY_MS
+    ),
+    maxFetches: SHARED_STATIC_VALIDATION_FETCH_BUDGET
+  };
 }
 
 async function archiveDeploymentFiles(

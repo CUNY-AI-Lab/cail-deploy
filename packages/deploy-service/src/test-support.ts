@@ -72,6 +72,7 @@ export type TestEnv = {
   GITHUB_APP_NAME?: string;
   GITHUB_APP_MANIFEST_ORG?: string;
   CONTROL_PLANE_ENCRYPTION_KEY?: string;
+  BUILD_RUNNER_TOKEN?: string;
 };
 
 export function createTestContext(overrides: Partial<TestEnv> = {}): {

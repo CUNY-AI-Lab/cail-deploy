@@ -723,6 +723,82 @@ test("validate does not enforce a daily cap by default", async (t: TestContext) 
   assert.equal(queue.sent.length, 1);
 });
 
+test("build completion records failure even when the GitHub check-run update fails", async (t: TestContext) => {
+  const { env, db } = createTestContext({
+    BUILD_RUNNER_TOKEN: "runner-token"
+  });
+  db.putBuildJob({
+    jobId: "job-check-update-failure",
+    eventName: "push",
+    installationId: 42,
+    repository: repositoryRecord("check-run-update-fails"),
+    ref: "refs/heads/main",
+    headSha: "failed-sha",
+    checkRunId: 77,
+    status: "in_progress",
+    projectName: "check-run-update-fails",
+    createdAt: "2026-03-28T12:00:00.000Z",
+    updatedAt: "2026-03-28T12:01:00.000Z",
+    startedAt: "2026-03-28T12:01:00.000Z"
+  });
+
+  let patchAttempts = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.pathname === "/app/installations/42/access_tokens" && request.method === "POST") {
+      return jsonResponse({ token: "installation-token", expires_at: "2030-01-01T00:00:00.000Z" });
+    }
+
+    if (url.pathname === "/repos/szweibel/check-run-update-fails/check-runs/77" && request.method === "PATCH") {
+      patchAttempts += 1;
+      throw new Error("GitHub check-run API unavailable");
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await fetchApp(
+    "POST",
+    "/internal/build-jobs/job-check-update-failure/complete",
+    env,
+    {
+      status: "failure",
+      summary: "Build failed before deployment.",
+      text: "Detailed build failure",
+      failureKind: "build_failure",
+      completedAt: "2026-03-28T12:02:00.000Z"
+    },
+    {
+      authorization: "Bearer runner-token"
+    }
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    ok: boolean;
+    job: {
+      status: string;
+      errorMessage?: string;
+      errorDetail?: string;
+    };
+  };
+  assert.equal(body.ok, true);
+  assert.equal(body.job.status, "failure");
+  assert.equal(body.job.errorMessage, "Build failed before deployment.");
+  assert.equal(body.job.errorDetail, "Detailed build failure");
+  assert.equal(patchAttempts, 1);
+
+  const storedJob = db.getBuildJob("job-check-update-failure");
+  assert.equal(storedJob?.status, "failure");
+  assert.equal(storedJob?.errorMessage, "Build failed before deployment.");
+});
+
 test("deployments reject oversized total upload bundles before provisioning resources", async () => {
   const { env } = createTestContext();
   const metadata = {
@@ -1752,6 +1828,131 @@ test("shared static candidates stay on dedicated workers when validation detects
     runtime_lane: string;
   } | null;
   assert.equal(storedProject?.runtime_lane, "dedicated_worker");
+});
+
+test("shared static validation caps public fetches even when retries are configured too high", async (t: TestContext) => {
+  const { env, db } = createTestContext({
+    SHARED_STATIC_VALIDATION_ATTEMPTS: "120",
+    SHARED_STATIC_VALIDATION_RETRY_MS: "0"
+  });
+  db.putProject({
+    projectName: "shared-static-budget",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/shared-static-budget",
+    deploymentUrl: "https://shared-static-budget.cuny.qzz.io",
+    databaseId: "db-existing",
+    runtimeLane: "dedicated_worker",
+    recommendedRuntimeLane: "dedicated_worker",
+    hasAssets: false,
+    latestDeploymentId: "dep-old",
+    createdAt: "2026-03-28T10:00:00.000Z",
+    updatedAt: "2026-03-28T10:05:00.000Z"
+  });
+  const uploadedScripts: string[] = [];
+  const validationRequestPaths: string[] = [];
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+    const uploadSessionMatch = url.pathname.match(/\/workers\/dispatch\/namespaces\/cail-production\/scripts\/([^/]+)\/assets-upload-session$/);
+    const scriptMatch = url.pathname.match(/\/workers\/dispatch\/namespaces\/cail-production\/scripts\/([^/]+)$/);
+
+    if (request.method === "POST" && uploadSessionMatch) {
+      return new Response(JSON.stringify({
+        success: true,
+        errors: [],
+        result: {
+          jwt: "assets-upload-jwt",
+          buckets: []
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    if (request.method === "PUT" && scriptMatch) {
+      uploadedScripts.push(scriptMatch[1]!);
+      return new Response("", { status: 200 });
+    }
+
+    if (request.method === "GET" && url.origin === "https://shared-static-budget.cuny.qzz.io") {
+      validationRequestPaths.push(url.pathname);
+      return new Response("<h1>Still serving the previous candidate</h1>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" }
+      });
+    }
+
+    if (url.pathname.includes("/client/v4/accounts/account-123/d1/database")) {
+      throw new Error(`Unexpected D1 provisioning during validation budget test: ${request.method} ${request.url}`);
+    }
+
+    throw new Error(`Unexpected fetch during test: ${request.method} ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const metadata = {
+    projectName: "shared-static-budget",
+    ownerLogin: "szweibel",
+    githubRepo: "szweibel/shared-static-budget",
+    runtimeEvidence: sharedStaticRuntimeEvidence(),
+    workerUpload: {
+      main_module: "index.js",
+      compatibility_date: "2026-04-01",
+      bindings: []
+    },
+    staticAssets: {
+      files: [
+        {
+          path: "/index.html",
+          partName: "asset-0",
+          contentType: "text/html; charset=utf-8"
+        }
+      ]
+    }
+  };
+
+  const response = await fetchRaw(new Request("https://deploy.example/api/deployments", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer deploy-token"
+    },
+    body: buildDeploymentForm(metadata, [
+      {
+        name: "index.js",
+        fileName: "index.js",
+        content: "export default { fetch() { return new Response('ok'); } };",
+        type: "application/javascript"
+      },
+      {
+        name: "asset-0",
+        fileName: "index.html",
+        content: "<h1>Static Body</h1>",
+        type: "text/html; charset=utf-8"
+      }
+    ])
+  }), {
+    ...env,
+    DEPLOY_API_TOKEN: "deploy-token"
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    project: {
+      runtimeLane: string;
+      recommendedRuntimeLane: string;
+    };
+  };
+  assert.equal(body.project.runtimeLane, "dedicated_worker");
+  assert.equal(body.project.recommendedRuntimeLane, "shared_static");
+  assert.deepEqual(uploadedScripts, ["shared-static-budget"]);
+  assert.ok(validationRequestPaths.length < 120);
+  assert.ok(validationRequestPaths.length <= 30);
+  assert.ok(validationRequestPaths.every((pathname) => pathname === "/"));
 });
 
 test("shared static candidates stay on dedicated workers when the live candidate exposes request-time API routes", async (t: TestContext) => {
