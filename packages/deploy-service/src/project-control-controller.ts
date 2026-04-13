@@ -213,6 +213,7 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
           : undefined,
       buildLogUrl: typeof statusResult.body.build_log_url === "string" ? statusResult.body.build_log_url : undefined,
       errorMessage: typeof statusResult.body.error_message === "string" ? statusResult.body.error_message : undefined,
+      errorHint: typeof statusResult.body.error_hint === "string" ? statusResult.body.error_hint : undefined,
       errorDetail: typeof statusResult.body.error_detail === "string" ? statusResult.body.error_detail : undefined,
       errorKind: typeof statusResult.body.error_kind === "string" ? statusResult.body.error_kind : undefined,
       updatedAt: typeof statusResult.body.updated_at === "string" ? statusResult.body.updated_at : authorization.project.updatedAt,

@@ -37,11 +37,11 @@ Agents should prefer the structured control-plane endpoints over scraping GitHub
 - `POST /oauth/register`: dynamic client registration for public MCP clients
 - `GET /api/oauth/authorize`: browser-facing OAuth authorization endpoint, protected by Cloudflare Access
 - `POST /oauth/token`: OAuth token exchange endpoint
-- `GET /api/repositories/<owner>/<repo>/status`: inspect the full repo lifecycle before or after registration, including install state, project slug, next action, and live deployment status
+- `GET /api/repositories/<owner>/<repo>/status`: inspect the full repo lifecycle before or after registration, including install state, project slug, next action, live serving status, and latest build status
 - `POST /api/projects/register`: validate a GitHub repository reference, suggest or confirm the project slug, report whether the GitHub App is installed, and return the canonical project URL plus a status endpoint
 - `POST /api/validate`: validate a GitHub-visible branch or commit without deploying it
 - `GET /api/build-jobs/<jobId>/status`: poll a specific validation or deployment job
-- `GET /api/projects/<project-name>/status`: return structured deployment state, including `status`, `deployment_url`, `runtime_lane`, `recommended_runtime_lane`, runtime evidence fields, `error_kind`, `error_message`, and `error_detail`
+- `GET /api/projects/<project-name>/status`: return structured deployment state, including `status`, `serving_status`, `latest_build_status`, `deployment_url`, `runtime_lane`, `recommended_runtime_lane`, runtime evidence fields, `error_kind`, `error_message`, `error_hint`, and `error_detail`
 - `GET /api/projects/<project-name>/secrets`: list stored project secret names and metadata, never values
 - `PUT /api/projects/<project-name>/secrets/<SECRET_NAME>`: create or update one project secret
 - `DELETE /api/projects/<project-name>/secrets/<SECRET_NAME>`: remove one project secret
@@ -259,10 +259,11 @@ The scaffold is not a starter repo download. It writes files directly into the c
 
 Shared static coverage is intentionally certification-based:
 
-- explicit framework exports such as Next export, Astro static, SvelteKit adapter-static, and Nuxt generate can be auto-certified
+- explicit framework exports such as Next export, Astro static, SvelteKit adapter-static, and Nuxt generate can be auto-certified after the repo declares a Kale app shape
 - Kale-owned static-first projects can be auto-certified only when `kale.project.json` declares a pure static contract and Wrangler points at the same asset directory
 - static projects that include `_headers` or `_redirects` stay on the dedicated lane until Kale's shared-static gateway explicitly supports those control files
 - generic Worker-plus-assets projects stay on the dedicated lane unless the runner has strong positive evidence that request-time Worker behavior is disposable
+- deployments without an explicit `kale.project.json` app shape fail with `needs_adaptation` instead of being silently treated as Worker apps
 
 ## Deployment contract
 

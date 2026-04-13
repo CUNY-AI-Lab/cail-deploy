@@ -327,6 +327,7 @@ export function renderProjectControlPanelPage(input: {
   runtimeEvidenceSummary?: string;
   buildLogUrl?: string;
   errorMessage?: string;
+  errorHint?: string;
   errorDetail?: string;
   errorKind?: string;
   updatedAt: string;
@@ -355,6 +356,7 @@ export function renderProjectControlPanelPage(input: {
     runtimeEvidenceSummary,
     buildLogUrl,
     errorMessage,
+    errorHint,
     errorDetail,
     errorKind,
     updatedAt,
@@ -890,7 +892,7 @@ export function renderProjectControlPanelPage(input: {
           </div>
         </div>
         ${flash ? `<div class="flash-msg ${toneClass}"><p>${escapeHtml(flash.message)}</p></div>` : ""}
-        ${errorMessage ? `<div class="flash-msg notice notice-warning"><p><strong>Latest issue:</strong> ${escapeHtml(errorMessage)}</p></div>` : ""}
+        ${errorMessage ? `<div class="flash-msg notice notice-warning"><p><strong>Latest issue:</strong> ${escapeHtml(errorMessage)}${errorHint ? `<br />${escapeHtml(errorHint)}` : ""}</p></div>` : ""}
         ${errorDetail ? `<details class="build-log-detail"${isFailed ? " open" : ""}>
           <summary>Build output</summary>
           <p class="build-log-intro">${escapeHtml(

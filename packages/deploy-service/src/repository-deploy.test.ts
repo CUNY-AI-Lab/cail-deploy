@@ -93,6 +93,7 @@ test("project registration returns structured state for an existing project", as
     installStatus: string;
     guidedInstallUrl?: string;
     latestStatus: string;
+    servingStatus: string;
   };
 
   assert.equal(body.ok, true);
@@ -102,6 +103,7 @@ test("project registration returns structured state for an existing project", as
   assert.equal(body.installStatus, "app_unconfigured");
   assert.equal(body.guidedInstallUrl, undefined);
   assert.equal(body.latestStatus, "live");
+  assert.equal(body.servingStatus, "live");
 });
 
 test("CloudflareApiClient paginates R2 bucket lookup", async (t: TestContext) => {
@@ -2966,18 +2968,31 @@ test("broad status APIs redact detailed build logs", async () => {
   const repositoryStatusResponse = await fetchApp("GET", "/api/repositories/szweibel/cail-assets-build-test/status", env);
   assert.equal(repositoryStatusResponse.status, 200);
   const repositoryStatus = await repositoryStatusResponse.json() as Record<string, unknown>;
+  assert.equal(repositoryStatus.latestStatus, "live");
+  assert.equal(repositoryStatus.servingStatus, "live");
+  assert.equal(repositoryStatus.buildStatus, "failure");
+  assert.equal(repositoryStatus.workflowStage, "live");
+  assert.equal(repositoryStatus.nextAction, "inspect_failure");
+  assert.match(String(repositoryStatus.summary), /latest build failed/i);
+  assert.match(String(repositoryStatus.errorHint), /build output/i);
   assert.equal("errorDetail" in repositoryStatus, false);
   assert.equal("buildLogUrl" in repositoryStatus, false);
 
   const projectStatusResponse = await fetchApp("GET", "/api/projects/cail-assets-build-test/status", env);
   assert.equal(projectStatusResponse.status, 200);
   const projectStatus = await projectStatusResponse.json() as Record<string, unknown>;
+  assert.equal(projectStatus.status, "live");
+  assert.equal(projectStatus.serving_status, "live");
+  assert.equal(projectStatus.latest_build_status, "failure");
+  assert.match(String(projectStatus.error_hint), /build output/i);
   assert.equal("error_detail" in projectStatus, false);
   assert.equal("build_log_url" in projectStatus, false);
 
   const buildJobStatusResponse = await fetchApp("GET", "/api/build-jobs/job-failed-1/status", env);
   assert.equal(buildJobStatusResponse.status, 200);
   const buildJobStatus = await buildJobStatusResponse.json() as Record<string, unknown>;
+  assert.equal(buildJobStatus.status, "failed");
+  assert.match(String(buildJobStatus.error_hint), /build output/i);
   assert.equal("error_detail" in buildJobStatus, false);
   assert.equal("build_log_url" in buildJobStatus, false);
 });

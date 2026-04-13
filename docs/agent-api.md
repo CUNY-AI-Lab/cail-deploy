@@ -34,6 +34,7 @@ Important current manifest fields:
 - `worker_project_shape_value: "worker_app"`
 - `static_project_request_time_logic_key: "requestTimeLogic"`
 - `static_project_request_time_logic_value: "none"`
+- `worker_project_request_time_logic_value: "allowed"`
 - `dynamic_skill_policy`
 - `client_update_policy`
 - `agent_harnesses`
@@ -48,6 +49,7 @@ Current shape policy:
 
 - choose `static` for pure publishing sites with no request-time behavior
 - choose `worker` for forms, APIs, auth, redirects, or other request-time logic
+- commit `kale.project.json` with either `projectShape: "static_site", requestTimeLogic: "none"` or `projectShape: "worker_app", requestTimeLogic: "allowed"`
 - `_headers` and `_redirects` currently keep a project on the dedicated Worker lane rather than the shared-static lane
 
 ## Agent auth
@@ -155,6 +157,9 @@ Response fields include:
 - `nextAction`: the most useful next step for the agent
 - `summary`: plain-language lifecycle summary
 - `installStatus`, `projectName`, `projectUrl`, `statusUrl`, `validateUrl`
+- `latestStatus`: lifecycle state for the newest deploy job, folded to `live` when an older deployment is still serving
+- `servingStatus`: `live` when the project currently has a deployed version, even if the latest build failed
+- `errorHint`: short non-sensitive repair hint when the latest build failed
 
 ## OAuth endpoints
 
@@ -446,11 +451,14 @@ Response shape:
 {
   "projectName": "kale-deploy-smoke-test",
   "status": "live",
+  "serving_status": "live",
+  "latest_build_status": "success",
   "build_status": "success",
   "deployment_url": "https://kale-deploy-smoke-test.cuny.qzz.io",
   "deployment_id": "dep_123",
   "error_kind": null,
   "error_message": null,
+  "error_hint": null,
   "error_detail": null,
   "build_log_url": null,
   "job_id": "job_123",
@@ -465,9 +473,14 @@ Response shape:
 Important values:
 
 - `status`: `queued`, `running`, `live`, `failed`
+- `serving_status`: `live` when an existing deployment is still serving, otherwise `not_deployed`
+- `latest_build_status`: raw latest deploy build state, including failures after a previous version is already live
 - `build_status`: raw internal build state when a job exists
 - `error_kind`: `build_failure`, `needs_adaptation`, `unsupported`
+- `error_hint`: short non-sensitive repair hint that broad status APIs can show without exposing build logs
 - `deployment_url`: canonical public URL when deployment succeeds
+
+When `error_kind` is `needs_adaptation`, agents should check whether the repo is missing `kale.project.json`, `wrangler.jsonc`, or a Worker entrypoint. For missing shape metadata, add `kale.project.json` with either `projectShape: "static_site", requestTimeLogic: "none"` or `projectShape: "worker_app", requestTimeLogic: "allowed"`.
 
 ## Poll a validation or deployment job directly
 
@@ -491,7 +504,7 @@ Important values:
 - validation jobs end in `passed`
 - deployment jobs end in `live`
 - `build_status`: raw internal state
-- `error_kind`, `error_message`, `error_detail`
+- `error_kind`, `error_message`, `error_hint`, `error_detail`
 - `deployment_url`: only present for deployment jobs that actually went live
 
 ## Best current agent loop

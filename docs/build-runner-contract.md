@@ -25,11 +25,12 @@ Builds run on a Kale-owned runner and are delivered through Cloudflare Queues.
 ## Repository Expectations
 
 - Prefer committing a real `wrangler.jsonc`, `wrangler.json`, or `wrangler.toml`.
+- Repositories must declare an explicit Kale app shape in `kale.project.json`: `static_site` with `requestTimeLogic: "none"` for pure static sites, or `worker_app` with `requestTimeLogic: "allowed"` for request-time Worker apps.
 - Repositories should carry an `AGENTS.md` file as the canonical repo-local guidance for assistants.
 - The runner installs dependencies, runs `build` when a `package.json` script exists, and then runs `wrangler deploy --dry-run --outdir ...`.
-- If a repo does not have a Wrangler config, the runner only supports a narrow fallback for simple Worker entrypoints at `src/index.ts`, `src/index.js`, `index.ts`, or `index.js`.
+- If a repo does not have a Wrangler config, the runner only supports a narrow fallback for explicitly declared Worker apps with simple Worker entrypoints at `src/index.ts`, `src/index.js`, `index.ts`, or `index.js`.
 - If the Wrangler config defines static assets, the runner reads `assets.directory`, respects `.assetsignore`, and forwards `html_handling`, `not_found_handling`, and `run_worker_first`.
-- If the repository declares Kale project metadata, the runner uses that plus framework signals to classify the build as shared-static-eligible, dedicated-only, or unknown.
+- The runner uses Kale project metadata plus framework signals to classify the build as shared-static-eligible, dedicated-only, or unknown.
 - The runner does not forward student-defined production bindings. The deploy service remains the source of truth for D1 and Workers for Platforms bindings.
 
 ## Runner Environment

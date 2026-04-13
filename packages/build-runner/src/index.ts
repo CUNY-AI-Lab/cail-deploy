@@ -28,6 +28,11 @@ import * as mime from "mime-types";
 import { parse as parseToml } from "smol-toml";
 
 import { detectRuntimeEvidence } from "./runtime-evidence";
+import {
+  assertExplicitKaleProjectShape,
+  KaleProjectShapeValidationError,
+  type KaleProjectConfig
+} from "./project-shape";
 
 const DEFAULT_BATCH_SIZE = 1;
 const DEFAULT_IDLE_POLL_DELAY_MS = 5_000;
@@ -982,7 +987,7 @@ async function createBuildPlan(projectRoot: string, suggestedProjectName: string
       throw new CompatibilityRunnerError(
         "needs_adaptation",
         "This repository has a Wrangler config but no Worker entrypoint.",
-        "CAIL Deploy currently expects a Worker script. Add a `main` entry to `wrangler.jsonc` or run `CAIL-init` to scaffold a compatible Worker app."
+        "Kale Deploy expects a Worker entrypoint so it can validate and upload either a Worker app or static assets. Add a `main` entry to `wrangler.jsonc`, or run `kale-init <project-name> --shape static|worker` to scaffold a compatible Kale project."
       );
     }
 
@@ -1020,8 +1025,8 @@ async function createBuildPlan(projectRoot: string, suggestedProjectName: string
   if (!fallbackEntrypoint) {
     throw new CompatibilityRunnerError(
       "needs_adaptation",
-      "This repository is missing the CAIL setup files needed for deployment.",
-      "Run `CAIL-init` in the repository to add `AGENTS.md`, `wrangler.jsonc`, and a Worker entrypoint, or commit a valid Wrangler config manually."
+      "This repository is missing the Kale setup files needed for deployment.",
+      "Run `kale-init <project-name> --shape static|worker` to add `kale.project.json`, `AGENTS.md`, `wrangler.jsonc`, and a Worker entrypoint, or commit those files manually with an explicit `static_site` or `worker_app` shape."
     );
   }
 
@@ -1043,46 +1048,85 @@ async function assertProjectCompatibility(
   packageJson: ProjectPackageJson | undefined
 ): Promise<void> {
   const resolvedConfig = await resolveWranglerConfig(projectRoot);
-  if (resolvedConfig?.config.main) {
-    return;
-  }
-
-  if (resolvedConfig) {
+  if (resolvedConfig && !resolvedConfig.config.main) {
     throw new CompatibilityRunnerError(
       "needs_adaptation",
       "This repository has a Wrangler config but no Worker entrypoint.",
-      "CAIL Deploy currently expects a Worker script. Add a `main` entry to `wrangler.jsonc` or run `CAIL-init` to scaffold a compatible Worker app."
+      "Kale Deploy expects a Worker entrypoint so it can validate and upload either a Worker app or static assets. Add a `main` entry to `wrangler.jsonc`, or run `kale-init <project-name> --shape static|worker` to scaffold a compatible Kale project."
     );
   }
 
-  const fallbackEntrypoint = await detectFallbackEntrypoint(projectRoot);
-  if (fallbackEntrypoint) {
-    return;
-  }
+  const fallbackEntrypoint = resolvedConfig ? null : await detectFallbackEntrypoint(projectRoot);
 
-  const pythonMarkers = await detectPythonMarkers(projectRoot);
-  if (pythonMarkers.length > 0) {
-    throw new CompatibilityRunnerError(
-      "unsupported",
-      "This repository looks like a Python project, which CAIL cannot deploy directly.",
-      `CAIL Deploy currently hosts Cloudflare Worker apps written for the Workers runtime. Found Python markers: ${pythonMarkers.join(", ")}. Create a Worker-compatible frontend or port the server side to TypeScript/Hono before deploying.`
-    );
-  }
+  if (!resolvedConfig?.config.main && !fallbackEntrypoint) {
+    const pythonMarkers = await detectPythonMarkers(projectRoot);
+    if (pythonMarkers.length > 0) {
+      throw new CompatibilityRunnerError(
+        "unsupported",
+        "This repository looks like a Python project, which Kale Deploy cannot deploy directly.",
+        `Kale Deploy currently hosts Cloudflare Worker apps written for the Workers runtime. Found Python markers: ${pythonMarkers.join(", ")}. Create a Worker-compatible frontend or port the server side to TypeScript/Hono before deploying.`
+      );
+    }
 
-  const serverPackages = detectTraditionalNodeServerPackages(packageJson);
-  if (serverPackages.length > 0) {
+    const serverPackages = detectTraditionalNodeServerPackages(packageJson);
+    if (serverPackages.length > 0) {
+      throw new CompatibilityRunnerError(
+        "needs_adaptation",
+        "This repository looks like a traditional Node server app.",
+        `Kale Deploy runs Cloudflare Worker apps instead of long-running Node servers. Detected server packages: ${serverPackages.join(", ")}. Add a Worker-compatible adapter or start from \`kale-init <project-name> --shape worker\`.`
+      );
+    }
+
     throw new CompatibilityRunnerError(
       "needs_adaptation",
-      "This repository looks like a traditional Node server app.",
-      `CAIL Deploy runs Cloudflare Worker apps instead of long-running Node servers. Detected server packages: ${serverPackages.join(", ")}. Add a Worker-compatible adapter or start from \`CAIL-init\`.`
+      "This repository is missing the Kale setup files needed for deployment.",
+      "Run `kale-init <project-name> --shape static|worker` to add `kale.project.json`, `AGENTS.md`, `wrangler.jsonc`, and a Worker entrypoint, or commit those files manually with an explicit `static_site` or `worker_app` shape."
     );
   }
 
-  throw new CompatibilityRunnerError(
-    "needs_adaptation",
-    "This repository is missing the CAIL setup files needed for deployment.",
-    "Run `CAIL-init` in the repository to add `AGENTS.md`, `wrangler.jsonc`, and a Worker entrypoint, or commit a valid Wrangler config manually."
+  const projectConfig = await assertKaleProjectShapeForDeployment(projectRoot);
+  if (projectConfig.projectShape === "static_site") {
+    assertStaticProjectAssetsConfig(projectRoot, projectConfig, resolvedConfig);
+  }
+}
+
+async function assertKaleProjectShapeForDeployment(projectRoot: string): Promise<KaleProjectConfig> {
+  try {
+    return await assertExplicitKaleProjectShape(projectRoot);
+  } catch (error) {
+    if (error instanceof KaleProjectShapeValidationError) {
+      throw new CompatibilityRunnerError("needs_adaptation", error.summary, error.detail);
+    }
+
+    throw error;
+  }
+}
+
+function assertStaticProjectAssetsConfig(
+  projectRoot: string,
+  projectConfig: KaleProjectConfig,
+  resolvedConfig: ResolvedWranglerConfig | null
+): void {
+  const assetsDirectory = resolvedConfig?.config.assets?.directory;
+  if (!resolvedConfig || !assetsDirectory) {
+    throw new CompatibilityRunnerError(
+      "needs_adaptation",
+      "kale.project.json declares a static site, but Wrangler does not define static assets.",
+      "Static Kale projects must set `assets.directory` in `wrangler.jsonc` to the same directory as `kale.project.json` `staticOutputDir`. If the project needs request-time routes instead, set `projectShape: \"worker_app\"` and `requestTimeLogic: \"allowed\"`."
+    );
+  }
+
+  const declaredOutputDir = normalizeProjectDirectory(projectConfig.staticOutputDir);
+  const wranglerAssetsDirectory = normalizeProjectDirectory(
+    path.relative(projectRoot, path.resolve(resolvedConfig.configDir, assetsDirectory))
   );
+  if (declaredOutputDir && wranglerAssetsDirectory && declaredOutputDir !== wranglerAssetsDirectory) {
+    throw new CompatibilityRunnerError(
+      "needs_adaptation",
+      "kale.project.json static output directory does not match Wrangler assets.",
+      `kale.project.json declares staticOutputDir '${projectConfig.staticOutputDir}', but Wrangler serves assets from '${assetsDirectory}'. Make them match before deploying as a static site.`
+    );
+  }
 }
 
 async function resolveWranglerConfig(projectRoot: string): Promise<ResolvedWranglerConfig | null> {
@@ -1694,6 +1738,17 @@ async function detectPythonMarkers(projectRoot: string): Promise<string[]> {
 
 function normalizeRelativePath(value: string): string {
   return value.split(path.sep).join("/");
+}
+
+function normalizeProjectDirectory(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  return value
+    .replace(/\\/g, "/")
+    .replace(/^\.\//u, "")
+    .replace(/\/+$/u, "");
 }
 
 async function exists(filePath: string): Promise<boolean> {

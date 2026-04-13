@@ -95,3 +95,62 @@ test("root protected-resource alias proxies to deploy-service", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("project app 404s are returned instead of falling through to the origin", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Request[] = [];
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    requests.push(request);
+    return new Response("project missing page", { status: 404 });
+  };
+
+  try {
+    const response = await projectHostProxy.fetch(
+      new Request("https://existing-project.cuny.qzz.io/missing-page"),
+      env
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(await response.text(), "project missing page");
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.url, "https://gateway.internal/existing-project/missing-page");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("gateway unknown-project marker falls through to the origin", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Request[] = [];
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    requests.push(request);
+
+    if (request.url.startsWith("https://gateway.internal/")) {
+      return new Response("missing project", {
+        headers: { "x-kale-gateway-miss": "project-unknown" },
+        status: 404
+      });
+    }
+
+    return new Response("origin fallback", { status: 200 });
+  };
+
+  try {
+    const response = await projectHostProxy.fetch(
+      new Request("https://unknown-project.cuny.qzz.io/"),
+      env
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "origin fallback");
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0]?.url, "https://gateway.internal/unknown-project/");
+    assert.equal(requests[1]?.url, "https://unknown-project.cuny.qzz.io/");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

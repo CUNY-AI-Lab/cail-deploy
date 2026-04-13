@@ -37,6 +37,8 @@ type RepositoryLifecyclePresentationState = {
   installStatus: RepositoryInstallStatus;
   workflowStage: RepositoryWorkflowStage;
   deploymentUrl?: string;
+  errorMessage?: string;
+  errorHint?: string;
 };
 
 export function buildRepositoryCoveragePresentationMap(
@@ -215,6 +217,23 @@ export function describeRepositorySetupStage(
   };
   const stage = buildRepositorySetupStagePresentationMap(appName, options)[lifecycle.workflowStage] ?? fallback;
 
+  if (lifecycle.workflowStage === "live" && lifecycle.errorMessage) {
+    return {
+      ...stage,
+      summary: lifecycle.deploymentUrl
+        ? `Live at ${lifecycle.deploymentUrl}, but the latest build failed.`
+        : "The latest live version is still serving, but the latest build failed.",
+      userTitle: "Live site is still serving",
+      userBody: lifecycle.errorHint
+        ? `The live site is still serving. ${lifecycle.errorHint}`
+        : "The live site is still serving. Check the latest build error, fix the issue, and push again.",
+      agentTitle: "Fix the latest build",
+      agentBody: lifecycle.errorHint
+        ? `The previous deployment remains live. ${lifecycle.errorHint}`
+        : "The previous deployment remains live. Read the latest build error, fix the code, and push again."
+    };
+  }
+
   if (lifecycle.workflowStage === "live" && lifecycle.deploymentUrl) {
     return {
       ...stage,
@@ -324,7 +343,7 @@ export function renderRepositoryLiveRefreshScript(): string {
     "  }",
     "",
     "  function describeStage(nextState) {",
-    "    return setupStagePresentation[nextState.workflowStage] || {",
+    "    var stage = setupStagePresentation[nextState.workflowStage] || {",
     "      headline: 'Checking status...',",
     "      summary: 'Something unexpected happened. Refresh or reopen the setup link.',",
     "      userTitle: 'Refresh this page',",
@@ -332,6 +351,17 @@ export function renderRepositoryLiveRefreshScript(): string {
     "      agentTitle: 'Check status again',",
     "      agentBody: 'The current state wasn\\u2019t recognized. Check the repository status and continue from whatever step it reports.'",
     "    };",
+    "    if (nextState.workflowStage === 'live' && nextState.errorMessage) {",
+    "      return {",
+    "        headline: stage.headline,",
+    "        summary: nextState.deploymentUrl ? 'Live at ' + nextState.deploymentUrl + ', but the latest build failed.' : 'The latest live version is still serving, but the latest build failed.',",
+    "        userTitle: 'Live site is still serving',",
+    "        userBody: nextState.errorHint ? 'The live site is still serving. ' + nextState.errorHint : 'The live site is still serving. Check the latest build error, fix the issue, and push again.',",
+    "        agentTitle: 'Fix the latest build',",
+    "        agentBody: nextState.errorHint ? 'The previous deployment remains live. ' + nextState.errorHint : 'The previous deployment remains live. Read the latest build error, fix the code, and push again.'",
+    "      };",
+    "    }",
+    "    return stage;",
     "  }",
     "",
     "  function bannerState(nextState) {",

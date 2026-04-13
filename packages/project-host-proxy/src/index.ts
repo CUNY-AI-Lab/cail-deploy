@@ -14,6 +14,8 @@ const INTERNAL_HEADER_NAMES = [
   "x-forwarded-host",
   "x-forwarded-proto"
 ] as const;
+const GATEWAY_MISS_HEADER = "x-kale-gateway-miss";
+const GATEWAY_MISS_PROJECT_UNKNOWN = "project-unknown";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -42,9 +44,9 @@ export default {
     const upstreamRequest = rewriteRequestForInternalGateway(request, env, projectName);
     const upstreamResponse = await fetch(upstreamRequest);
 
-    // If the gateway doesn't know this project, fall through to the origin
-    // so other services on this subdomain (e.g. Cloudflare Tunnel) can handle it.
-    if (upstreamResponse.status === 404) {
+    // Only fall through when the gateway explicitly says the project label is unknown.
+    // App-level 404s must be returned as the deployed project's response.
+    if (upstreamResponse.status === 404 && upstreamResponse.headers.get(GATEWAY_MISS_HEADER) === GATEWAY_MISS_PROJECT_UNKNOWN) {
       return fetch(request);
     }
 

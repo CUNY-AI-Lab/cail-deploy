@@ -67,6 +67,8 @@ type ProjectRouteRecord = {
 
 const SHARED_STATIC_MANIFEST_TTL_MS = 60_000;
 const PREVIEW_ROUTE_PREFIX = "/__kale_preview";
+const GATEWAY_MISS_HEADER = "x-kale-gateway-miss";
+const GATEWAY_MISS_PROJECT_UNKNOWN = "project-unknown";
 const sharedStaticManifestCache = new Map<string, {
   manifest: LoadedSharedStaticManifest;
   expiresAt: number;
@@ -107,7 +109,10 @@ async function handleProjectRequest(
 
   if (!route) {
     return new Response(renderMissingProjectPage(requestedLabel, env.INSTALL_URL), {
-      headers: { "content-type": "text/html; charset=utf-8" },
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        [GATEWAY_MISS_HEADER]: GATEWAY_MISS_PROJECT_UNKNOWN
+      },
       status: 404
     });
   }

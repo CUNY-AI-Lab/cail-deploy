@@ -145,7 +145,19 @@ test("shared static projects return empty 404s when no custom 404 page exists", 
   });
 
   assert.equal(response.status, 404);
+  assert.equal(response.headers.get("x-kale-gateway-miss"), null);
   assert.equal(await response.text(), "");
+});
+
+test("unknown project 404s include a gateway miss marker", async () => {
+  const response = await fetchGateway("https://missing-project.cuny.qzz.io/", {
+    CONTROL_PLANE_DB: new FakeD1Database(null),
+    DEPLOYMENT_ARCHIVE: new FakeArchiveBucket(),
+    DISPATCHER: new FakeDispatchNamespace()
+  });
+
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get("x-kale-gateway-miss"), "project-unknown");
 });
 
 test("preview route dispatches to the requested script with public-origin headers", async () => {

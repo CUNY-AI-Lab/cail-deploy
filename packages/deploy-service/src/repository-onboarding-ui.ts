@@ -26,9 +26,13 @@ export type RepositoryLifecycleViewModel = {
   validateUrl: string;
   workflowStage: "app_setup" | "github_install" | "awaiting_push" | "build_queued" | "build_running" | "build_failed" | "live" | "name_conflict" | "cleanup_pending";
   summary: string;
+  latestStatus?: string;
+  servingStatus?: "live" | "not_deployed";
+  buildStatus?: string;
   buildJobStatusUrl?: string;
   deploymentUrl?: string;
   errorMessage?: string;
+  errorHint?: string;
   errorDetail?: string;
   errorKind?: string;
 };
@@ -758,6 +762,7 @@ function renderSetupPageContent(input: {
       actions = `<div class="actions">
           ${lifecycle.deploymentUrl ? `<a class="button" href="${escapeHtml(lifecycle.deploymentUrl)}">Open live site</a>` : ""}
           <a class="button secondary" href="${escapeHtml(settingsUrl)}">Project settings</a>
+          ${lifecycle.errorMessage && lifecycle.buildJobStatusUrl ? `<a class="button secondary" href="${escapeHtml(lifecycle.buildJobStatusUrl)}">Build details</a>` : ""}
         </div>`;
       break;
     case "name_conflict":
@@ -780,8 +785,11 @@ function renderSetupPageContent(input: {
     : lifecycle.errorKind === "unsupported"
       ? "This project type is not supported on Kale:"
       : "Build error:";
+  const failureHint = lifecycle.errorHint
+    ? `<br />${escapeHtml(lifecycle.errorHint)}`
+    : "";
   const failureNotice = lifecycle.errorMessage
-    ? `<div class="notice notice-error"><p><strong>${escapeHtml(failureIntro)}</strong> ${escapeHtml(lifecycle.errorMessage)}${lifecycle.errorDetail ? `<br /><code>${escapeHtml(lifecycle.errorDetail)}</code>` : ""}</p></div>`
+    ? `<div class="notice notice-error"><p><strong>${escapeHtml(failureIntro)}</strong> ${escapeHtml(lifecycle.errorMessage)}${failureHint}${lifecycle.errorDetail ? `<br /><code>${escapeHtml(lifecycle.errorDetail)}</code>` : ""}</p></div>`
     : "";
 
   return `<div class="setup-primary">

@@ -12,16 +12,12 @@ import type {
   WorkerBinding
 } from "@cuny-ai-lab/build-contract";
 
+import { readKaleProjectConfig, type KaleProjectConfig } from "./project-shape";
+
 type ProjectPackageJson = {
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
-};
-
-type KaleProjectConfig = {
-  projectShape?: "static_site" | "worker_app";
-  staticOutputDir?: string;
-  requestTimeLogic?: "none" | "allowed";
 };
 
 type DetectRuntimeEvidenceOptions = {
@@ -398,30 +394,6 @@ function normalizeProjectDirectory(value: string | undefined): string | undefine
     .replace(/\\/g, "/")
     .replace(/^\.\//u, "")
     .replace(/\/+$/u, "");
-}
-
-async function readKaleProjectConfig(projectRoot: string): Promise<KaleProjectConfig | undefined> {
-  const raw = await readFirstExistingFile(projectRoot, ["kale.project.json"]);
-  if (!raw) {
-    return undefined;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const projectShape = parsed.projectShape;
-    const staticOutputDir = parsed.staticOutputDir;
-    const requestTimeLogic = parsed.requestTimeLogic;
-
-    return {
-      projectShape: projectShape === "static_site" || projectShape === "worker_app" ? projectShape : undefined,
-      staticOutputDir: typeof staticOutputDir === "string" ? staticOutputDir : undefined,
-      requestTimeLogic: requestTimeLogic === "none" || requestTimeLogic === "allowed"
-        ? requestTimeLogic
-        : undefined
-    };
-  } catch {
-    return undefined;
-  }
 }
 
 async function readFirstExistingFile(projectRoot: string, relativePaths: string[]): Promise<string | undefined> {

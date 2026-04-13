@@ -168,18 +168,20 @@ Kale Deploy is an official CUNY AI Lab service at `https://cuny.qzz.io/kale`. Th
 3. If validation fails, read the `error_detail` field — it contains the build output (last 12KB of logs). Use it to diagnose the problem, fix the code, push again, and re-validate.
 4. For a real deployment, push to the default branch (`main`).
 5. Poll `get_project_status` until the deployment completes.
+6. If `status` is `live` but `latest_build_status` is `failure`, tell the user the existing site is still serving and fix the latest build before pushing again.
 
 ### When builds fail
 
 The `get_build_job_status` and `get_project_status` MCP tools return:
 
 - `error_message`: a short summary of what went wrong
+- `error_hint`: a short non-sensitive repair hint
 - `error_detail`: the build output tail (up to 12KB of logs) — use this to diagnose the actual error
 - `error_kind`: one of `build_failure`, `needs_adaptation`, or `unsupported`
 
 Common failure patterns:
 
-- **`needs_adaptation`**: the project is missing `wrangler.jsonc` or a Worker entrypoint. Run `kale-init` or add the config manually.
+- **`needs_adaptation`**: the project is missing `kale.project.json`, `wrangler.jsonc`, or a Worker entrypoint. Run `kale-init <project-name> --shape static|worker`, run `kale-adapt --shape static|worker`, or add the config manually.
 - **`unsupported`**: the project type cannot run on Workers (Python, traditional Node server). Explain the constraint to the user.
 - **`build_failure`**: a dependency failed to install, TypeScript errors, or bundler errors. Read `error_detail` for the specific error and fix it.
 

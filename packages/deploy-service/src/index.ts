@@ -266,6 +266,8 @@ type DeploymentArchiveResult = {
   manifestKey?: string;
 };
 
+type ProjectLifecycleStatus = "not_deployed" | "queued" | "running" | "live" | "failed";
+
 type CloudflareAccessRequestIdentity = {
   type: "cloudflare_access";
   subject: string;
@@ -298,13 +300,15 @@ type RepositoryLifecyclePayload = {
   workflowStage: RepositoryWorkflowStage;
   installed: boolean;
   installationId?: number;
-  latestStatus: "not_deployed" | "queued" | "running" | "live" | "failed";
+  latestStatus: ProjectLifecycleStatus;
+  servingStatus: "live" | "not_deployed";
   buildStatus?: BuildJobStatus;
   buildJobId?: string;
   buildJobStatusUrl?: string;
   deploymentUrl?: string;
   errorKind?: string;
   errorMessage?: string;
+  errorHint?: string;
   errorDetail?: string;
   updatedAt?: string;
 };
@@ -5058,6 +5062,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     static_project_assets_directory_hint: "public",
     static_project_request_time_logic_key: "requestTimeLogic",
     static_project_request_time_logic_value: "none",
+    worker_project_request_time_logic_value: "allowed",
     dynamic_skill_policy: buildRuntimeDynamicSkillPolicy(),
     client_update_policy: buildRuntimeClientUpdatePolicy(),
     agent_harnesses: buildRuntimeHarnessCatalog(service.harnessPromptContext),
@@ -5125,6 +5130,7 @@ function buildRuntimeManifest(env: Env, serviceBaseUrl: string) {
     deployment_ready_repository: {
       required_files: [
         "package.json",
+        "kale.project.json",
         "wrangler.jsonc",
         "src/index.ts",
         "AGENTS.md"
@@ -5444,13 +5450,18 @@ function summarizeProjectStatusPayload(payload: Record<string, unknown>): string
   const status = typeof payload.status === "string" ? payload.status : "unknown";
   const deploymentUrl = typeof payload.deployment_url === "string" ? payload.deployment_url : undefined;
   const errorMessage = typeof payload.error_message === "string" ? payload.error_message : undefined;
+  const errorHint = typeof payload.error_hint === "string" ? payload.error_hint : undefined;
+
+  if (status === "live" && deploymentUrl && errorMessage) {
+    return `${projectName} is live at ${deploymentUrl}, but the latest build failed: ${errorMessage}${errorHint ? ` ${errorHint}` : ""}`;
+  }
 
   if (status === "live" && deploymentUrl) {
     return `${projectName} is live at ${deploymentUrl}.`;
   }
 
   if (errorMessage) {
-    return `${projectName} is ${status}: ${errorMessage}`;
+    return `${projectName} is ${status}: ${errorMessage}${errorHint ? ` ${errorHint}` : ""}`;
   }
 
   return `${projectName} is currently ${status}.`;
@@ -5460,10 +5471,11 @@ function summarizeBuildJobStatusPayload(payload: Record<string, unknown>): strin
   const jobId = typeof payload.jobId === "string" ? payload.jobId : "build job";
   const status = typeof payload.status === "string" ? payload.status : "unknown";
   const errorMessage = typeof payload.error_message === "string" ? payload.error_message : undefined;
+  const errorHint = typeof payload.error_hint === "string" ? payload.error_hint : undefined;
   const hasDetail = typeof payload.error_detail === "string" && payload.error_detail.length > 0;
 
   if (errorMessage) {
-    return `${jobId} is ${status}: ${errorMessage}${hasDetail ? " Build output is included in the error_detail field." : ""}`;
+    return `${jobId} is ${status}: ${errorMessage}${errorHint ? ` ${errorHint}` : ""}${hasDetail ? " Build output is included in the error_detail field." : ""}`;
   }
 
   return `${jobId} is currently ${status}.`;
@@ -5602,6 +5614,7 @@ async function buildRepositoryLifecycleState(
         workflowStage: "cleanup_pending",
         installed: Boolean(appSlug),
         latestStatus: "not_deployed",
+        servingStatus: "not_deployed",
         updatedAt: deletionBacklog.updatedAt
       }
     };
@@ -5619,6 +5632,8 @@ async function buildRepositoryLifecycleState(
       ? "installed"
       : "not_installed";
   const lifecycleStatus = resolveProjectLifecycleStatus(projectClaim.project, projectClaim.latestJob);
+  const servingStatus = resolveProjectServingStatus(projectClaim.project);
+  const errorHint = buildFailureHint(projectClaim.latestJob);
   const workflow = resolveRepositoryWorkflowState({
     installStatus,
     lifecycleStatus,
@@ -5657,6 +5672,7 @@ async function buildRepositoryLifecycleState(
     installed: Boolean(installation),
     installationId: installation?.id,
     latestStatus: lifecycleStatus,
+    servingStatus,
     buildStatus: projectClaim.latestJob?.status,
     buildJobId: projectClaim.latestJob?.jobId,
     buildJobStatusUrl: projectClaim.latestJob?.jobId
@@ -5665,6 +5681,7 @@ async function buildRepositoryLifecycleState(
     deploymentUrl: projectClaim.latestJob?.deploymentUrl ?? projectClaim.project?.deploymentUrl,
     errorKind: projectClaim.latestJob?.errorKind,
     errorMessage: projectClaim.latestJob?.errorMessage,
+    errorHint,
     ...(options?.includeSensitive ? { errorDetail: projectClaim.latestJob?.errorDetail } : {}),
     updatedAt: projectClaim.latestJob?.updatedAt ?? projectClaim.project?.updatedAt
   };
@@ -6005,6 +6022,7 @@ async function buildProjectStatusResponse(
 
   const projectState = await loadProjectLookupState(env.CONTROL_PLANE_DB, projectName);
   const runtimeEvidence = await loadArchivedRuntimeEvidence(env, projectState.project);
+  const errorHint = buildFailureHint(projectState.latestJob);
 
   if (!projectState.project && !projectState.latestJob) {
     return {
@@ -6018,6 +6036,8 @@ async function buildProjectStatusResponse(
     body: {
       projectName,
       status: projectState.lifecycleStatus,
+      serving_status: resolveProjectServingStatus(projectState.project),
+      latest_build_status: projectState.latestJob?.status,
       build_status: projectState.latestJob?.status,
       deployment_url: projectState.latestJob?.deploymentUrl ?? projectState.project?.deploymentUrl,
       deployment_id: projectState.latestJob?.deploymentId ?? projectState.project?.latestDeploymentId,
@@ -6029,6 +6049,7 @@ async function buildProjectStatusResponse(
       ...buildRuntimeEvidenceStatusFields(runtimeEvidence),
       error_kind: projectState.latestJob?.errorKind,
       error_message: projectState.latestJob?.errorMessage,
+      error_hint: errorHint,
       ...(options?.includeSensitive ? { error_detail: projectState.latestJob?.errorDetail } : {}),
       ...(options?.includeSensitive ? { build_log_url: projectState.latestJob?.buildLogUrl } : {}),
       job_id: projectState.latestJob?.jobId,
@@ -6119,6 +6140,7 @@ async function buildBuildJobStatusResponse(
       deployment_id: job.deploymentId,
       error_kind: job.errorKind,
       error_message: job.errorMessage,
+      error_hint: buildFailureHint(job),
       ...(options?.includeSensitive ? { error_detail: job.errorDetail } : {}),
       ...(options?.includeSensitive ? { build_log_url: job.buildLogUrl } : {}),
       check_run_id: job.checkRunId,
@@ -6160,7 +6182,7 @@ async function loadProjectLookupState(
   project: ProjectRecord | null;
   latestJob: BuildJobRecord | null;
   claimedRepositoryFullName?: string;
-  lifecycleStatus: "not_deployed" | "queued" | "running" | "live" | "failed";
+  lifecycleStatus: ProjectLifecycleStatus;
 }> {
   const [project, latestJob, domain] = await Promise.all([
     getProject(db, projectName),
@@ -6198,7 +6220,7 @@ function resolveClaimedRepositoryFullName(
 
 function resolveRepositoryWorkflowState(input: {
   installStatus: RepositoryInstallStatus;
-  lifecycleStatus: "not_deployed" | "queued" | "running" | "live" | "failed";
+  lifecycleStatus: ProjectLifecycleStatus;
   buildStatus?: BuildJobStatus;
   conflict: boolean;
   projectName: string;
@@ -6249,6 +6271,14 @@ function resolveRepositoryWorkflowState(input: {
   }
 
   if (input.lifecycleStatus === "live") {
+    if (input.buildStatus === "failure") {
+      return {
+        nextAction: "inspect_failure",
+        stage: "live",
+        summary: "The site is live, but the latest build failed."
+      };
+    }
+
     return {
       nextAction: "view_live_project",
       stage: "live",
@@ -6478,9 +6508,13 @@ async function fetchGitHubCommitForValidation(
 function resolveProjectLifecycleStatus(
   project: ProjectRecord | null,
   latestJob: BuildJobRecord | null
-): "not_deployed" | "queued" | "running" | "live" | "failed" {
+): ProjectLifecycleStatus {
   if (!latestJob) {
     return project ? "live" : "not_deployed";
+  }
+
+  if (project && latestJob.status === "failure") {
+    return "live";
   }
 
   return normalizeBuildJobStatus(latestJob.status);
@@ -6488,7 +6522,7 @@ function resolveProjectLifecycleStatus(
 
 function normalizeBuildJobStatus(
   status: BuildJobStatus
-): "queued" | "running" | "live" | "failed" {
+): Exclude<ProjectLifecycleStatus, "not_deployed"> {
   switch (status) {
     case "queued":
       return "queued";
@@ -6499,6 +6533,25 @@ function normalizeBuildJobStatus(
       return "live";
     case "failure":
       return "failed";
+  }
+}
+
+function resolveProjectServingStatus(project: ProjectRecord | null): "live" | "not_deployed" {
+  return project ? "live" : "not_deployed";
+}
+
+function buildFailureHint(job: BuildJobRecord | null | undefined): string | undefined {
+  if (!job?.errorMessage) {
+    return undefined;
+  }
+
+  switch (job.errorKind) {
+    case "needs_adaptation":
+      return "Check the build job details for the required Kale project shape or Worker compatibility change.";
+    case "unsupported":
+      return "This project type must be ported to a Cloudflare Workers-compatible app before Kale can deploy it.";
+    default:
+      return "Check the build job details for the build output and fix the reported error.";
   }
 }
 

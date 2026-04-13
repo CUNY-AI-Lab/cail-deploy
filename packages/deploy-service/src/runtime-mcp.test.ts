@@ -31,6 +31,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
     static_project_assets_directory_hint: string;
     static_project_request_time_logic_key: string;
     static_project_request_time_logic_value: string;
+    worker_project_request_time_logic_value: string;
     dynamic_skill_policy: {
       local_bundle_role: string;
       authoritative_tools: string[];
@@ -75,6 +76,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
       max_deployments_per_day: number | null;
       max_concurrent_builds: number;
       max_asset_bytes: number;
+      max_live_dedicated_workers_per_owner: number;
     };
     limit_rationale: Record<string, string>;
     approval_required_bindings: string[];
@@ -120,6 +122,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.equal(body.static_project_assets_directory_hint, "public");
   assert.equal(body.static_project_request_time_logic_key, "requestTimeLogic");
   assert.equal(body.static_project_request_time_logic_value, "none");
+  assert.equal(body.worker_project_request_time_logic_value, "allowed");
   assert.equal(body.dynamic_skill_policy.local_bundle_role, "bootstrap_only");
   assert.deepEqual(body.dynamic_skill_policy.authoritative_tools, ["get_runtime_manifest", "test_connection"]);
   assert.deepEqual(body.dynamic_skill_policy.runtime_manifest_fields, [
@@ -205,6 +208,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.match(body.binding_rationale.CACHE, /repo-scoped KV namespace/i);
   assert.deepEqual(body.deployment_ready_repository.required_files, [
     "package.json",
+    "kale.project.json",
     "wrangler.jsonc",
     "src/index.ts",
     "AGENTS.md"

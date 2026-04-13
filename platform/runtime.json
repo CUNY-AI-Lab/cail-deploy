@@ -29,6 +29,7 @@
   "static_project_assets_directory_hint": "public",
   "static_project_request_time_logic_key": "requestTimeLogic",
   "static_project_request_time_logic_value": "none",
+  "worker_project_request_time_logic_value": "allowed",
   "dynamic_skill_policy": {
     "local_bundle_role": "bootstrap_only",
     "authoritative_tools": [
@@ -245,6 +246,7 @@
   "deployment_ready_repository": {
     "required_files": [
       "package.json",
+      "kale.project.json",
       "wrangler.jsonc",
       "src/index.ts",
       "AGENTS.md"
