@@ -1289,7 +1289,7 @@ test("admin overview API returns deduped live repositories and pending deletion 
   assert.equal(body.projects[0]?.featured.enabled, true);
   assert.equal(body.projects[0]?.featured.sortOrder, 4);
   assert.equal(body.deletionBacklogs[0]?.githubRepo, "szweibel/kale-files-smoke-test");
-  assert.match(body.deletionBacklogs[0]?.lastError ?? "", /files bucket/i);
+  assert.match(body.deletionBacklogs[0]?.lastError ?? "", /files[ _]bucket/i);
   assert.deepEqual(body.ownerCapacityOverrides, [{
     ownerLogin: "course-org",
     maxLiveDedicatedWorkers: 12,

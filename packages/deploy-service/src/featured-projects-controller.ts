@@ -43,7 +43,7 @@ export async function createFeaturedProjectsAdminPageResponse<TEnv>(input: {
   resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
   listProjects: (env: TEnv) => Promise<ProjectRecord[]>;
   listFeaturedProjects: (env: TEnv) => Promise<FeaturedProjectDisplayRecord[]>;
-  resolveMcpOauthSecret: (env: TEnv) => string;
+  resolveProjectControlFormTokenSecret: (env: TEnv) => string;
 }): Promise<Response> {
   const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
   const flash = readProjectControlFlash(input.request.url);
@@ -63,7 +63,7 @@ export async function createFeaturedProjectsAdminPageResponse<TEnv>(input: {
     input.listProjects(input.env),
     input.listFeaturedProjects(input.env),
     createFeaturedProjectsAdminFormToken({
-      secret: input.resolveMcpOauthSecret(input.env),
+      secret: input.resolveProjectControlFormTokenSecret(input.env),
       issuer: serviceBaseUrl,
       subject: identity.subject
     })
@@ -86,7 +86,7 @@ export async function createFeaturedProjectsAdminUpdateResponse<TEnv>(input: {
     env: TEnv
   ) => Promise<FeaturedProjectsAdminIdentity>;
   resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
-  resolveMcpOauthSecret: (env: TEnv) => string;
+  resolveProjectControlFormTokenSecret: (env: TEnv) => string;
   getProject: (env: TEnv, projectName: string) => Promise<ProjectRecord | null>;
   getFeaturedProject: (env: TEnv, githubRepo: string) => Promise<FeaturedProjectRecord | null>;
   putFeaturedProject: (env: TEnv, feature: FeaturedProjectRecord) => Promise<void>;
@@ -108,7 +108,7 @@ export async function createFeaturedProjectsAdminUpdateResponse<TEnv>(input: {
   try {
     const form = await input.request.formData();
     await verifyFeaturedProjectsAdminFormToken({
-      secret: input.resolveMcpOauthSecret(input.env),
+      secret: input.resolveProjectControlFormTokenSecret(input.env),
       issuer: serviceBaseUrl,
       token: getRequiredFeaturedProjectsAdminFormField(form, "formToken"),
       subject: identity.subject

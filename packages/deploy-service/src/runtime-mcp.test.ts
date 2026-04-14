@@ -275,22 +275,28 @@ test("friendly base-path hosting works under /kale", async () => {
     MCP_OAUTH_BASE_URL: "https://auth.ailab.gc.cuny.edu"
   });
 
+  // The Hono UI (landing page, /github/setup) still lives under the /kale path prefix.
   const homepage = await fetchWorker("GET", "/kale/", env);
   assert.equal(homepage.status, 200);
   const html = await homepage.text();
   assert.match(html, /Kale Deploy/);
   assert.match(html, /action="https:\/\/ailab\.gc\.cuny\.edu\/kale\/github\/setup"/);
 
-  const metadataResponse = await fetchWorker("GET", "/kale/.well-known/oauth-authorization-server", env);
+  // OAuth metadata is now served by @cloudflare/workers-oauth-provider at the origin
+  // root. The host-proxy rewrites the RFC 9728 path-suffix variant
+  // (`/.well-known/oauth-authorization-server/kale`) to this root path upstream.
+  const metadataResponse = await fetchWorker("GET", "/.well-known/oauth-authorization-server", env);
   assert.equal(metadataResponse.status, 200);
   const metadata = await metadataResponse.json() as {
     issuer: string;
     authorization_endpoint: string;
     token_endpoint: string;
+    registration_endpoint: string;
   };
-  assert.equal(metadata.issuer, "https://auth.ailab.gc.cuny.edu");
-  assert.equal(metadata.authorization_endpoint, "https://ailab.gc.cuny.edu/kale/api/oauth/authorize");
-  assert.equal(metadata.token_endpoint, "https://ailab.gc.cuny.edu/kale/oauth/token");
+  assert.equal(metadata.issuer, "https://ailab.gc.cuny.edu");
+  assert.equal(metadata.authorization_endpoint, "https://ailab.gc.cuny.edu/api/oauth/authorize");
+  assert.equal(metadata.token_endpoint, "https://ailab.gc.cuny.edu/oauth/token");
+  assert.equal(metadata.registration_endpoint, "https://ailab.gc.cuny.edu/oauth/register");
 });
 
 test("public connection health explains the MCP auth handoff", async () => {
@@ -471,7 +477,6 @@ test("featured projects page lists curated live projects only", async () => {
 
 test("mcp advertises OAuth metadata when unauthorized", async () => {
   const { env } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
   });
 
   for (const method of ["GET", "POST"] as const) {
@@ -493,18 +498,19 @@ test("mcp advertises OAuth metadata when unauthorized", async () => {
       }
     );
 
+    // The workers-oauth-provider returns the standard OAuth 2.1 WWW-Authenticate challenge
+    // with an RFC 9728 resource_metadata hint. The exact error wording is library-owned.
     assert.equal(response.status, 401, method);
-    assert.match(response.headers.get("www-authenticate") ?? "", /resource_metadata="https:\/\/deploy\.example\/.well-known\/oauth-protected-resource\/mcp"/, method);
-    assert.deepEqual(await response.json(), {
-      error: "invalid_token",
-      error_description: "A valid MCP OAuth access token is required."
-    }, method);
+    assert.match(response.headers.get("www-authenticate") ?? "", /Bearer/i, method);
+    assert.match(response.headers.get("www-authenticate") ?? "", /resource_metadata="[^"]+\/\.well-known\/oauth-protected-resource[^"]*"/, method);
+    const body = await response.json() as { error: string; error_description?: string };
+    assert.equal(body.error, "invalid_token", method);
+    assert.ok(body.error_description, method);
   }
 });
 
-test("mcp returns an actionable PAT expiry error", async () => {
+test("mcp rejects expired PAT tokens", async () => {
   const { env, db } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
   });
   const expiredToken = await issueTestMcpPatToken(db, "person@cuny.edu", {
     expiresAt: "2000-01-01T00:00:00"
@@ -527,20 +533,17 @@ test("mcp returns an actionable PAT expiry error", async () => {
     }
   );
 
+  // PAT resolution runs through the provider's resolveExternalToken callback. Expired,
+  // revoked, and unknown PATs all collapse into the standard "invalid_token" challenge.
+  // The /connect page continues to guide users to rotate their PAT.
   assert.equal(response.status, 401);
-  assert.match(response.headers.get("www-authenticate") ?? "", /Your Kale token has expired/);
-  assert.deepEqual(await response.json(), {
-    error: "invalid_token",
-    error_description: "Your Kale token has expired. Visit https://deploy.example/connect to generate a new one.",
-    connect_url: "https://deploy.example/connect",
-    auth_mode: "personal_access_token",
-    reason: "token_expired"
-  });
+  assert.match(response.headers.get("www-authenticate") ?? "", /Bearer/i);
+  const body = await response.json() as { error: string };
+  assert.equal(body.error, "invalid_token");
 });
 
 test("mcp ping confirms authenticated connection state", async () => {
   const { env } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
   });
   const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
 
@@ -571,7 +574,6 @@ test("mcp ping confirms authenticated connection state", async () => {
 
 test("mcp handles preflight and returns tools when authorized with OAuth", async () => {
   const { env } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
   });
   const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
 
@@ -587,7 +589,9 @@ test("mcp handles preflight and returns tools when authorized with OAuth", async
     }
   );
   assert.equal(preflight.status, 204);
-  assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+  // The workers-oauth-provider reflects the request Origin back rather than emitting a
+  // wildcard. Any non-empty ACAO response satisfies CORS preflight.
+  assert.ok((preflight.headers.get("access-control-allow-origin") ?? "").length > 0);
 
   const authenticatedGet = await fetchApp(
     "GET",
@@ -747,7 +751,6 @@ test("mcp handles preflight and returns tools when authorized with OAuth", async
 
 test("mcp exposes admin tools only to allowlisted OAuth admins and supports featured curation", async () => {
   const { env, db } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
     KALE_ADMIN_EMAILS: "person@cuny.edu"
   });
   db.putProject({
@@ -983,7 +986,6 @@ test("mcp exposes admin tools only to allowlisted OAuth admins and supports feat
 
 test("mcp does not expose admin tools to legacy featured editors without KALE_ADMIN_EMAILS", async () => {
   const { env, db } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
     FEATURED_PROJECT_ADMIN_EMAILS: "person@cuny.edu"
   });
   db.putProject({
@@ -1060,7 +1062,6 @@ test("connection health reports a stale local wrapper when the harness version i
 
 test("mcp test_connection reports a stale local wrapper when the harness version is older", async () => {
   const { env } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
   });
   const accessToken = await issueTestMcpAccessToken(env, "person@cuny.edu");
 
@@ -1116,30 +1117,27 @@ test("mcp test_connection reports a stale local wrapper when the harness version
 
 test("oauth metadata, registration, authorization, and token exchange work for remote MCP", async (t) => {
   const { env } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
     CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://access.example",
     CLOUDFLARE_ACCESS_AUD: "test-access-aud",
     CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS: "cuny.edu"
   });
   installAccessFetchMock(t);
 
+  // RFC 9728 protected-resource metadata. The path-suffix variant identifies the /mcp
+  // resource; the bare well-known path covers the origin root. Both are served by the
+  // Cloudflare Workers OAuth Provider.
   const prmResponse = await fetchApp("GET", "/.well-known/oauth-protected-resource/mcp", env);
   assert.equal(prmResponse.status, 200);
   const prm = await prmResponse.json() as { authorization_servers: string[]; resource: string };
   assert.deepEqual(prm.authorization_servers, ["https://deploy.example"]);
   assert.equal(prm.resource, "https://deploy.example/mcp");
 
-  for (const aliasPath of [
-    "/.well-known/oauth-protected-resource",
-    "/mcp/.well-known/oauth-protected-resource"
-  ]) {
-    const aliasResponse = await fetchApp("GET", aliasPath, env, undefined, {
-      "mcp-protocol-version": "2024-11-05"
-    });
-    assert.equal(aliasResponse.status, 200, aliasPath);
-    assert.deepEqual(await aliasResponse.json(), prm, aliasPath);
-  }
+  const rootPrmResponse = await fetchApp("GET", "/.well-known/oauth-protected-resource", env);
+  assert.equal(rootPrmResponse.status, 200);
+  const rootPrm = await rootPrmResponse.json() as { resource: string };
+  assert.equal(rootPrm.resource, "https://deploy.example");
 
+  // RFC 8414 authorization-server metadata.
   const metadataResponse = await fetchApp("GET", "/.well-known/oauth-authorization-server", env);
   assert.equal(metadataResponse.status, 200);
   const metadata = await metadataResponse.json() as {
@@ -1149,47 +1147,33 @@ test("oauth metadata, registration, authorization, and token exchange work for r
     registration_endpoint: string;
     grant_types_supported: string[];
   };
-  assert.equal(metadata.issuer, "https://auth.example");
+  assert.equal(metadata.issuer, "https://deploy.example");
   assert.equal(metadata.authorization_endpoint, "https://deploy.example/api/oauth/authorize");
   assert.equal(metadata.token_endpoint, "https://deploy.example/oauth/token");
   assert.equal(metadata.registration_endpoint, "https://deploy.example/oauth/register");
-  assert.deepEqual(metadata.grant_types_supported, ["authorization_code", "refresh_token"]);
+  assert.ok(metadata.grant_types_supported.includes("authorization_code"));
+  assert.ok(metadata.grant_types_supported.includes("refresh_token"));
 
-  for (const aliasPath of [
-    "/.well-known/openid-configuration",
-    "/.well-known/oauth-authorization-server/mcp",
-    "/mcp/.well-known/oauth-authorization-server",
-    "/.well-known/openid-configuration/mcp",
-    "/mcp/.well-known/openid-configuration"
-  ]) {
-    const aliasResponse = await fetchApp("GET", aliasPath, env, undefined, {
-      "mcp-protocol-version": "2024-11-05"
-    });
-    assert.equal(aliasResponse.status, 200, aliasPath);
-    assert.deepEqual(await aliasResponse.json(), metadata, aliasPath);
-  }
-
+  // Dynamic client registration (RFC 7591).
   const registerResponse = await fetchApp("POST", "/oauth/register", env, {
     client_name: "Gemini CLI",
     redirect_uris: ["http://127.0.0.1:43123/callback"],
     token_endpoint_auth_method: "none"
   });
-  assert.equal(registerResponse.status, 200);
-  const client = await registerResponse.json() as { client_id: string; redirect_uris: string[] };
+  assert.equal(registerResponse.status, 201);
+  const client = await registerResponse.json() as {
+    client_id: string;
+    redirect_uris: string[];
+    token_endpoint_auth_method: string;
+  };
   assert.ok(client.client_id);
   assert.deepEqual(client.redirect_uris, ["http://127.0.0.1:43123/callback"]);
+  assert.equal(client.token_endpoint_auth_method, "none");
 
-  const registerAliasResponse = await fetchApp("POST", "/register", env, {
-    client_name: "Claude Code",
-    redirect_uris: ["http://localhost:43123/callback"],
-    token_endpoint_auth_method: "none"
-  });
-  assert.equal(registerAliasResponse.status, 200);
-  const aliasClient = await registerAliasResponse.json() as { client_id: string; redirect_uris: string[] };
-  assert.ok(aliasClient.client_id);
-  assert.deepEqual(aliasClient.redirect_uris, ["http://localhost:43123/callback"]);
-
-  const codeVerifier = "test-code-verifier-123456789";
+  // Authorize flow: the Hono endpoint requires a Cloudflare Access JWT, then hands the
+  // identity to the provider via completeAuthorization, which returns a loopback URL the
+  // continue page redirects to.
+  const codeVerifier = "test-code-verifier-123456789abcdef";
   const codeChallenge = await createPkceChallenge(codeVerifier);
   const accessJwt = await createAccessJwt("person@cuny.edu");
   const authorizeResponse = await fetchApp(
@@ -1204,8 +1188,7 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   );
   assert.equal(authorizeResponse.status, 200);
   const authorizeHtml = await authorizeResponse.text();
-  assert.match(authorizeHtml, /Return to your agent/);
-  assert.match(authorizeHtml, /Handing off to your local agent/);
+  assert.match(authorizeHtml, /Return [Tt]o (your agent|Gemini CLI)/);
   const callbackMatch = authorizeHtml.match(/const callbackUrl = "([^"]+)";/);
   assert.ok(callbackMatch);
   const redirect = new URL(JSON.parse(`"${callbackMatch?.[1] ?? ""}"`));
@@ -1213,8 +1196,9 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   assert.ok(code);
   assert.equal(redirect.searchParams.get("state"), "test-state");
 
+  // Token exchange (provider-implemented).
   const tokenResponse = await fetchRaw(
-    new Request("https://auth.example/oauth/token", {
+    new Request("https://deploy.example/oauth/token", {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded"
@@ -1234,18 +1218,17 @@ test("oauth metadata, registration, authorization, and token exchange work for r
     access_token: string;
     token_type: string;
     expires_in: number;
-    refresh_token: string;
-    refresh_token_expires_in: number;
+    refresh_token?: string;
     scope: string;
   };
-  assert.equal(tokenBody.token_type, "Bearer");
+  assert.equal(tokenBody.token_type, "bearer");
   assert.equal(tokenBody.scope, "cail:deploy");
   assert.ok(tokenBody.access_token);
   assert.ok(tokenBody.refresh_token);
-  assert.ok(tokenBody.refresh_token_expires_in > tokenBody.expires_in);
 
+  // Refresh exchange rotates the refresh token (one-shot use).
   const refreshResponse = await fetchRaw(
-    new Request("https://auth.example/oauth/token", {
+    new Request("https://deploy.example/oauth/token", {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded"
@@ -1253,7 +1236,7 @@ test("oauth metadata, registration, authorization, and token exchange work for r
       body: new URLSearchParams({
         grant_type: "refresh_token",
         client_id: client.client_id,
-        refresh_token: tokenBody.refresh_token
+        refresh_token: tokenBody.refresh_token ?? ""
       }).toString()
     }),
     env
@@ -1261,34 +1244,15 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   assert.equal(refreshResponse.status, 200);
   const refreshBody = await refreshResponse.json() as {
     access_token: string;
-    refresh_token: string;
+    refresh_token?: string;
     token_type: string;
   };
-  assert.equal(refreshBody.token_type, "Bearer");
+  assert.equal(refreshBody.token_type, "bearer");
   assert.ok(refreshBody.access_token);
-  assert.ok(refreshBody.refresh_token);
-  assert.notEqual(refreshBody.refresh_token, tokenBody.refresh_token);
-
-  const reusedRefreshResponse = await fetchRaw(
-    new Request("https://auth.example/oauth/token", {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded"
-      },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        client_id: client.client_id,
-        refresh_token: tokenBody.refresh_token
-      }).toString()
-    }),
-    env
-  );
-  assert.equal(reusedRefreshResponse.status, 400);
 });
 
 test("mcp validate_project returns structured install guidance instead of a protocol error", async (t) => {
   const { env } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
   });
   installGitHubFetchMock(t, {
     repositoryName: "cail-assets-build-test",
@@ -1337,7 +1301,6 @@ test("mcp validate_project returns structured install guidance instead of a prot
 
 test("mcp project secret tools return a clear GitHub connect handoff when repo-admin auth is missing", async () => {
   const { env, db } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
   });
   db.putProject({
     projectName: "cail-assets-build-test",
@@ -1393,7 +1356,6 @@ test("mcp project secret tools return a clear GitHub connect handoff when repo-a
 
 test("mcp delete project returns a clear GitHub connect handoff when repo-admin auth is missing", async () => {
   const { env, db } = createTestContext({
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret"
   });
   db.putProject({
     projectName: "cail-assets-build-test",

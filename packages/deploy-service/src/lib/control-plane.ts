@@ -174,9 +174,6 @@ type BuildJobRow = {
   runner_id: string | null;
 };
 
-type OauthUsedGrantRow = {
-  jti: string;
-};
 
 type ProjectPolicyRow = {
   github_repo: string;
@@ -1759,37 +1756,6 @@ export async function releaseWebhookDelivery(db: D1Database, deliveryId: string)
     WHERE delivery_id = ?
       AND job_id IS NULL
   `).bind(deliveryId).run();
-}
-
-export async function consumeOauthGrant(
-  db: D1Database,
-  jti: string,
-  grantKind: "authorization_code",
-  usedAt: string
-): Promise<boolean> {
-  const row = await db.prepare(`
-    INSERT INTO oauth_used_grants (jti, grant_kind, used_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(jti) DO NOTHING
-    RETURNING jti
-  `).bind(jti, grantKind, usedAt).first<OauthUsedGrantRow>();
-
-  return Boolean(row?.jti);
-}
-
-export async function consumeOauthRefreshToken(
-  db: D1Database,
-  jti: string,
-  usedAt: string
-): Promise<boolean> {
-  const row = await db.prepare(`
-    INSERT INTO oauth_used_refresh_tokens (jti, used_at)
-    VALUES (?, ?)
-    ON CONFLICT(jti) DO NOTHING
-    RETURNING jti
-  `).bind(jti, usedAt).first<OauthUsedGrantRow>();
-
-  return Boolean(row?.jti);
 }
 
 function toProjectRecord(row: ProjectRow): ProjectRecord {

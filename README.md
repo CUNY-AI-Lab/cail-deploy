@@ -79,6 +79,12 @@ Apply the deploy-service D1 migrations before deploying the Workers:
 npx wrangler d1 migrations apply cail-control-plane --config packages/deploy-service/wrangler.jsonc
 ```
 
+Provision the KV namespace that `@cloudflare/workers-oauth-provider` uses for OAuth client + grant + token storage, and paste the returned ID into `kv_namespaces[0].id` in `packages/deploy-service/wrangler.jsonc`:
+
+```bash
+npx wrangler kv namespace create cail-oauth --config packages/deploy-service/wrangler.jsonc
+```
+
 Deploy the core Workers:
 
 ```bash
@@ -146,7 +152,7 @@ Current harness note:
 Implemented now:
 
 - GitHub App manifest flow and webhook handling
-- Cloudflare Access-backed OAuth for MCP clients
+- MCP OAuth 2.1 via `@cloudflare/workers-oauth-provider` (DCR, token issuance, refresh rotation, bearer validation, KV-backed grant storage) with Cloudflare Access gating the browser-facing authorize endpoint
 - structured repo registration, validation, and deployment status APIs
 - Workers for Platforms project deployment
 - host-based project URLs on `*.cuny.qzz.io`

@@ -41,6 +41,7 @@ export type TestEnv = {
   CONTROL_PLANE_DB: D1Database;
   DEPLOYMENT_ARCHIVE: R2Bucket;
   BUILD_QUEUE: Queue<BuildRunnerJobRequest>;
+  OAUTH_KV: KVNamespace;
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_R2_ACCESS_KEY_ID?: string;
@@ -53,6 +54,7 @@ export type TestEnv = {
   FEATURED_PROJECT_ADMIN_EMAILS?: string;
   DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER?: string;
   MCP_OAUTH_BASE_URL?: string;
+  PROJECT_CONTROL_FORM_TOKEN_SECRET?: string;
   WFP_NAMESPACE: string;
   PROJECT_BASE_URL: string;
   PROJECT_HOST_SUFFIX?: string;
@@ -61,9 +63,6 @@ export type TestEnv = {
   SHARED_STATIC_VALIDATION_RETRY_MS?: string;
   DEPLOY_SERVICE_BASE_URL?: string;
   DEPLOY_API_TOKEN?: string;
-  MCP_OAUTH_TOKEN_SECRET?: string;
-  MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
-  MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS?: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_CLIENT_ID?: string;
   GITHUB_APP_CLIENT_SECRET?: string;
@@ -80,15 +79,18 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
   db: FakeD1Database;
   queue: FakeQueue;
   archive: FakeArchiveBucket;
+  kv: FakeKVNamespace;
 } {
   const db = new FakeD1Database();
   const queue = new FakeQueue();
   const archive = createArchiveBucketStub();
+  const kv = new FakeKVNamespace();
 
   const env: TestEnv = {
     CONTROL_PLANE_DB: db as unknown as D1Database,
     DEPLOYMENT_ARCHIVE: archive as unknown as R2Bucket,
     BUILD_QUEUE: queue as unknown as Queue<BuildRunnerJobRequest>,
+    OAUTH_KV: kv as unknown as KVNamespace,
     CLOUDFLARE_ACCOUNT_ID: "account-123",
     CLOUDFLARE_API_TOKEN: "cloudflare-token",
     WFP_NAMESPACE: "cail-production",
@@ -100,10 +102,8 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
     DEPLOY_SERVICE_BASE_URL: "https://deploy.example",
     DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER: "5",
     MCP_OAUTH_BASE_URL: "https://auth.example",
-    MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS: "86400",
-    MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS: "2592000",
+    PROJECT_CONTROL_FORM_TOKEN_SECRET: "project-control-form-token-secret",
     DEPLOY_API_TOKEN: "deploy-token",
-    MCP_OAUTH_TOKEN_SECRET: "mcp-oauth-secret",
     GITHUB_APP_ID: "3196468",
     GITHUB_APP_CLIENT_ID: "Iv1.test-client-id",
     GITHUB_APP_CLIENT_SECRET: "test-client-secret",
@@ -115,10 +115,25 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
     ...overrides
   };
 
-  return { env, db, queue, archive };
+  return { env, db, queue, archive, kv };
 }
 
+// `fetchApp` and `fetchWorker` are now both routed through the worker's OAuth provider
+// entrypoint so that bearer validation, DCR, token exchange, and well-known metadata all
+// land on the same code path the production Worker runs. Tests that need to reach the raw
+// Hono app without the provider's 401-on-/mcp handling should stay on the older
+// deployServiceApp.fetch export directly — see `fetchHonoAppDirect` below.
 export async function fetchApp(
+  method: string,
+  pathname: string,
+  env: TestEnv,
+  body?: unknown,
+  headers?: HeadersInit
+): Promise<Response> {
+  return fetchWorker(method, pathname, env, body, headers);
+}
+
+export async function fetchHonoAppDirect(
   method: string,
   pathname: string,
   env: TestEnv,
@@ -140,7 +155,7 @@ export async function fetchApp(
 }
 
 export async function fetchRaw(request: Request, env: TestEnv): Promise<Response> {
-  return deployServiceApp.fetch(request, env, createExecutionContext());
+  return deployServiceWorker.fetch(request, env, createExecutionContext());
 }
 
 export async function fetchWorker(
@@ -152,15 +167,21 @@ export async function fetchWorker(
 ): Promise<Response> {
   const baseUrl = env.DEPLOY_SERVICE_BASE_URL ?? "https://deploy.example";
   const origin = new URL(baseUrl).origin;
+  const isRawBody = typeof body === "string";
+  const defaultContentType = isRawBody ? "application/x-www-form-urlencoded" : "application/json";
   const request = new Request(`${origin}${pathname}`, {
     method,
-    headers: body
-      ? {
-          "content-type": "application/json",
+    headers: body === undefined
+      ? headers
+      : {
+          "content-type": defaultContentType,
           ...headers
-        }
-      : headers,
-    body: body ? JSON.stringify(body) : undefined
+        },
+    body: body === undefined
+      ? undefined
+      : isRawBody
+        ? body
+        : JSON.stringify(body)
   });
 
   return deployServiceWorker.fetch(request, env, createExecutionContext());
@@ -244,12 +265,29 @@ export function installGitHubFetchMock(
 }
 
 export function installAccessFetchMock(t: TestContext): void {
-  const originalFetch = globalThis.fetch;
+  installAccessJwksMock();
 
+  t.after(() => {
+    // The global JWKS mock is additive (it only returns a canned response for the test
+    // Access origin). It is safe to leave installed across tests, but per-test teardown
+    // keeps the fetch chain clean for tests that also mock other upstreams.
+  });
+}
+
+let accessJwksMockInstalled = false;
+
+// Globally intercepts the Cloudflare Access JWKS URL used by the test harness so that any
+// test which needs to exercise `/api/oauth/authorize` can fabricate a valid Access JWT
+// without having to call `installAccessFetchMock(t)` explicitly. Only the one certs URL
+// is intercepted; everything else is delegated to the original fetch implementation.
+export function installAccessJwksMock(): void {
+  if (accessJwksMockInstalled) return;
+  accessJwksMockInstalled = true;
+
+  const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request ? input : new Request(input, init);
     const url = new URL(request.url);
-
     if (url.origin === "https://access.example" && url.pathname === "/cdn-cgi/access/certs") {
       return jsonResponse({
         keys: [
@@ -262,13 +300,8 @@ export function installAccessFetchMock(t: TestContext): void {
         ]
       });
     }
-
     return originalFetch(input, init);
   };
-
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
 }
 
 export async function createAccessJwt(email: string): Promise<string> {
@@ -288,25 +321,95 @@ export async function createPkceChallenge(verifier: string): Promise<string> {
   return base64url.encode(new Uint8Array(digest));
 }
 
+// Runs the real OAuth 2.1 dance against the Worker's `@cloudflare/workers-oauth-provider`
+// entrypoint: registers a DCR client, opens the browser-flow authorize endpoint with a
+// fabricated Cloudflare Access JWT, follows the loopback continue page or redirect, and
+// exchanges the authorization code for an access token. Returns the provider-issued
+// bearer. Auto-installs the Access JWKS mock and fills in default Access env vars when
+// the test context did not set them explicitly.
 export async function issueTestMcpAccessToken(env: TestEnv, email: string): Promise<string> {
-  const oauthBaseUrl = env.MCP_OAUTH_BASE_URL ?? env.DEPLOY_SERVICE_BASE_URL ?? "https://deploy.example";
-  const secret = env.MCP_OAUTH_TOKEN_SECRET ?? "mcp-oauth-secret";
-  const subject = `user:${email}`;
-  const token = await new SignJWT({
-    email,
-    client_id: "test-client",
-    scope: "cail:deploy",
-    auth_source: "mcp_oauth"
-  })
-    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-    .setIssuer(oauthBaseUrl)
-    .setAudience("cail-mcp")
-    .setSubject(subject)
-    .setIssuedAt()
-    .setExpirationTime("1h")
-    .sign(new TextEncoder().encode(secret));
+  installAccessJwksMock();
+  if (!env.CLOUDFLARE_ACCESS_TEAM_DOMAIN) env.CLOUDFLARE_ACCESS_TEAM_DOMAIN = "https://access.example";
+  if (!env.CLOUDFLARE_ACCESS_AUD) env.CLOUDFLARE_ACCESS_AUD = "test-access-aud";
+  if (!env.CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS && !env.CLOUDFLARE_ACCESS_ALLOWED_EMAILS) {
+    env.CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS = "cuny.edu";
+  }
 
-  return token;
+  const baseUrl = env.DEPLOY_SERVICE_BASE_URL ?? "https://deploy.example";
+  const callbackUrl = `http://127.0.0.1:${Math.floor(10000 + Math.random() * 40000)}/callback`;
+
+  const registerResponse = await fetchWorker("POST", "/oauth/register", env, {
+    client_name: "issueTestMcpAccessToken",
+    redirect_uris: [callbackUrl],
+    token_endpoint_auth_method: "none"
+  });
+  if (registerResponse.status !== 201 && registerResponse.status !== 200) {
+    throw new Error(`DCR failed: ${registerResponse.status} ${await registerResponse.text()}`);
+  }
+  const client = await registerResponse.json() as { client_id: string };
+
+  const codeVerifier = "test-code-verifier-" + Math.random().toString(36).slice(2).padEnd(43, "x");
+  const codeChallenge = await createPkceChallenge(codeVerifier);
+  const accessJwt = await createAccessJwt(email);
+  const authorizeQuery = new URLSearchParams({
+    response_type: "code",
+    client_id: client.client_id,
+    redirect_uri: callbackUrl,
+    state: "test-state",
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+    scope: "cail:deploy"
+  });
+  const authorizeResponse = await fetchWorker(
+    "GET",
+    `/api/oauth/authorize?${authorizeQuery.toString()}`,
+    env,
+    undefined,
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": email
+    }
+  );
+
+  let code: string | null = null;
+  if (authorizeResponse.status === 302) {
+    const location = authorizeResponse.headers.get("location");
+    if (!location) throw new Error("authorize redirect missing Location");
+    code = new URL(location).searchParams.get("code");
+  } else if (authorizeResponse.status === 200) {
+    const html = await authorizeResponse.text();
+    const match = html.match(/const callbackUrl = "([^"]+)";/);
+    if (!match) throw new Error("authorize response did not include a callback URL");
+    const decoded = JSON.parse(`"${match[1]}"`);
+    code = new URL(decoded).searchParams.get("code");
+  }
+  if (!code) {
+    throw new Error(
+      `authorize flow did not return a code: status ${authorizeResponse.status} body ${await authorizeResponse.text()}`
+    );
+  }
+
+  const tokenResponse = await fetchWorker(
+    "POST",
+    "/oauth/token",
+    env,
+    new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: client.client_id,
+      redirect_uri: callbackUrl,
+      code,
+      code_verifier: codeVerifier
+    }).toString(),
+    { "content-type": "application/x-www-form-urlencoded" }
+  );
+  if (tokenResponse.status !== 200) {
+    throw new Error(`Token exchange failed: ${tokenResponse.status} ${await tokenResponse.text()}`);
+  }
+  const body = await tokenResponse.json() as { access_token: string };
+  if (!body.access_token) {
+    throw new Error(`Token exchange returned no access_token: ${JSON.stringify(body)}`);
+  }
+  return body.access_token;
 }
 
 export async function issueTestMcpPatToken(
@@ -440,6 +543,86 @@ export class FakeQueue {
 
   async send(message: BuildRunnerJobRequest): Promise<void> {
     this.sent.push(message);
+  }
+}
+
+// Minimal in-memory KVNamespace stand-in for @cloudflare/workers-oauth-provider. The
+// provider only uses `get`, `put`, `delete`, and `list`; everything else is omitted.
+type FakeKVEntry = {
+  value: string;
+  expiresAt?: number;
+  metadata?: unknown;
+};
+
+export class FakeKVNamespace {
+  private readonly store = new Map<string, FakeKVEntry>();
+
+  async get(key: string, options?: string | { type?: string }): Promise<unknown> {
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt && entry.expiresAt <= Date.now() / 1000) {
+      this.store.delete(key);
+      return null;
+    }
+    const type = typeof options === "string" ? options : options?.type;
+    if (type === "json") {
+      return JSON.parse(entry.value);
+    }
+    if (type === "arrayBuffer") {
+      return new TextEncoder().encode(entry.value).buffer;
+    }
+    if (type === "stream") {
+      throw new Error("FakeKVNamespace does not support stream reads.");
+    }
+    return entry.value;
+  }
+
+  async getWithMetadata<M = unknown>(key: string): Promise<{ value: string | null; metadata: M | null }> {
+    const entry = this.store.get(key);
+    if (!entry) return { value: null, metadata: null };
+    if (entry.expiresAt && entry.expiresAt <= Date.now() / 1000) {
+      this.store.delete(key);
+      return { value: null, metadata: null };
+    }
+    return { value: entry.value, metadata: (entry.metadata ?? null) as M | null };
+  }
+
+  async put(
+    key: string,
+    value: string | ArrayBuffer | ArrayBufferView | ReadableStream,
+    options?: { expiration?: number; expirationTtl?: number; metadata?: unknown }
+  ): Promise<void> {
+    let stringValue: string;
+    if (typeof value === "string") {
+      stringValue = value;
+    } else if (value instanceof ArrayBuffer) {
+      stringValue = new TextDecoder().decode(new Uint8Array(value));
+    } else if (ArrayBuffer.isView(value)) {
+      stringValue = new TextDecoder().decode(value as ArrayBufferView);
+    } else {
+      throw new Error("FakeKVNamespace does not support ReadableStream writes.");
+    }
+    let expiresAt: number | undefined;
+    if (options?.expiration) expiresAt = options.expiration;
+    else if (options?.expirationTtl) expiresAt = Math.floor(Date.now() / 1000) + options.expirationTtl;
+    this.store.set(key, { value: stringValue, expiresAt, metadata: options?.metadata });
+  }
+
+  async delete(key: string): Promise<void> {
+    this.store.delete(key);
+  }
+
+  async list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
+    keys: Array<{ name: string; expiration?: number; metadata?: unknown }>;
+    list_complete: boolean;
+    cursor?: string;
+    cacheStatus: null;
+  }> {
+    const prefix = options?.prefix ?? "";
+    const keys = Array.from(this.store.entries())
+      .filter(([name]) => name.startsWith(prefix))
+      .map(([name, entry]) => ({ name, expiration: entry.expiresAt, metadata: entry.metadata }));
+    return { keys, list_complete: true, cacheStatus: null };
   }
 }
 
