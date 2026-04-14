@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
 import { createDeployServiceMcpServer as createDeployServiceMcpSurface } from "./deploy-service-mcp";
 import { HttpError, asHttpError } from "./http-error";
@@ -100,8 +101,6 @@ import {
   claimWebhookDelivery,
   countActiveBuildJobsForRepository,
   countBuildJobsForRepositoryOnDate,
-  consumeOauthGrant,
-  consumeOauthRefreshToken,
   deleteProjectByName,
   deleteProjectDomain,
   deleteGitHubUserAuthByGitHubUserId,
@@ -151,18 +150,6 @@ import {
   type GitHubRepositoryInstallation,
   verifyGitHubWebhookSignature
 } from "./lib/github";
-import {
-  createAuthorizationCode,
-  mintMcpAccessToken,
-  mintMcpRefreshToken,
-  normalizeRedirectUri,
-  registerPublicOAuthClient,
-  validatePkceS256,
-  verifyAuthorizationCode,
-  verifyMcpAccessToken,
-  verifyMcpRefreshToken,
-  verifyRegisteredOAuthClient
-} from "./lib/mcp-oauth";
 import type {
   BuildJobEventName,
   BuildJobStatus,
@@ -219,9 +206,9 @@ type Env = {
   FEATURED_PROJECT_ADMIN_EMAILS?: string;
   DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER?: string;
   MCP_OAUTH_BASE_URL?: string;
-  MCP_OAUTH_TOKEN_SECRET?: string;
-  MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
-  MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS?: string;
+  PROJECT_CONTROL_FORM_TOKEN_SECRET?: string;
+  OAUTH_KV: KVNamespace;
+  OAUTH_PROVIDER?: OAuthHelpers;
   WFP_NAMESPACE: string;
   PROJECT_BASE_URL: string;
   PROJECT_HOST_SUFFIX?: string;
@@ -272,6 +259,19 @@ type CloudflareAccessRequestIdentity = {
   type: "cloudflare_access";
   subject: string;
   email: string;
+};
+
+// `McpAuthProps` is the application payload the workers-oauth-provider carries through
+// grants, access tokens, and refresh tokens. It is populated in `/api/oauth/authorize`
+// after Cloudflare Access authenticates the user, or by the `resolveExternalToken`
+// callback for Kale personal access tokens. The provider pre-validates the bearer
+// token on every `/mcp` request and surfaces this payload as `ctx.props`.
+export type McpAuthProps = {
+  email: string;
+  subject: string;
+  source: "mcp_oauth" | "mcp_pat";
+  scope?: string[];
+  clientId?: string;
 };
 
 type RepositoryLifecyclePayload = {
@@ -417,136 +417,93 @@ deployServiceApp.get("/.well-known/kale-connection.json", (c) => {
   });
 });
 
-deployServiceApp.get("/mcp/ping", async (c) => {
-  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-
-  try {
-    const identity = await requireMcpRequestIdentity(c.req.raw, c.env);
-    return c.json(buildConnectionHealthPayload(
-      c.env,
-      serviceBaseUrl,
-      identity,
-      {
-        harnessId: c.req.query("harness") ?? undefined,
-        localBundleVersion: c.req.query("localBundleVersion") ?? undefined
-      }
-    ));
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return oauthUnauthorizedResponse(c, c.env, httpError, readBearerToken(c.req.raw) ?? undefined);
-  }
-});
-
-deployServiceApp.get("/.well-known/oauth-protected-resource/mcp", serveOauthProtectedResourceMetadata);
-deployServiceApp.get("/.well-known/oauth-protected-resource", serveOauthProtectedResourceMetadata);
-deployServiceApp.get("/mcp/.well-known/oauth-protected-resource", serveOauthProtectedResourceMetadata);
-
-deployServiceApp.get("/.well-known/oauth-authorization-server", serveOauthAuthorizationServerMetadata);
-deployServiceApp.get("/.well-known/oauth-authorization-server/mcp", serveOauthAuthorizationServerMetadata);
-deployServiceApp.get("/mcp/.well-known/oauth-authorization-server", serveOauthAuthorizationServerMetadata);
-deployServiceApp.get("/.well-known/openid-configuration", serveOauthAuthorizationServerMetadata);
-deployServiceApp.get("/.well-known/openid-configuration/mcp", serveOauthAuthorizationServerMetadata);
-deployServiceApp.get("/mcp/.well-known/openid-configuration", serveOauthAuthorizationServerMetadata);
-
-async function handleOauthClientRegistration(c: Context<{ Bindings: Env }>) {
-  try {
-    const secret = resolveMcpOauthSecret(c.env);
-    const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-    const body = await c.req.json<{
-      redirect_uris?: string[];
-      client_name?: string;
-      token_endpoint_auth_method?: string;
-    }>();
-
-    if ((body.token_endpoint_auth_method ?? "none") !== "none") {
-      throw new HttpError(400, "Kale Deploy only supports public OAuth clients with token_endpoint_auth_method 'none'.");
+// `/mcp/ping` is served via the OAuth provider's apiHandler (the provider handles 401s
+// for missing/invalid tokens and only dispatches here when it has already validated a
+// bearer grant). See `handleMcpPing` below and the default export for wiring.
+export function handleMcpPing(request: Request, env: Env, props: McpAuthProps): Response {
+  const serviceBaseUrl = resolveServiceBaseUrl(env, request.url);
+  const url = new URL(request.url);
+  const identity: AgentRequestIdentity = {
+    type: props.source,
+    email: props.email,
+    subject: props.subject
+  };
+  return Response.json(buildConnectionHealthPayload(
+    env,
+    serviceBaseUrl,
+    identity,
+    {
+      harnessId: url.searchParams.get("harness") ?? undefined,
+      localBundleVersion: url.searchParams.get("localBundleVersion") ?? undefined
     }
-
-    const redirectUris = (body.redirect_uris ?? []).map((value) => normalizeRedirectUri(String(value)));
-    const client = await registerPublicOAuthClient({
-      secret,
-      issuer: oauthBaseUrl,
-      clientName: body.client_name,
-      redirectUris
-    });
-
-    return c.json({
-      client_id: client.clientId,
-      client_id_issued_at: client.createdAt,
-      client_name: client.clientName,
-      redirect_uris: client.redirectUris,
-      grant_types: client.grantTypes,
-      response_types: client.responseTypes,
-      token_endpoint_auth_method: client.tokenEndpointAuthMethod
-    });
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.json({
-      error: "invalid_client_metadata",
-      error_description: httpError.message
-    }, { status: httpError.status });
-  }
+  ));
 }
 
-deployServiceApp.post("/oauth/register", handleOauthClientRegistration);
-// Compatibility alias for clients that ignore registration_endpoint and post to /register.
-deployServiceApp.post("/register", handleOauthClientRegistration);
+// `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource[/mcp]`
+// are implemented by the Cloudflare Workers OAuth Provider wrapper (see the default export
+// at the bottom of this module). Dynamic client registration (`/oauth/register`) and the
+// token endpoint (`/oauth/token`) are also served by the provider. The only OAuth handler
+// Kale still implements directly is the browser-facing authorize endpoint below, which is
+// where Cloudflare Access captures institutional identity and hands it back to the
+// provider via `completeAuthorization`.
 
 deployServiceApp.get("/api/oauth/authorize", async (c) => {
+  const oauthProvider = c.env.OAUTH_PROVIDER;
+  if (!oauthProvider) {
+    return c.html(
+      renderOauthAuthorizationErrorPage("OAuth provider is not wired into this deployment."),
+      503
+    );
+  }
+
+  let authRequest;
   try {
-    const identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
-    const secret = resolveMcpOauthSecret(c.env);
-    const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-    const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-    const clientId = c.req.query("client_id");
-    const redirectUri = c.req.query("redirect_uri");
-    const responseType = c.req.query("response_type");
-    const state = c.req.query("state");
-    const codeChallenge = c.req.query("code_challenge");
-    const codeChallengeMethod = c.req.query("code_challenge_method");
-    const scope = c.req.query("scope") ?? MCP_REQUIRED_SCOPE;
-    const resource = c.req.query("resource") ?? `${serviceBaseUrl}/mcp`;
+    authRequest = await oauthProvider.parseAuthRequest(c.req.raw);
+  } catch (error) {
+    const httpError = asHttpError(error);
+    return c.html(renderOauthAuthorizationErrorPage(httpError.message), httpError.status);
+  }
 
-    if (responseType !== "code") {
-      throw new HttpError(400, "Unsupported response_type. Expected 'code'.");
+  try {
+    const client = await oauthProvider.lookupClient(authRequest.clientId);
+    if (!client) {
+      throw new HttpError(400, "Unknown OAuth client.");
     }
-    if (!clientId || !redirectUri || !state || !codeChallenge || codeChallengeMethod !== "S256") {
-      throw new HttpError(400, "Missing or invalid OAuth authorization parameters.");
-    }
-
-    const client = await verifyRegisteredOAuthClient({
-      clientId,
-      secret,
-      issuer: oauthBaseUrl
-    });
-    const normalizedRedirectUri = normalizeRedirectUri(redirectUri);
-    if (!client.redirectUris.includes(normalizedRedirectUri)) {
+    if (!client.redirectUris.includes(authRequest.redirectUri)) {
       throw new HttpError(400, "OAuth redirect URI is not registered for this client.");
     }
 
-    const { code } = await createAuthorizationCode({
-      secret,
-      issuer: oauthBaseUrl,
-      clientId: client.clientId,
-      redirectUri: normalizedRedirectUri,
-      codeChallenge,
-      codeChallengeMethod: "S256",
+    const identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
+
+    const grantedScope = authRequest.scope.length > 0 ? authRequest.scope : [MCP_REQUIRED_SCOPE];
+    const props: McpAuthProps = {
       email: identity.email,
       subject: identity.subject,
-      scope,
-      resource
+      source: "mcp_oauth",
+      scope: grantedScope,
+      clientId: authRequest.clientId
+    };
+
+    const { redirectTo } = await oauthProvider.completeAuthorization({
+      request: authRequest,
+      userId: identity.email,
+      metadata: {
+        email: identity.email,
+        subject: identity.subject,
+        clientName: client.clientName ?? null
+      },
+      scope: grantedScope,
+      props
     });
 
-    const redirect = new URL(normalizedRedirectUri);
-    redirect.searchParams.set("code", code);
-    redirect.searchParams.set("state", state);
-    if (isLoopbackRedirectUri(redirect)) {
+    const redirectUrl = new URL(redirectTo);
+    if (isLoopbackRedirectUri(redirectUrl)) {
       return c.html(renderOauthLoopbackContinuePage({
-        callbackUrl: redirect.toString(),
-        appName: "your agent"
+        callbackUrl: redirectUrl.toString(),
+        appName: client.clientName ?? "your agent"
       }));
     }
-    return Response.redirect(redirect.toString(), 302);
+    return Response.redirect(redirectUrl.toString(), 302);
   } catch (error) {
     const httpError = asHttpError(error);
     return c.html(renderOauthAuthorizationErrorPage(httpError.message), httpError.status);
@@ -562,161 +519,6 @@ function isLoopbackRedirectUri(url: URL): boolean {
     hostname === "::1"
   );
 }
-
-async function mintMcpOauthTokenPair(input: {
-  env: Env;
-  oauthBaseUrl: string;
-  clientId: string;
-  email: string;
-  subject: string;
-  scope?: string;
-  resource?: string;
-}) {
-  const secret = resolveMcpOauthSecret(input.env);
-  const accessToken = await mintMcpAccessToken({
-    secret,
-    issuer: input.oauthBaseUrl,
-    clientId: input.clientId,
-    email: input.email,
-    subject: input.subject,
-    scope: input.scope,
-    resource: input.resource,
-    ttlSeconds: parsePositiveInteger(input.env.MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS, 24 * 60 * 60)
-  });
-  const refreshToken = await mintMcpRefreshToken({
-    secret,
-    issuer: input.oauthBaseUrl,
-    clientId: input.clientId,
-    email: input.email,
-    subject: input.subject,
-    scope: input.scope,
-    resource: input.resource,
-    ttlSeconds: parsePositiveInteger(input.env.MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS, 30 * 24 * 60 * 60)
-  });
-
-  return {
-    accessToken,
-    refreshToken
-  };
-}
-
-deployServiceApp.post("/oauth/token", async (c) => {
-  try {
-    const secret = resolveMcpOauthSecret(c.env);
-    const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-    const form = await c.req.formData();
-    const grantType = getRequiredOauthFormField(form, "grant_type");
-    const clientId = getRequiredOauthFormField(form, "client_id");
-    const client = await verifyRegisteredOAuthClient({
-      clientId,
-      secret,
-      issuer: oauthBaseUrl
-    });
-
-    if (grantType === "authorization_code") {
-      const redirectUri = normalizeRedirectUri(getRequiredOauthFormField(form, "redirect_uri"));
-      const code = getRequiredOauthFormField(form, "code");
-      const codeVerifier = getRequiredOauthFormField(form, "code_verifier");
-
-      if (!client.redirectUris.includes(redirectUri)) {
-        throw new HttpError(400, "OAuth redirect URI is not registered for this client.");
-      }
-
-      const authorizationCode = await verifyAuthorizationCode({
-        code,
-        secret,
-        issuer: oauthBaseUrl
-      });
-
-      if (authorizationCode.clientId !== client.clientId || authorizationCode.redirectUri !== redirectUri) {
-        throw new HttpError(400, "OAuth authorization code did not match this client or redirect URI.");
-      }
-
-      const pkceValid = await validatePkceS256(codeVerifier, authorizationCode.codeChallenge);
-      if (!pkceValid) {
-        throw new HttpError(400, "OAuth PKCE verification failed.");
-      }
-
-      const used = await consumeOauthGrant(
-        c.env.CONTROL_PLANE_DB,
-        authorizationCode.jti,
-        "authorization_code",
-        new Date().toISOString()
-      );
-      if (!used) {
-        throw new HttpError(400, "OAuth authorization code has already been used.");
-      }
-
-      const { accessToken, refreshToken } = await mintMcpOauthTokenPair({
-        env: c.env,
-        oauthBaseUrl,
-        clientId: client.clientId,
-        email: authorizationCode.email,
-        subject: authorizationCode.subject,
-        scope: authorizationCode.scope,
-        resource: authorizationCode.resource
-      });
-
-      return c.json({
-        access_token: accessToken.accessToken,
-        token_type: "Bearer",
-        expires_in: accessToken.expiresIn,
-        refresh_token: refreshToken.refreshToken,
-        refresh_token_expires_in: refreshToken.expiresIn,
-        scope: authorizationCode.scope
-      });
-    }
-
-    if (grantType === "refresh_token") {
-      const refreshToken = getRequiredOauthFormField(form, "refresh_token");
-      const refreshTokenPayload = await verifyMcpRefreshToken({
-        token: refreshToken,
-        secret,
-        issuer: oauthBaseUrl
-      });
-
-      if (refreshTokenPayload.clientId !== client.clientId) {
-        throw new HttpError(400, "OAuth refresh token did not match this client.");
-      }
-
-      const used = await consumeOauthRefreshToken(
-        c.env.CONTROL_PLANE_DB,
-        refreshTokenPayload.jti,
-        new Date().toISOString()
-      );
-      if (!used) {
-        throw new HttpError(400, "OAuth refresh token has already been used.");
-      }
-
-      const { accessToken, refreshToken: rotatedRefreshToken } = await mintMcpOauthTokenPair({
-        env: c.env,
-        oauthBaseUrl,
-        clientId: client.clientId,
-        email: refreshTokenPayload.email,
-        subject: refreshTokenPayload.subject,
-        scope: refreshTokenPayload.scope,
-        resource: refreshTokenPayload.resource
-      });
-
-      return c.json({
-        access_token: accessToken.accessToken,
-        token_type: "Bearer",
-        expires_in: accessToken.expiresIn,
-        refresh_token: rotatedRefreshToken.refreshToken,
-        refresh_token_expires_in: rotatedRefreshToken.expiresIn,
-        scope: refreshTokenPayload.scope
-      });
-    }
-
-    throw new HttpError(400, "Kale Deploy currently supports only the authorization_code and refresh_token grants.");
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return c.json({
-      error: "invalid_grant",
-      error_description: httpError.message
-    }, { status: httpError.status });
-  }
-});
 
 // ── MCP token bridge (Claude Code fallback) ─────────────────────────
 // Behind Cloudflare Access. Lets the user generate a personal MCP token
@@ -1441,7 +1243,7 @@ deployServiceApp.get("/featured/control", async (c) => {
     resolveServiceBaseUrl,
     listProjects: (env) => listProjects(env.CONTROL_PLANE_DB),
     listFeaturedProjects: (env) => listFeaturedProjects(env.CONTROL_PLANE_DB),
-    resolveMcpOauthSecret
+    resolveProjectControlFormTokenSecret
   });
 });
 
@@ -1451,7 +1253,7 @@ deployServiceApp.post("/featured/control", async (c) => {
     request: c.req.raw,
     requireFeaturedProjectAdminIdentity,
     resolveServiceBaseUrl,
-    resolveMcpOauthSecret,
+    resolveProjectControlFormTokenSecret,
     getProject: (env, projectName) => getProject(env.CONTROL_PLANE_DB, projectName),
     getFeaturedProject: (env, githubRepo) => getFeaturedProject(env.CONTROL_PLANE_DB, githubRepo),
     putFeaturedProject: (env, feature) => putFeaturedProject(env.CONTROL_PLANE_DB, feature),
@@ -1797,7 +1599,7 @@ deployServiceApp.get("/api/github/user-auth/start", async (c) => {
         )
       : undefined;
     const state = await createGitHubUserAuthStateToken({
-      secret: resolveMcpOauthSecret(c.env),
+      secret: resolveProjectControlFormTokenSecret(c.env),
       issuer: serviceBaseUrl,
       subject: identity.subject,
       email: identity.email,
@@ -1825,7 +1627,7 @@ deployServiceApp.get("/github/user-auth/callback", async (c) => {
 
     const authConfig = resolveGitHubUserAuthConfig(c.env, serviceBaseUrl);
     const statePayload = await verifyGitHubUserAuthStateToken({
-      secret: resolveMcpOauthSecret(c.env),
+      secret: resolveProjectControlFormTokenSecret(c.env),
       issuer: serviceBaseUrl,
       token: state
     });
@@ -2227,46 +2029,46 @@ deployServiceApp.get("/api/build-jobs/:jobId/status", async (c) => {
   });
 });
 
-deployServiceApp.all("/mcp", async (c) => {
-  if (c.req.method === "OPTIONS") {
-    return c.body(null, 204);
+// The `/mcp` route is served by the OAuth provider's `apiHandler` (see the default export
+// at the bottom of this module). The provider validates the Bearer access token, looks up
+// the associated grant, decrypts the stored `McpAuthProps`, and only then dispatches the
+// request to the handler. That means this Hono app never needs to see an unauthenticated
+// `/mcp` request; the provider returns 401 with a WWW-Authenticate header on its own.
+export async function dispatchMcpRequest(
+  request: Request,
+  env: Env,
+  executionCtx: ExecutionContext,
+  props: McpAuthProps
+): Promise<Response> {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204 });
   }
-  if (c.req.method === "GET") {
-    try {
-      await requireMcpRequestIdentity(c.req.raw, c.env);
-    } catch (error) {
-      const httpError = asHttpError(error);
-      return oauthUnauthorizedResponse(c, c.env, httpError, readBearerToken(c.req.raw) ?? undefined);
-    }
-
-    return c.json({ error: "SSE streaming is not supported in stateless mode." }, 405);
+  if (request.method === "GET") {
+    return Response.json({ error: "SSE streaming is not supported in stateless mode." }, { status: 405 });
   }
 
-  let identity: AgentRequestIdentity;
-
-  try {
-    identity = await requireMcpRequestIdentity(c.req.raw, c.env);
-  } catch (error) {
-    const httpError = asHttpError(error);
-    return oauthUnauthorizedResponse(c, c.env, httpError, readBearerToken(c.req.raw) ?? undefined);
-  }
+  const identity: AgentRequestIdentity = {
+    type: props.source,
+    email: props.email,
+    subject: props.subject
+  };
 
   try {
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });
-    const server = createDeployServiceMcpServer(c.env, c.req.raw.url, identity, c.executionCtx);
+    const server = createDeployServiceMcpServer(env, request.url, identity, executionCtx);
     await server.connect(transport);
 
-    const response = await transport.handleRequest(c.req.raw);
+    const response = await transport.handleRequest(request);
     await server.close();
     await transport.close();
     return response;
   } catch (error) {
     console.error("MCP request failed.", error);
     const httpError = asHttpError(error);
-    return c.json({
+    return Response.json({
       jsonrpc: "2.0",
       error: {
         code: -32603,
@@ -2275,7 +2077,7 @@ deployServiceApp.all("/mcp", async (c) => {
       id: null
     }, { status: httpError.status });
   }
-});
+}
 
 deployServiceApp.post("/api/deployments", async (c) => {
   if (!isAuthorized(c.req.raw, c.env.DEPLOY_API_TOKEN)) {
@@ -4352,50 +4154,28 @@ async function requireAgentRequestIdentity(request: Request, env: Env): Promise<
   };
 }
 
-async function requireMcpRequestIdentity(request: Request, env: Env): Promise<AuthenticatedAgentRequestIdentity> {
-  const bearerToken = readBearerToken(request);
-  if (!bearerToken) {
-    throw new HttpError(401, "Missing Bearer token.");
-  }
-
-  if (bearerToken.startsWith("kale_pat_")) {
-    return verifyMcpPatToken(bearerToken, env);
-  }
-
-  const secret = resolveMcpOauthSecret(env);
-  const payload = await verifyMcpAccessToken({
-    token: bearerToken,
-    secret,
-    issuer: resolveMcpOauthBaseUrl(env, request.url)
-  });
-
-  return {
-    type: "mcp_oauth",
-    email: payload.email,
-    subject: payload.subject
-  };
-}
-
-async function verifyMcpPatToken(token: string, env: Env): Promise<AuthenticatedAgentRequestIdentity> {
+// Resolves a Kale personal access token (`kale_pat_*`) issued via the `/connect` page
+// into an `McpAuthProps` payload, suitable to hand back to the OAuth provider's
+// `resolveExternalToken` callback. Returns `null` when the token is unknown,
+// revoked, or expired.
+export async function resolveMcpPatProps(token: string, env: Env): Promise<McpAuthProps | null> {
   const hash = await hashPatToken(token);
   const row = await env.CONTROL_PLANE_DB.prepare(
     "SELECT email, subject, expires_at, revoked_at FROM mcp_tokens WHERE token_hash = ?"
   ).bind(hash).first<{ email: string; subject: string; expires_at: string; revoked_at: string | null }>();
 
-  if (!row) {
-    throw new HttpError(401, "Invalid token.");
-  }
-  if (row.revoked_at) {
-    throw new HttpError(401, "Token has been revoked.");
+  if (!row || row.revoked_at) {
+    return null;
   }
   if (new Date(row.expires_at + "Z") < new Date()) {
-    throw new HttpError(401, "Token has expired.");
+    return null;
   }
 
   return {
-    type: "mcp_pat",
     email: row.email,
-    subject: row.subject
+    subject: row.subject,
+    source: "mcp_pat",
+    scope: [MCP_REQUIRED_SCOPE]
   };
 }
 
@@ -4445,15 +4225,38 @@ async function requireKaleAdminMcpIdentity(
   request: Request,
   env: Env
 ): Promise<AuthenticatedAgentRequestIdentity> {
-  const identity = await requireMcpRequestIdentity(request, env);
-  if (identity.type !== "mcp_oauth") {
+  const bearerToken = readBearerToken(request);
+  if (!bearerToken) {
+    throw new HttpError(401, "Missing Bearer token.");
+  }
+
+  let props: McpAuthProps | null = null;
+  if (bearerToken.startsWith("kale_pat_")) {
+    props = await resolveMcpPatProps(bearerToken, env);
+  } else if (env.OAUTH_PROVIDER) {
+    const tokenData = await env.OAUTH_PROVIDER.unwrapToken<McpAuthProps>(bearerToken);
+    if (tokenData) {
+      props = tokenData.grant.props;
+    }
+  }
+
+  if (!props) {
+    throw new HttpError(401, "Invalid or expired Bearer token.");
+  }
+  if (props.source !== "mcp_oauth") {
     throw new HttpError(403, "Kale admin operations require a short-lived MCP OAuth session, not a personal access token.");
   }
-  assertConfiguredEmail(identity.email, resolveKaleAdminEmails(env), {
+
+  assertConfiguredEmail(props.email, resolveKaleAdminEmails(env), {
     unavailableMessage: "Kale admin operations are not configured on this deployment.",
     forbiddenMessage: "Kale admin operations are only available to Kale administrators."
   });
-  return identity;
+
+  return {
+    type: "mcp_oauth",
+    email: props.email,
+    subject: props.subject
+  };
 }
 
 function resolveAccessConfigFromEnv(env: Env) {
@@ -4504,10 +4307,14 @@ function hasKaleAdminEmail(email: string | undefined, env: Env): boolean {
   return typeof email === "string" && resolveKaleAdminEmails(env).has(email.toLowerCase());
 }
 
-function resolveMcpOauthSecret(env: Env): string {
-  const secret = resolveConfiguredEnvValue(env.MCP_OAUTH_TOKEN_SECRET);
+// The OAuth provider itself owns access/refresh/authorization-code token secrets in KV.
+// `resolveProjectControlFormTokenSecret` is the unrelated HMAC used for browser form CSRF
+// tokens on the project-control page, and shares configuration with the old OAuth secret
+// during the migration.
+function resolveProjectControlFormTokenSecret(env: Env): string {
+  const secret = resolveConfiguredEnvValue(env.PROJECT_CONTROL_FORM_TOKEN_SECRET);
   if (!secret) {
-    throw new HttpError(503, "MCP OAuth is not configured on this deployment.");
+    throw new HttpError(503, "Project control form token signing is not configured on this deployment.");
   }
 
   return secret;
@@ -4602,47 +4409,15 @@ ${baseStyles(`
 </body></html>`;
 }
 
-function buildOauthProtectedResourceMetadata(serviceBaseUrl: string, oauthBaseUrl: string) {
-  return {
-    resource: `${serviceBaseUrl}/mcp`,
-    authorization_servers: [serviceBaseUrl],
-    scopes_supported: [MCP_REQUIRED_SCOPE],
-    resource_name: "Kale Deploy MCP",
-    resource_documentation: serviceBaseUrl
-  };
-}
-
-function buildOauthAuthorizationServerMetadata(oauthBaseUrl: string, serviceBaseUrl: string) {
-  return {
-    issuer: oauthBaseUrl,
-    authorization_endpoint: `${serviceBaseUrl}/api/oauth/authorize`,
-    token_endpoint: `${serviceBaseUrl}/oauth/token`,
-    registration_endpoint: `${serviceBaseUrl}/oauth/register`,
-    response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
-    token_endpoint_auth_methods_supported: ["none"],
-    code_challenge_methods_supported: ["S256"],
-    scopes_supported: [MCP_REQUIRED_SCOPE],
-    service_documentation: serviceBaseUrl
-  };
-}
-
-function serveOauthProtectedResourceMetadata(c: Context<{ Bindings: Env }>) {
-  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-  return c.json(buildOauthProtectedResourceMetadata(serviceBaseUrl, oauthBaseUrl), 200, {
-    "cache-control": "public, max-age=300"
-  });
-}
-
-function serveOauthAuthorizationServerMetadata(c: Context<{ Bindings: Env }>) {
-  const serviceBaseUrl = resolveServiceBaseUrl(c.env, c.req.raw.url);
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(c.env, c.req.raw.url);
-  return c.json(buildOauthAuthorizationServerMetadata(oauthBaseUrl, serviceBaseUrl), 200, {
-    "cache-control": "public, max-age=300"
-  });
-}
-
+// OAuth authorization-server and protected-resource metadata endpoints are served by the
+// Cloudflare Workers OAuth Provider wrapper (see default export). The provider reads the
+// configured `authorizeEndpoint`, `tokenEndpoint`, and `clientRegistrationEndpoint` plus
+// `scopesSupported` and `resourceMetadata` options to produce RFC 8414 / RFC 9728 output.
+//
+// `oauthUnauthorizedResponse` is kept only for legacy 401 fallbacks inside routes that do
+// not run through the provider's API handler (for example, project-admin endpoints that
+// the provider does not cover). The provider itself handles 401 with WWW-Authenticate for
+// all `/mcp` requests.
 function oauthUnauthorizedResponse(
   c: Context<{ Bindings: Env }>,
   env: Env,
@@ -5062,11 +4837,70 @@ function serializeCookie(
   return parts.join("; ");
 }
 
-export default {
+// Default handler: the Hono app. Hono's public routes (landing page, /connect, GitHub
+// webhooks, JSON APIs, /api/oauth/authorize) all live here. The OAuth provider wraps this
+// and only routes `/mcp*` traffic away to the apiHandler after validating the bearer.
+const honoDefaultHandler: ExportedHandler<Env> = {
   fetch(request: Request, env: Env, executionCtx: ExecutionContext) {
-    return deployServiceApp.fetch(normalizeWorkerRequest(request, resolveBasePath(env.DEPLOY_SERVICE_BASE_URL)), env, executionCtx);
+    return deployServiceApp.fetch(
+      normalizeWorkerRequest(request, resolveBasePath(env.DEPLOY_SERVICE_BASE_URL)),
+      env,
+      executionCtx
+    );
   }
 };
+
+// API handler: authenticated `/mcp*` traffic. The provider has already validated the
+// access token and populated `ctx.props` with the `McpAuthProps` we attached in
+// `/api/oauth/authorize` (or reconstructed via `resolveMcpPatProps`).
+const mcpApiHandler = {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const normalized = normalizeWorkerRequest(request, resolveBasePath(env.DEPLOY_SERVICE_BASE_URL));
+    const url = new URL(normalized.url);
+    const props = (ctx as ExecutionContext & { props?: McpAuthProps }).props;
+    if (!props || !props.email || !props.subject) {
+      return Response.json(
+        { error: "invalid_token", error_description: "Missing MCP identity props." },
+        { status: 401 }
+      );
+    }
+
+    if (url.pathname === "/mcp/ping") {
+      return handleMcpPing(normalized, env, props);
+    }
+    if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
+      return dispatchMcpRequest(normalized, env, ctx, props);
+    }
+
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+};
+
+export default new OAuthProvider<Env>({
+  apiRoute: ["/mcp"],
+  apiHandler: mcpApiHandler,
+  defaultHandler: honoDefaultHandler,
+  authorizeEndpoint: "/api/oauth/authorize",
+  tokenEndpoint: "/oauth/token",
+  clientRegistrationEndpoint: "/oauth/register",
+  scopesSupported: [MCP_REQUIRED_SCOPE],
+  accessTokenTTL: 3600,
+  refreshTokenTTL: 30 * 24 * 60 * 60,
+  allowPlainPKCE: false,
+  resourceMetadata: {
+    resource_name: "Kale Deploy MCP"
+  },
+  async resolveExternalToken({ token, env }) {
+    if (!token.startsWith("kale_pat_")) {
+      return null;
+    }
+    const props = await resolveMcpPatProps(token, env);
+    if (!props) {
+      return null;
+    }
+    return { props };
+  }
+});
 
 function resolveBasePath(baseUrl: string | undefined): string {
   if (!baseUrl) {
@@ -5453,7 +5287,7 @@ function createDeployServiceMcpServer(
 const PROJECT_CONTROL_ROUTE_DEPENDENCIES = {
   requireCloudflareAccessIdentity,
   resolveServiceBaseUrl,
-  resolveMcpOauthSecret,
+  resolveProjectControlFormTokenSecret,
   authorizeProjectSecretsAccess: authorizeBrowserProjectAdminAction
 };
 

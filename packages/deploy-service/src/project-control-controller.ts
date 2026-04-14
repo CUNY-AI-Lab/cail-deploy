@@ -130,7 +130,7 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
     project: ProjectSecretsAccessContext["project"],
     githubLogin: string
   ) => Promise<ProjectSecretsListPayload>;
-  resolveMcpOauthSecret: (env: TEnv) => string;
+  resolveProjectControlFormTokenSecret: (env: TEnv) => string;
 }): Promise<Response> {
   const serviceBaseUrl = input.resolveServiceBaseUrl(input.env, input.request.url);
 
@@ -169,7 +169,7 @@ export async function createProjectControlPanelResponse<TEnv>(input: {
       input.buildProjectStatusResponse(input.env, input.projectName, { includeSensitive: true }),
       input.buildProjectSecretsListPayload(input.env, authorization.project, authorization.githubLogin),
       createProjectControlFormToken({
-        secret: input.resolveMcpOauthSecret(input.env),
+        secret: input.resolveProjectControlFormTokenSecret(input.env),
         issuer: serviceBaseUrl,
         subject: identity.subject,
         projectName: input.projectName
@@ -253,7 +253,7 @@ export async function createProjectControlSecretSetResponse<TEnv>(input: {
   projectName: string;
   requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
   resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
-  resolveMcpOauthSecret: (env: TEnv) => string;
+  resolveProjectControlFormTokenSecret: (env: TEnv) => string;
   authorizeProjectSecretsAccess: (
     env: TEnv,
     requestUrl: string,
@@ -286,7 +286,7 @@ export async function createProjectControlSecretDeleteResponse<TEnv>(input: {
   secretName: string;
   requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
   resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
-  resolveMcpOauthSecret: (env: TEnv) => string;
+  resolveProjectControlFormTokenSecret: (env: TEnv) => string;
   authorizeProjectSecretsAccess: (
     env: TEnv,
     requestUrl: string,
@@ -312,7 +312,7 @@ export async function createProjectControlProjectDeleteResponse<TEnv>(input: {
   projectName: string;
   requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
   resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
-  resolveMcpOauthSecret: (env: TEnv) => string;
+  resolveProjectControlFormTokenSecret: (env: TEnv) => string;
   authorizeProjectSecretsAccess: (
     env: TEnv,
     requestUrl: string,
@@ -353,7 +353,7 @@ async function createProjectControlMutationResponse<TEnv, TResult extends Projec
   projectName: string;
   requireCloudflareAccessIdentity: (request: Request, env: TEnv) => Promise<AuthenticatedAgentRequestIdentity>;
   resolveServiceBaseUrl: (env: TEnv, requestUrl: string) => string;
-  resolveMcpOauthSecret: (env: TEnv) => string;
+  resolveProjectControlFormTokenSecret: (env: TEnv) => string;
   authorizeProjectSecretsAccess: (
     env: TEnv,
     requestUrl: string,
@@ -381,7 +381,7 @@ async function createProjectControlMutationResponse<TEnv, TResult extends Projec
   try {
     const form = await input.request.formData();
     await verifyProjectControlFormToken({
-      secret: input.resolveMcpOauthSecret(input.env),
+      secret: input.resolveProjectControlFormTokenSecret(input.env),
       issuer: serviceBaseUrl,
       token: getRequiredProjectControlFormField(form, "formToken"),
       subject: identity.subject,

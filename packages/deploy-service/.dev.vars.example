@@ -1,6 +1,8 @@
 DEPLOY_API_TOKEN=replace-with-local-api-token
-MCP_OAUTH_TOKEN_SECRET=replace-with-mcp-oauth-token-secret
-MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS=3600
+# Signs short-lived CSRF form tokens for the browser project-control UI only. The MCP
+# OAuth surface is now handled by @cloudflare/workers-oauth-provider, which manages its
+# own encryption keys inside the OAUTH_KV namespace and does not require an HMAC secret.
+PROJECT_CONTROL_FORM_TOKEN_SECRET=replace-with-project-control-form-token-secret
 CLOUDFLARE_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
 CLOUDFLARE_ACCESS_AUD=replace-with-access-aud-tag
 CLOUDFLARE_ACCESS_ALLOWED_EMAIL_DOMAINS=cuny.edu
