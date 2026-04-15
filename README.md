@@ -140,7 +140,7 @@ The MCP surface is a thin adapter over the deploy-service control plane, not a s
 Current harness note:
 
 - The public setup page now shows short per-agent install instructions for the `kale-deploy` plugin, then a plain-language build prompt.
-- Codex 0.121.0+ installs Kale through the Codex plugin marketplace (`/plugin marketplace add CUNY-AI-Lab/CAIL-deploy` then `/plugin install kale-deploy@cuny-ai-lab`); on older Codex builds, direct `codex mcp add` plus `codex mcp login` is the manual fallback.
+- Codex 0.121.0+ installs Kale through the Codex plugin marketplace: run `codex marketplace add CUNY-AI-Lab/CAIL-deploy`, then open Codex, run `/plugins`, and install Kale Deploy. On older Codex builds, direct `codex mcp add` plus `codex mcp login` is the manual fallback.
 - Claude Code should use `mcp-remote` only to complete OAuth, then finalize to one direct HTTP `kale` server whose `headersHelper` reads the latest valid Kale OAuth token through the installed `kale-claude-connect.mjs` helper; if a refresh token is cached the helper refreshes automatically, and `/connect` stays the last resort.
 - Claude has an explicit user-scope plugin update command: `claude plugins update kale-deploy@cuny-ai-lab -s user`.
 - Gemini CLI supports extension updates directly, and the preferred public install path now uses `--auto-update`.

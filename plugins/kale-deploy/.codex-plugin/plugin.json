@@ -37,9 +37,7 @@
     "defaultPrompt": [
       "Use Kale Deploy to build me a small web app.",
       "Scaffold and deploy a Kale-compatible survey tool.",
-      "Make this Worker fit Kale Deploy and push it live.",
-      "Inspect this repo for Kale readiness and fix what is missing.",
-      "Adapt this existing project so it fits Kale Deploy without rebuilding it."
+      "Make this Worker fit Kale Deploy and push it live."
     ],
     "brandColor": "#c2410c"
   }

@@ -737,7 +737,7 @@ function summarizeOutcome(
     details.push("no kale plugin observed");
   }
   if (!observed.skillAcquired) {
-    details.push("no installed kale add-on observed");
+    details.push("no installed Kale wrapper observed");
   }
   return `${harnessName} failed the onboarding test (${details.join(", ") || "no observable progress"}).`;
 }

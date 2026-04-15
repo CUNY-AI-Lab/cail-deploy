@@ -511,7 +511,7 @@ Important values:
 
 Today, the strongest loop is:
 
-1. install the `kale-deploy` add-on once in the agent
+1. install the `kale-deploy` plugin, add-on, skill, or extension once in the agent
 2. scaffold with `kale-init` or create a Worker-compatible repo
 3. create the GitHub repo with `gh repo create` or another GitHub client
 4. connect the harness to `POST /mcp`
