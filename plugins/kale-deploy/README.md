@@ -49,11 +49,20 @@ For readiness-only setup in an existing environment, use the bundled
 `kale-connect` guidance. That path is meant to get Kale connected and verified
 without scaffolding a new app yet.
 
-For Codex, the normal path is the Kale add-on install shown in the Codex app or
-on the Kale homepage. That add-on bundles the same remote MCP server and Kale
-guidance.
+For Codex 0.121.0 or newer, install Kale from the Codex plugin marketplace by
+pasting these two lines inside Codex:
 
-If you need a manual or CLI fallback, use the direct MCP connection:
+```text
+/plugin marketplace add CUNY-AI-Lab/CAIL-deploy
+/plugin install kale-deploy@cuny-ai-lab
+```
+
+The plugin install registers the Kale skills and the kale MCP server. Codex
+will open a browser sign-in flow for Kale Deploy the first time the kale tools
+are used.
+
+If you are on a Codex build older than 0.121.0 (no plugin marketplace), use the
+direct MCP fallback instead:
 
 ```bash
 codex mcp add kale --url https://cuny.qzz.io/kale/mcp
@@ -131,8 +140,7 @@ For existing repositories, the most useful command flow is usually:
 I verified the Codex side at the packaging level:
 
 - the Codex plugin manifest is valid and points at the bundled `.codex-mcp.json`
-- the repo contains the Codex marketplace entry for `kale-deploy`
+- the repo contains the Codex marketplace entry for `kale-deploy` at `.agents/plugins/marketplace.json`
 - the remote MCP server completes OAuth login successfully with `codex mcp add` plus `codex mcp login`
 
-Codex add-on installation is an app/UI path, not a CLI subcommand path in this
-build. The manual CLI fallback is still the MCP route above.
+Codex 0.121.0 added `codex marketplace add` (and the matching `/plugin marketplace add` slash command) for installing plugin marketplaces from a GitHub repository, so the preferred install path is the marketplace flow above. The direct `codex mcp add` MCP route remains as a manual fallback for older Codex builds.

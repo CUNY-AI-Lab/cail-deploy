@@ -39,7 +39,7 @@ Follow that install instruction in the app you use.
 
 The install step is meant to be global for that agent, not just for one folder.
 
-The website lists short install instructions for the Kale add-on in each agent. After the add-on is installed, use the build prompt on the page and let the agent handle the rest.
+The website lists short install instructions for the Kale plugin in each agent. After the plugin is installed, use the build prompt on the page and let the agent handle the rest.
 
 If the agent has trouble connecting, it may ask you to visit [https://cuny.qzz.io/kale/connect](https://cuny.qzz.io/kale/connect), sign in, and paste a token back into the chat. This is a fallback for when the automatic sign-in does not complete.
 

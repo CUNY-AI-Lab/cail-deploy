@@ -55,6 +55,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
       install_notes: string[];
       local_wrapper: {
         kind: string;
+        package_name: string;
         bundle_version: string;
         update_mode: string;
         update_command?: string;
@@ -167,11 +168,15 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /refreshes it automatically/i.test(note)));
   assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Only rerun the mcp-remote bootstrap if the helper reports that no valid Kale OAuth or refresh token is available/i.test(note)));
   assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Last-resort token bridge:/i.test(note)));
-  assert.equal(body.agent_harnesses[1]?.install_surface, "app_add_on");
+  assert.equal(body.agent_harnesses[1]?.install_surface, "plugin_marketplace");
   assert.equal(body.agent_harnesses[1]?.install_mode, "command");
-  assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /codex mcp add kale/i);
+  assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /\/plugin marketplace add CUNY-AI-Lab\/CAIL-deploy/);
+  assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /\/plugin install kale-deploy@cuny-ai-lab/);
+  assert.equal(body.agent_harnesses[1]?.local_wrapper.kind, "plugin");
+  assert.equal(body.agent_harnesses[1]?.local_wrapper.package_name, "kale-deploy@cuny-ai-lab");
   assert.equal(body.agent_harnesses[1]?.local_wrapper.update_mode, "unknown");
   assert.equal(body.agent_harnesses[1]?.manual_fallback?.auth_mode, "oauth_browser");
+  assert.match(body.agent_harnesses[1]?.manual_fallback?.instruction ?? "", /codex mcp add kale/i);
   assert.match(body.agent_harnesses[1]?.manual_fallback?.instruction ?? "", /codex mcp login kale/i);
   assert.equal(body.agent_harnesses[2]?.install_surface, "extension");
   assert.match(body.agent_harnesses[2]?.install_instruction ?? "", /--auto-update/);
@@ -466,7 +471,7 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Use this install step once in your AI agent/i);
   assert.match(html, /\/plugin marketplace add CUNY-AI-Lab\/CAIL-deploy/);
   assert.match(html, /\/plugin install kale-deploy@cuny-ai-lab/);
-  assert.match(html, /codex mcp add kale/);
+  assert.match(html, /Paste inside Codex \(requires Codex 0\.121\.0\+\)/);
   assert.doesNotMatch(html, /Manual fallback/);
   assert.match(html, /\/extensions install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy --auto-update/);
   assert.match(html, /Already have a GitHub repo\?/);
