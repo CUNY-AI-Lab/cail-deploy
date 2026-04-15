@@ -540,31 +540,33 @@ function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[]
       id: "codex",
       name: "Codex",
       letter: "X",
-      installSurface: "app_add_on",
+      installSurface: "plugin_marketplace",
       installMode: "command",
-      instruction: `codex mcp add kale --url ${input.mcpEndpoint}\ncodex mcp login kale`,
-      hint: "Paste inside Codex, then complete the sign-in in your browser",
+      instruction: `/plugin marketplace add CUNY-AI-Lab/CAIL-deploy\n/plugin install kale-deploy@cuny-ai-lab`,
+      hint: "Paste inside Codex (requires Codex 0.121.0+), then complete the sign-in in your browser",
       installNotes: [
-        "Codex uses the Kale add-on as the normal install surface.",
-        "The Codex CLI exposes MCP management, not plugin management."
+        "Codex 0.121.0 introduced plugin marketplaces, so Kale now installs as a Codex plugin instead of an add-on.",
+        "The plugin install registers the Kale skills and the kale MCP server in Codex.",
+        "Complete the OAuth browser flow when Codex prompts you the first time the kale tools are used."
       ],
       manualFallback: {
         authMode: "oauth_browser",
         instruction: `codex mcp add kale --url ${input.mcpEndpoint}\ncodex mcp login kale`,
-        hint: "Use this when you need the direct MCP path",
+        hint: "Use this on Codex versions older than 0.121.0 that do not support plugin marketplaces",
         notes: [
+          "Older Codex builds without the plugin marketplace can still wire up the Kale MCP server directly.",
           "The browser OAuth flow should open automatically from codex mcp login.",
-          "Remote MCP changes update immediately even if the local add-on is stale."
+          "Remote MCP changes update immediately even if the local plugin is stale."
         ]
       },
       localWrapper: {
-        kind: "add_on",
-        packageName: "kale-deploy",
+        kind: "plugin",
+        packageName: "kale-deploy@cuny-ai-lab",
         bundleVersion: KALE_AGENT_BUNDLE_VERSION,
         updateMode: "unknown",
         notes: [
-          "Codex CLI does not currently expose add-on update commands.",
-          "If the add-on looks stale, refresh or reinstall it in the Codex app."
+          "Codex CLI does not yet expose a dedicated plugin update command.",
+          "If the kale-deploy plugin looks stale, re-run /plugin marketplace add CUNY-AI-Lab/CAIL-deploy to refresh the marketplace cache."
         ]
       }
     },
@@ -712,7 +714,7 @@ function buildInstalledHarnessSetupPrompts(input: HarnessPromptContext): Harness
   const codexSetupPrompt = [
     `Goal: Prepare this Codex environment for ${marketingName}. Do not build an app yet.`,
     "",
-    `1. The \`kale-deploy\` add-on or bundled Kale skills are already installed. Use the installed \`kale-connect\` guidance to connect Kale.`,
+    `1. The \`kale-deploy\` plugin (or, on older Codex builds, the bundled Kale skills) is already installed from the Codex plugin marketplace. Use the installed \`kale-connect\` guidance to connect Kale.`,
     `2. If Kale authentication is needed, ask the user to visit ${connectUrl}, sign in, generate a token, and paste it back.`,
     `3. Call \`get_runtime_manifest\` and use \`dynamic_skill_policy\`, \`client_update_policy\`, and \`agent_harnesses\` as live truth.`,
     `4. Call \`test_connection\` and use \`nextAction\` and \`summary\` for the current next step.`,

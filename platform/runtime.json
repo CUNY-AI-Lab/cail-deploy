@@ -125,31 +125,33 @@
       "id": "codex",
       "name": "Codex",
       "letter": "X",
-      "install_surface": "app_add_on",
-      "install_mode": "app_ui",
-      "install_instruction": "Install the Kale Deploy add-on in the Codex app or from the Kale homepage.\n\nIf you need the manual fallback:\ncodex mcp add kale --url https://cuny.qzz.io/kale/mcp\ncodex mcp login kale",
-      "install_hint": "Use the add-on installer first; the MCP commands are the fallback",
+      "install_surface": "plugin_marketplace",
+      "install_mode": "command",
+      "install_instruction": "/plugin marketplace add CUNY-AI-Lab/CAIL-deploy\n/plugin install kale-deploy@cuny-ai-lab",
+      "install_hint": "Paste inside Codex (requires Codex 0.121.0+), then complete the sign-in in your browser",
       "install_notes": [
-        "Codex uses the Kale add-on as the normal install surface.",
-        "The Codex CLI exposes MCP management, not plugin management."
+        "Codex 0.121.0 introduced plugin marketplaces, so Kale now installs as a Codex plugin instead of an add-on.",
+        "The plugin install registers the Kale skills and the kale MCP server in Codex.",
+        "Complete the OAuth browser flow when Codex prompts you the first time the kale tools are used."
       ],
       "manual_fallback": {
         "auth_mode": "oauth_browser",
         "instruction": "codex mcp add kale --url https://cuny.qzz.io/kale/mcp\ncodex mcp login kale",
-        "hint": "Use this when you need the direct MCP path",
+        "hint": "Use this on Codex versions older than 0.121.0 that do not support plugin marketplaces",
         "notes": [
+          "Older Codex builds without the plugin marketplace can still wire up the Kale MCP server directly.",
           "The browser OAuth flow should open automatically from codex mcp login.",
-          "Remote MCP changes update immediately even if the local add-on is stale."
+          "Remote MCP changes update immediately even if the local plugin is stale."
         ]
       },
       "local_wrapper": {
-        "kind": "add_on",
-        "package_name": "kale-deploy",
+        "kind": "plugin",
+        "package_name": "kale-deploy@cuny-ai-lab",
         "bundle_version": "0.2.9",
         "update_mode": "unknown",
         "notes": [
-          "Codex CLI does not currently expose add-on update commands.",
-          "If the add-on looks stale, refresh or reinstall it in the Codex app."
+          "Codex CLI does not yet expose a dedicated plugin update command.",
+          "If the kale-deploy plugin looks stale, re-run /plugin marketplace add CUNY-AI-Lab/CAIL-deploy to refresh the marketplace cache."
         ]
       }
     },

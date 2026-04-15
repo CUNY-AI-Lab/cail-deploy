@@ -155,7 +155,7 @@ export async function detectLocalBundleVersion() {
       path: path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json")
     },
     {
-      label: "Codex add-on",
+      label: "Codex plugin",
       path: path.join(PLUGIN_ROOT, ".codex-plugin", "plugin.json")
     },
     {
