@@ -542,10 +542,11 @@ function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[]
       letter: "X",
       installSurface: "plugin_marketplace",
       installMode: "command",
-      instruction: `/plugin marketplace add CUNY-AI-Lab/CAIL-deploy\n/plugin install kale-deploy@cuny-ai-lab`,
-      hint: "Paste inside Codex (requires Codex 0.121.0+), then complete the sign-in in your browser",
+      instruction: `codex marketplace add CUNY-AI-Lab/CAIL-deploy`,
+      hint: "Run in your shell with Codex 0.121.0+, then open Codex and install Kale Deploy from /plugins",
       installNotes: [
         "Codex 0.121.0 introduced plugin marketplaces, so Kale now installs as a Codex plugin instead of an add-on.",
+        "After adding the marketplace, run /plugins in Codex and install Kale Deploy.",
         "The plugin install registers the Kale skills and the kale MCP server in Codex.",
         "Complete the OAuth browser flow when Codex prompts you the first time the kale tools are used."
       ],
@@ -566,7 +567,7 @@ function buildHarnessCatalog(input: HarnessPromptContext): HarnessCatalogEntry[]
         updateMode: "unknown",
         notes: [
           "Codex CLI does not yet expose a dedicated plugin update command.",
-          "If the kale-deploy plugin looks stale, re-run /plugin marketplace add CUNY-AI-Lab/CAIL-deploy to refresh the marketplace cache."
+          "If the kale-deploy plugin looks stale, re-run codex marketplace add CUNY-AI-Lab/CAIL-deploy to refresh the marketplace cache, then check /plugins."
         ]
       }
     },

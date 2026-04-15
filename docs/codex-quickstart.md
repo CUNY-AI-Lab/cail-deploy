@@ -4,13 +4,13 @@ Use this when you want one clean Codex-first path for Kale Deploy.
 
 ## 1. Install or connect Kale in Codex
 
-On Codex 0.121.0 or newer, install Kale from the Codex plugin marketplace by
-pasting these two lines inside Codex:
+On Codex 0.121.0 or newer, add the Kale marketplace from your shell:
 
-```text
-/plugin marketplace add CUNY-AI-Lab/CAIL-deploy
-/plugin install kale-deploy@cuny-ai-lab
+```bash
+codex marketplace add CUNY-AI-Lab/CAIL-deploy
 ```
+
+Then open Codex, run `/plugins`, search for Kale Deploy, and install it.
 
 The plugin install registers the Kale skills and the kale MCP server. Codex
 will open a browser sign-in flow for Kale Deploy the first time the kale tools

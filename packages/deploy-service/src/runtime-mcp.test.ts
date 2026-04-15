@@ -52,6 +52,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
       install_surface: string;
       install_mode: string;
       install_instruction: string;
+      install_hint: string;
       install_notes: string[];
       local_wrapper: {
         kind: string;
@@ -170,8 +171,8 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.ok((body.agent_harnesses[0]?.manual_fallback?.notes ?? []).some((note) => /Last-resort token bridge:/i.test(note)));
   assert.equal(body.agent_harnesses[1]?.install_surface, "plugin_marketplace");
   assert.equal(body.agent_harnesses[1]?.install_mode, "command");
-  assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /\/plugin marketplace add CUNY-AI-Lab\/CAIL-deploy/);
-  assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /\/plugin install kale-deploy@cuny-ai-lab/);
+  assert.match(body.agent_harnesses[1]?.install_instruction ?? "", /codex marketplace add CUNY-AI-Lab\/CAIL-deploy/);
+  assert.match(body.agent_harnesses[1]?.install_hint ?? "", /\/plugins/);
   assert.equal(body.agent_harnesses[1]?.local_wrapper.kind, "plugin");
   assert.equal(body.agent_harnesses[1]?.local_wrapper.package_name, "kale-deploy@cuny-ai-lab");
   assert.equal(body.agent_harnesses[1]?.local_wrapper.update_mode, "unknown");
@@ -469,9 +470,8 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Gemini CLI/);
   assert.match(html, /Install once/);
   assert.match(html, /Use this install step once in your AI agent/i);
-  assert.match(html, /\/plugin marketplace add CUNY-AI-Lab\/CAIL-deploy/);
-  assert.match(html, /\/plugin install kale-deploy@cuny-ai-lab/);
-  assert.match(html, /Paste inside Codex \(requires Codex 0\.121\.0\+\)/);
+  assert.match(html, /codex marketplace add CUNY-AI-Lab\/CAIL-deploy/);
+  assert.match(html, /install Kale Deploy from \/plugins/);
   assert.doesNotMatch(html, /Manual fallback/);
   assert.match(html, /\/extensions install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy --auto-update/);
   assert.match(html, /Already have a GitHub repo\?/);

@@ -43,15 +43,15 @@ Each harness gets:
 
 Prompt profiles:
 
-- `current`: the current post-install Kale bootstrap prompt the lab uses after the add-on is already present
+- `current`: the current post-install Kale bootstrap prompt the lab uses after the local Kale wrapper is already present
 - `skill-first`: currently a compatibility alias of `current`, kept so older lab commands still run
 
-The lab now treats install as setup, not as the graded step. It preinstalls the local Kale add-on for the harness first, then grades the smaller post-install bootstrap flow: connect Kale, handle any browser or token handoff, and call a real Kale tool.
+The lab now treats install as setup, not as the graded step. It preinstalls the local Kale plugin, skill, or extension for the harness first, then grades the smaller post-install bootstrap flow: connect Kale, handle any browser or token handoff, and call a real Kale tool.
 
 For Claude, the lab can now run the whole onboarding loop when a live Kale PAT is available from the local Claude config or `KALE_TEST_PAT`:
 
 - start from a cleaned Claude environment
-- preinstall the local `kale-deploy` add-on for that harness
+- preinstall the local `kale-deploy` wrapper for that harness
 - wait for Claude to ask for the token handoff
 - feed the token back into the same Claude session
 - start a fresh Claude verification session

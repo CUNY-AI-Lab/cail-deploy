@@ -63,7 +63,7 @@ The intended auth model is now:
 Current harness note:
 
 - The public setup page now shows short per-agent install instructions for the `kale-deploy` plugin, then a plain-language build prompt.
-- Codex 0.121.0+ installs Kale through the Codex plugin marketplace (`/plugin marketplace add CUNY-AI-Lab/CAIL-deploy` then `/plugin install kale-deploy@cuny-ai-lab`). On older Codex builds, the direct `codex mcp add` plus `codex mcp login` flow is the manual fallback.
+- Codex 0.121.0+ installs Kale through the Codex plugin marketplace: run `codex marketplace add CUNY-AI-Lab/CAIL-deploy`, then open Codex, run `/plugins`, and install Kale Deploy. On older Codex builds, the direct `codex mcp add` plus `codex mcp login` flow is the manual fallback.
 - Claude Code should not search the MCP registry first when the local Kale plugin is installed. Start with the installed plugin guidance and `claude mcp list`. Then use `mcp-remote` only to complete the OAuth browser flow, and immediately rewrite Claude to one user-scope direct HTTP `kale` server whose `headersHelper` uses the installed `kale-claude-connect.mjs` helper to read the latest valid Kale OAuth token at connection time and refresh it automatically when a valid refresh token is cached. Only rerun the `mcp-remote` bootstrap if the helper reports that no valid Kale OAuth or refresh token is available. There is no supported `claude mcp auth`, `login`, or `authenticate` CLI flow today. `GET /connect` is the last-resort token bridge if `mcp-remote` also fails
 - Gemini CLI can install Kale as an extension, and the preferred public path uses `--auto-update`
 
@@ -74,7 +74,7 @@ Harness update policy:
 - The runtime manifest should be treated as the source of truth when local wrapper copy drifts.
 - Claude has an explicit plugin update command.
 - Gemini has explicit extension update commands and also supports `--auto-update` at install time.
-- Codex does not currently expose a dedicated plugin update command, so stale Codex plugins are refreshed by re-running `/plugin marketplace add CUNY-AI-Lab/CAIL-deploy` to refresh the marketplace cache.
+- Codex does not currently expose a dedicated plugin update command, so stale Codex plugins are refreshed by re-running `codex marketplace add CUNY-AI-Lab/CAIL-deploy` to refresh the marketplace cache, then checking `/plugins`.
 
 Dynamic skill policy:
 
