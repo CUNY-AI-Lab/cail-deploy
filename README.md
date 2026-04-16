@@ -187,6 +187,7 @@ Still not finished:
 - Agent API: [docs/agent-api.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/agent-api.md)
 - Cloudflare Access auth: [docs/cloudflare-access-auth.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/cloudflare-access-auth.md)
 - GitHub App setup: [docs/github-app-setup.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/github-app-setup.md)
+- Cloudflare Artifacts evaluation: [docs/artifacts-evaluation.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/artifacts-evaluation.md)
 - Friendly URL rollout: [docs/friendly-url-rollout.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/friendly-url-rollout.md)
 - Future custom domains plan: [docs/custom-domains-plan.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/custom-domains-plan.md)
 - Build runner hosting: [docs/build-runner-hosting.md](/Users/stephenzweibel/Apps/CAIL-deploy/docs/build-runner-hosting.md)
