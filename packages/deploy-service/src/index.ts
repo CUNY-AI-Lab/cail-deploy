@@ -480,7 +480,7 @@ deployServiceApp.get("/api/oauth/authorize", async (c) => {
 
     const identity = await requireCloudflareAccessIdentity(c.req.raw, c.env);
 
-    const grantedScope = authRequest.scope.length > 0 ? authRequest.scope : [MCP_REQUIRED_SCOPE];
+    const grantedScope = normalizeMcpAuthorizationScopes(authRequest.scope);
     const props: McpAuthProps = {
       email: identity.email,
       subject: identity.subject,
@@ -4581,7 +4581,7 @@ function buildProtectedAdminApiAuthErrorPayload(env: Env, serviceBaseUrl: string
 
 function buildPublicServiceMetadata(env: Env, serviceBaseUrl: string) {
   const serviceName = "Kale Deploy";
-  const oauthBaseUrl = resolveMcpOauthBaseUrl(env, serviceBaseUrl);
+  const oauthBaseUrl = serviceBaseUrl;
   const appSlug = resolveGitHubAppSlug(env);
 
   return {
@@ -4598,6 +4598,25 @@ function buildPublicServiceMetadata(env: Env, serviceBaseUrl: string) {
     githubAppInstallUrl: appSlug ? githubAppInstallUrl(appSlug) : undefined,
     harnessPromptContext: buildHarnessPromptContext(serviceName, serviceBaseUrl)
   };
+}
+
+function normalizeMcpAuthorizationScopes(requestedScopes: string[]): string[] {
+  const scopes = requestedScopes.length > 0 ? requestedScopes : [MCP_REQUIRED_SCOPE];
+  const uniqueScopes = Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean)));
+  const unsupportedScopes = uniqueScopes.filter((scope) => scope !== MCP_REQUIRED_SCOPE);
+
+  if (unsupportedScopes.length > 0 || !uniqueScopes.includes(MCP_REQUIRED_SCOPE)) {
+    throw new HttpError(
+      400,
+      `Unsupported OAuth scope requested. Kale Deploy requires exactly '${MCP_REQUIRED_SCOPE}'.`
+    );
+  }
+
+  return [MCP_REQUIRED_SCOPE];
+}
+
+function hasRequiredMcpScope(props: McpAuthProps): boolean {
+  return Array.isArray(props.scope) && props.scope.includes(MCP_REQUIRED_SCOPE);
 }
 
 function buildConnectionHealthPayload(
@@ -4869,6 +4888,17 @@ const mcpApiHandler = {
         { status: 401 }
       );
     }
+    if (!hasRequiredMcpScope(props)) {
+      return Response.json(
+        { error: "insufficient_scope", error_description: `The '${MCP_REQUIRED_SCOPE}' OAuth scope is required.` },
+        {
+          status: 403,
+          headers: {
+            "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${MCP_REQUIRED_SCOPE}"`
+          }
+        }
+      );
+    }
 
     if (url.pathname === "/mcp/ping") {
       return handleMcpPing(normalized, env, props);
@@ -4895,6 +4925,9 @@ function createOAuthProviderOptions(serviceBaseUrl: string): OAuthProviderOption
     refreshTokenTTL: 30 * 24 * 60 * 60,
     allowPlainPKCE: false,
     resourceMetadata: {
+      resource: `${baseUrl}/mcp`,
+      authorization_servers: [new URL(baseUrl).origin],
+      scopes_supported: [MCP_REQUIRED_SCOPE],
       resource_name: "Kale Deploy MCP"
     },
     async resolveExternalToken({ token, env }) {

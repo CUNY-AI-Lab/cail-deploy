@@ -1171,7 +1171,7 @@ test("admin overview API returns structured auth bootstrap metadata when no MCP 
   assert.match(body.summary, /not authenticated yet/i);
   assert.equal(body.mcpEndpoint, "https://deploy.example/mcp");
   assert.equal(body.oauthProtectedResourceMetadata, "https://deploy.example/.well-known/oauth-protected-resource/mcp");
-  assert.equal(body.oauthAuthorizationMetadata, "https://auth.example/.well-known/oauth-authorization-server");
+  assert.equal(body.oauthAuthorizationMetadata, "https://deploy.example/.well-known/oauth-authorization-server");
   assert.equal(body.authorizationUrl, "https://deploy.example/api/oauth/authorize");
 });
 

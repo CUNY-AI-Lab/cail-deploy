@@ -409,7 +409,7 @@ test("public connection health explains the MCP auth handoff", async () => {
   assert.equal(body.nextAction, "connect_mcp_or_complete_browser_login");
   assert.equal(body.mcpEndpoint, "https://deploy.example/mcp");
   assert.equal(body.connectionHealthUrl, "https://deploy.example/.well-known/kale-connection.json");
-  assert.equal(body.oauthAuthorizationMetadata, "https://auth.example/.well-known/oauth-authorization-server");
+  assert.equal(body.oauthAuthorizationMetadata, "https://deploy.example/.well-known/oauth-authorization-server");
   assert.equal(body.authorizationUrl, "https://deploy.example/api/oauth/authorize");
   assert.equal(body.deploymentTrigger, "github_push_to_default_branch");
   assert.equal(body.localFolderUploadSupported, false);
@@ -1174,9 +1174,8 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   });
   installAccessFetchMock(t);
 
-  // RFC 9728 protected-resource metadata. The path-suffix variant identifies the /mcp
-  // resource; the bare well-known path covers the origin root. Both are served by the
-  // Cloudflare Workers OAuth Provider.
+  // RFC 9728 protected-resource metadata. Kale explicitly identifies the MCP
+  // endpoint as the protected resource, including on the bare well-known path.
   const prmResponse = await fetchApp("GET", "/.well-known/oauth-protected-resource/mcp", env);
   assert.equal(prmResponse.status, 200);
   const prm = await prmResponse.json() as { authorization_servers: string[]; resource: string };
@@ -1186,7 +1185,7 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   const rootPrmResponse = await fetchApp("GET", "/.well-known/oauth-protected-resource", env);
   assert.equal(rootPrmResponse.status, 200);
   const rootPrm = await rootPrmResponse.json() as { resource: string };
-  assert.equal(rootPrm.resource, "https://deploy.example");
+  assert.equal(rootPrm.resource, "https://deploy.example/mcp");
 
   // RFC 8414 authorization-server metadata.
   const metadataResponse = await fetchApp("GET", "/.well-known/oauth-authorization-server", env);
@@ -1236,6 +1235,19 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   const codeVerifier = "test-code-verifier-123456789abcdef";
   const codeChallenge = await createPkceChallenge(codeVerifier);
   const accessJwt = await createAccessJwt("person@cuny.edu");
+  const unsupportedScopeResponse = await fetchApp(
+    "GET",
+    `/api/oauth/authorize?response_type=code&client_id=${encodeURIComponent(client.client_id)}&redirect_uri=${encodeURIComponent("http://127.0.0.1:43123/callback")}&state=test-state&code_challenge=${encodeURIComponent(codeChallenge)}&code_challenge_method=S256&scope=${encodeURIComponent("profile")}`,
+    env,
+    undefined,
+    {
+      "cf-access-jwt-assertion": accessJwt,
+      "cf-access-authenticated-user-email": "person@cuny.edu"
+    }
+  );
+  assert.equal(unsupportedScopeResponse.status, 400);
+  assert.match(await unsupportedScopeResponse.text(), /cail:deploy/);
+
   const authorizeResponse = await fetchApp(
     "GET",
     `/api/oauth/authorize?response_type=code&client_id=${encodeURIComponent(client.client_id)}&redirect_uri=${encodeURIComponent("http://127.0.0.1:43123/callback")}&state=test-state&code_challenge=${encodeURIComponent(codeChallenge)}&code_challenge_method=S256&scope=${encodeURIComponent("cail:deploy")}`,
