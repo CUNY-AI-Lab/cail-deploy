@@ -1,7 +1,12 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import {
+  OAuthProvider,
+  getOAuthApi,
+  type OAuthHelpers,
+  type OAuthProviderOptions
+} from "@cloudflare/workers-oauth-provider";
 
 import { createDeployServiceMcpServer as createDeployServiceMcpSurface } from "./deploy-service-mcp";
 import { HttpError, asHttpError } from "./http-error";
@@ -4876,31 +4881,84 @@ const mcpApiHandler = {
   }
 };
 
-export default new OAuthProvider<Env>({
-  apiRoute: ["/mcp"],
-  apiHandler: mcpApiHandler,
-  defaultHandler: honoDefaultHandler,
-  authorizeEndpoint: "/api/oauth/authorize",
-  tokenEndpoint: "/oauth/token",
-  clientRegistrationEndpoint: "/oauth/register",
-  scopesSupported: [MCP_REQUIRED_SCOPE],
-  accessTokenTTL: 3600,
-  refreshTokenTTL: 30 * 24 * 60 * 60,
-  allowPlainPKCE: false,
-  resourceMetadata: {
-    resource_name: "Kale Deploy MCP"
-  },
-  async resolveExternalToken({ token, env }) {
-    if (!token.startsWith("kale_pat_")) {
-      return null;
+function createOAuthProviderOptions(serviceBaseUrl: string): OAuthProviderOptions<Env> {
+  const baseUrl = serviceBaseUrl.replace(/\/$/, "");
+  return {
+    apiRoute: [`${baseUrl}/mcp`],
+    apiHandler: mcpApiHandler,
+    defaultHandler: honoDefaultHandler,
+    authorizeEndpoint: `${baseUrl}/api/oauth/authorize`,
+    tokenEndpoint: `${baseUrl}/oauth/token`,
+    clientRegistrationEndpoint: `${baseUrl}/oauth/register`,
+    scopesSupported: [MCP_REQUIRED_SCOPE],
+    accessTokenTTL: 3600,
+    refreshTokenTTL: 30 * 24 * 60 * 60,
+    allowPlainPKCE: false,
+    resourceMetadata: {
+      resource_name: "Kale Deploy MCP"
+    },
+    async resolveExternalToken({ token, env }) {
+      if (!token.startsWith("kale_pat_")) {
+        return null;
+      }
+      const props = await resolveMcpPatProps(token, env);
+      if (!props) {
+        return null;
+      }
+      return { props };
     }
-    const props = await resolveMcpPatProps(token, env);
-    if (!props) {
-      return null;
-    }
-    return { props };
+  };
+}
+
+export default {
+  fetch(request: Request, env: Env, executionCtx: ExecutionContext) {
+    const serviceBaseUrl = resolveServiceBaseUrl(env, request.url);
+    const oauthOptions = createOAuthProviderOptions(serviceBaseUrl);
+    env.OAUTH_PROVIDER = getOAuthApi(oauthOptions, env);
+    return new OAuthProvider<Env>(oauthOptions).fetch(
+      rewriteRequestForOAuthProvider(request, serviceBaseUrl),
+      env,
+      executionCtx
+    );
   }
-});
+};
+
+function rewriteRequestForOAuthProvider(request: Request, serviceBaseUrl: string): Request {
+  const serviceBase = new URL(serviceBaseUrl);
+  const basePath = resolveBasePath(serviceBaseUrl);
+  const url = new URL(request.url);
+
+  url.protocol = serviceBase.protocol;
+  url.host = serviceBase.host;
+
+  if (url.pathname === "/.well-known/openid-configuration") {
+    url.pathname = "/.well-known/oauth-authorization-server";
+  } else if (basePath && url.pathname !== basePath && !url.pathname.startsWith(`${basePath}/`)) {
+    url.pathname = rebaseOAuthProviderPath(url.pathname, basePath);
+  }
+
+  return new Request(url.toString(), request);
+}
+
+function rebaseOAuthProviderPath(pathname: string, basePath: string): string {
+  if (pathname === "/.well-known/oauth-authorization-server"
+    || pathname === `/.well-known/oauth-authorization-server${basePath}`
+    || pathname === "/.well-known/openid-configuration"
+    || pathname === `/.well-known/openid-configuration${basePath}`) {
+    return "/.well-known/oauth-authorization-server";
+  }
+
+  if (pathname === "/.well-known/oauth-protected-resource") {
+    return `/.well-known/oauth-protected-resource${basePath}`;
+  }
+
+  if (pathname === "/.well-known/oauth-protected-resource/mcp"
+    || pathname === `/.well-known/oauth-protected-resource${basePath}/mcp`) {
+    return `/.well-known/oauth-protected-resource${basePath}/mcp`;
+  }
+
+  return `${basePath}${pathname === "/" ? "" : pathname}`;
+}
 
 function resolveBasePath(baseUrl: string | undefined): string {
   if (!baseUrl) {

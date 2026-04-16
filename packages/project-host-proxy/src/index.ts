@@ -180,7 +180,9 @@ function resolveRootDeployServiceAliasPath(request: Request, env: Env): string |
     .replace(/\/+$/, "");
 
   const aliasMap = new Map<string, string>([
+    ["/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server"],
     [`/.well-known/oauth-authorization-server/${normalizedPrefix}`, "/.well-known/oauth-authorization-server"],
+    ["/.well-known/openid-configuration", "/.well-known/openid-configuration"],
     [`/.well-known/openid-configuration/${normalizedPrefix}`, "/.well-known/openid-configuration"],
     [`/.well-known/oauth-protected-resource/${normalizedPrefix}/mcp`, "/.well-known/oauth-protected-resource/mcp"]
   ]);

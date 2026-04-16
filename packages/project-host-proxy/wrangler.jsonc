@@ -11,7 +11,15 @@
       "zone_name": "cuny.qzz.io"
     },
     {
+      "pattern": "cuny.qzz.io/.well-known/oauth-authorization-server",
+      "zone_name": "cuny.qzz.io"
+    },
+    {
       "pattern": "cuny.qzz.io/.well-known/oauth-authorization-server/kale",
+      "zone_name": "cuny.qzz.io"
+    },
+    {
+      "pattern": "cuny.qzz.io/.well-known/openid-configuration",
       "zone_name": "cuny.qzz.io"
     },
     {

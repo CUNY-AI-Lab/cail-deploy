@@ -40,6 +40,34 @@ test("root OAuth authorization metadata alias proxies to deploy-service", async 
   }
 });
 
+test("root OAuth authorization server issuer metadata proxies to deploy-service", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Request[] = [];
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    requests.push(request);
+    return new Response(JSON.stringify({ ok: true }), {
+      headers: {
+        "content-type": "application/json"
+      }
+    });
+  };
+
+  try {
+    const response = await projectHostProxy.fetch(
+      new Request("https://cuny.qzz.io/.well-known/oauth-authorization-server"),
+      env
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.url, "https://deploy.internal/.well-known/oauth-authorization-server");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("root OpenID configuration alias proxies to deploy-service", async () => {
   const originalFetch = globalThis.fetch;
   const requests: Request[] = [];
@@ -57,6 +85,34 @@ test("root OpenID configuration alias proxies to deploy-service", async () => {
   try {
     const response = await projectHostProxy.fetch(
       new Request("https://cuny.qzz.io/.well-known/openid-configuration/kale"),
+      env
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.url, "https://deploy.internal/.well-known/openid-configuration");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("root OpenID issuer configuration proxies to deploy-service", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Request[] = [];
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    requests.push(request);
+    return new Response(JSON.stringify({ ok: true }), {
+      headers: {
+        "content-type": "application/json"
+      }
+    });
+  };
+
+  try {
+    const response = await projectHostProxy.fetch(
+      new Request("https://cuny.qzz.io/.well-known/openid-configuration"),
       env
     );
 
