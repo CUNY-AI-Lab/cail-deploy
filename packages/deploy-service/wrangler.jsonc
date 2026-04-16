@@ -15,7 +15,7 @@
   "kv_namespaces": [
     {
       "binding": "OAUTH_KV",
-      "id": "REPLACE_WITH_PRODUCTION_OAUTH_KV_ID"
+      "id": "3fe4b6e0d02b4031a4b429856d804467"
     }
   ],
   "r2_buckets": [

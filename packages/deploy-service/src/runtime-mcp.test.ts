@@ -282,9 +282,8 @@ test("friendly base-path hosting works under /kale", async () => {
   assert.match(html, /Kale Deploy/);
   assert.match(html, /action="https:\/\/ailab\.gc\.cuny\.edu\/kale\/github\/setup"/);
 
-  // OAuth metadata is now served by @cloudflare/workers-oauth-provider at the origin
-  // root. The host-proxy rewrites the RFC 9728 path-suffix variant
-  // (`/.well-known/oauth-authorization-server/kale`) to this root path upstream.
+  // The host-proxy strips /kale before forwarding to the deploy-service Worker. The
+  // OAuth provider still needs to emit public URLs under the /kale front door.
   const metadataResponse = await fetchWorker("GET", "/.well-known/oauth-authorization-server", env);
   assert.equal(metadataResponse.status, 200);
   const metadata = await metadataResponse.json() as {
@@ -294,9 +293,56 @@ test("friendly base-path hosting works under /kale", async () => {
     registration_endpoint: string;
   };
   assert.equal(metadata.issuer, "https://ailab.gc.cuny.edu");
-  assert.equal(metadata.authorization_endpoint, "https://ailab.gc.cuny.edu/api/oauth/authorize");
-  assert.equal(metadata.token_endpoint, "https://ailab.gc.cuny.edu/oauth/token");
-  assert.equal(metadata.registration_endpoint, "https://ailab.gc.cuny.edu/oauth/register");
+  assert.equal(metadata.authorization_endpoint, "https://ailab.gc.cuny.edu/kale/api/oauth/authorize");
+  assert.equal(metadata.token_endpoint, "https://ailab.gc.cuny.edu/kale/oauth/token");
+  assert.equal(metadata.registration_endpoint, "https://ailab.gc.cuny.edu/kale/oauth/register");
+
+  const openidAliasResponse = await fetchWorker("GET", "/.well-known/openid-configuration", env);
+  assert.equal(openidAliasResponse.status, 200);
+  const openidMetadata = await openidAliasResponse.json() as {
+    authorization_endpoint: string;
+    token_endpoint: string;
+  };
+  assert.equal(openidMetadata.authorization_endpoint, "https://ailab.gc.cuny.edu/kale/api/oauth/authorize");
+  assert.equal(openidMetadata.token_endpoint, "https://ailab.gc.cuny.edu/kale/oauth/token");
+
+  const prmResponse = await fetchWorker("GET", "/.well-known/oauth-protected-resource/mcp", env);
+  assert.equal(prmResponse.status, 200);
+  const prm = await prmResponse.json() as {
+    authorization_servers: string[];
+    resource: string;
+  };
+  assert.deepEqual(prm.authorization_servers, ["https://ailab.gc.cuny.edu"]);
+  assert.equal(prm.resource, "https://ailab.gc.cuny.edu/kale/mcp");
+
+  const challengeResponse = await fetchWorker(
+    "POST",
+    "/mcp",
+    env,
+    undefined,
+    {
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2025-03-26"
+    }
+  );
+  assert.equal(challengeResponse.status, 401);
+  assert.match(
+    challengeResponse.headers.get("www-authenticate") ?? "",
+    /resource_metadata="https:\/\/ailab\.gc\.cuny\.edu\/\.well-known\/oauth-protected-resource\/kale\/mcp"/
+  );
+
+  const registerResponse = await fetchWorker("POST", "/oauth/register", env, {
+    client_name: "Base Path Client",
+    redirect_uris: ["http://127.0.0.1:43123/callback"],
+    token_endpoint_auth_method: "none"
+  });
+  assert.equal(registerResponse.status, 201);
+  const client = await registerResponse.json() as {
+    registration_client_uri: string;
+    redirect_uris: string[];
+  };
+  assert.equal(client.registration_client_uri.startsWith("https://ailab.gc.cuny.edu/kale/oauth/register/"), true);
+  assert.deepEqual(client.redirect_uris, ["http://127.0.0.1:43123/callback"]);
 });
 
 test("public connection health explains the MCP auth handoff", async () => {
@@ -1153,6 +1199,15 @@ test("oauth metadata, registration, authorization, and token exchange work for r
   assert.equal(metadata.registration_endpoint, "https://deploy.example/oauth/register");
   assert.ok(metadata.grant_types_supported.includes("authorization_code"));
   assert.ok(metadata.grant_types_supported.includes("refresh_token"));
+
+  const openidMetadataResponse = await fetchApp("GET", "/.well-known/openid-configuration", env);
+  assert.equal(openidMetadataResponse.status, 200);
+  const openidMetadata = await openidMetadataResponse.json() as {
+    authorization_endpoint: string;
+    token_endpoint: string;
+  };
+  assert.equal(openidMetadata.authorization_endpoint, "https://deploy.example/api/oauth/authorize");
+  assert.equal(openidMetadata.token_endpoint, "https://deploy.example/oauth/token");
 
   // Dynamic client registration (RFC 7591).
   const registerResponse = await fetchApp("POST", "/oauth/register", env, {
