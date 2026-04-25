@@ -271,6 +271,23 @@ export class GitHubInstallationClient {
     });
   }
 
+  async fileExists(owner: string, repo: string, path: string, ref: string): Promise<boolean> {
+    const response = await fetch(
+      `${this.apiBaseUrl}/repos/${owner}/${repo}/contents/${encodeGitHubContentPath(path)}?ref=${encodeURIComponent(ref)}`,
+      {
+        method: "GET",
+        headers: createJsonHeaders(this.accessToken)
+      }
+    );
+
+    if (response.status === 404) {
+      return false;
+    }
+
+    await readGitHubJson<unknown>(response);
+    return true;
+  }
+
   private async request<T>(path: string, init: RequestInit): Promise<T> {
     const response = await fetch(`${this.apiBaseUrl}${path}`, {
       ...init,
@@ -431,6 +448,10 @@ function createPublicJsonHeaders(): HeadersInit {
     "user-agent": DEFAULT_GITHUB_USER_AGENT,
     "x-github-api-version": "2022-11-28"
   };
+}
+
+function encodeGitHubContentPath(path: string): string {
+  return path.split("/").map((segment) => encodeURIComponent(segment)).join("/");
 }
 
 async function readGitHubJson<T>(response: Response): Promise<T> {
