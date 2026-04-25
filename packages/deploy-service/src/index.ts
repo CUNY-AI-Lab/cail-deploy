@@ -2365,19 +2365,37 @@ async function handlePushWebhook(
   const serviceBaseUrl = resolveServiceBaseUrl(env, requestUrl);
   const reservedProjectNames = resolveReservedProjectNames(env, serviceBaseUrl);
   const repositoryFullName = repository.fullName;
-  const projectName = await resolveRepositoryProjectName(
-    env.CONTROL_PLANE_DB,
-    repositoryFullName,
+  const existingProject = await getLatestProjectForRepository(env.CONTROL_PLANE_DB, repositoryFullName);
+  const installationClient = await github.createInstallationClient(installationId);
+  if (!existingProject && !await installationClient.fileExists(
+    repository.ownerLogin,
     repository.name,
-    reservedProjectNames
-  );
+    "kale.project.json",
+    payload.after
+  )) {
+    return Response.json(
+      {
+        accepted: true,
+        eventName: "push",
+        ignored: true,
+        reason: "Repository is not registered with Kale and does not declare kale.project.json at this commit."
+      },
+      { status: 202 }
+    );
+  }
+  const projectName = existingProject?.projectName
+    ?? await resolveRepositoryProjectName(
+      env.CONTROL_PLANE_DB,
+      repositoryFullName,
+      repository.name,
+      reservedProjectNames
+    );
   const jobId = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   let createdJob: BuildJobRecord | undefined;
   let checkRunId: number | undefined;
 
   try {
-    const installationClient = await github.createInstallationClient(installationId);
     try {
       await assertRepositoryWithinJobLimits(
         env,

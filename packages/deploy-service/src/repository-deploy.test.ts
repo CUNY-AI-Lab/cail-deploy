@@ -7,6 +7,7 @@ import { listLiveDedicatedWorkerProjectsForOwner } from "./lib/control-plane";
 import {
   createTestContext,
   fetchApp,
+  fetchHonoAppDirect,
   fetchRaw,
   jsonResponse,
   installAccessFetchMock,
@@ -62,6 +63,69 @@ function buildRepositoryArtifactPrefix(repositoryFullName: string, deploymentId:
   return `deployments/repos/${owner}/${repo}/${deploymentId}`;
 }
 
+function pushWebhookPayload(repositoryName: string, after = "abc123def456") {
+  return {
+    ref: "refs/heads/main",
+    before: "old123",
+    after,
+    installation: { id: 42 },
+    repository: {
+      id: 7,
+      name: repositoryName,
+      full_name: `szweibel/${repositoryName}`,
+      default_branch: "main",
+      html_url: `https://github.com/szweibel/${repositoryName}`,
+      clone_url: `https://github.com/szweibel/${repositoryName}.git`,
+      private: false,
+      owner: { login: "szweibel" }
+    },
+    head_commit: {
+      timestamp: "2026-03-28T12:00:00.000Z"
+    }
+  };
+}
+
+function installPushWebhookGitHubMock(
+  t: TestContext,
+  options: { repositoryName: string; markerExists: boolean }
+): string[] {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+    requests.push(`${request.method} ${url.pathname}`);
+
+    if (url.pathname === "/app/installations/42/access_tokens") {
+      return jsonResponse({ token: "installation-token", expires_at: "2030-01-01T00:00:00.000Z" });
+    }
+
+    if (url.pathname === `/repos/szweibel/${options.repositoryName}/contents/kale.project.json`) {
+      return options.markerExists
+        ? jsonResponse({ name: "kale.project.json", path: "kale.project.json", type: "file" })
+        : jsonResponse({ message: "Not Found" }, 404);
+    }
+
+    if (url.pathname === `/repos/szweibel/${options.repositoryName}/check-runs` && request.method === "POST") {
+      return jsonResponse({
+        id: 321,
+        html_url: `https://github.com/szweibel/${options.repositoryName}/runs/321`,
+        status: "queued",
+        conclusion: null
+      });
+    }
+
+    throw new Error(`Unexpected fetch during push webhook test: ${request.method} ${request.url}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  return requests;
+}
+
 test("project registration returns structured state for an existing project", async () => {
   const { env, db } = createTestContext({
     GITHUB_APP_ID: undefined,
@@ -104,6 +168,69 @@ test("project registration returns structured state for an existing project", as
   assert.equal(body.guidedInstallUrl, undefined);
   assert.equal(body.latestStatus, "live");
   assert.equal(body.servingStatus, "live");
+});
+
+test("push webhook ignores unregistered repositories without a Kale project marker", async (t: TestContext) => {
+  const { env, queue } = createTestContext();
+  const requests = installPushWebhookGitHubMock(t, {
+    repositoryName: "unrelated-site",
+    markerExists: false
+  });
+
+  const response = await fetchHonoAppDirect(
+    "POST",
+    "/github/webhook",
+    env,
+    pushWebhookPayload("unrelated-site"),
+    {
+      "x-github-event": "push"
+    }
+  );
+  assert.equal(response.status, 202);
+
+  const body = await response.json() as {
+    accepted: boolean;
+    ignored: boolean;
+    reason: string;
+  };
+  assert.equal(body.accepted, true);
+  assert.equal(body.ignored, true);
+  assert.match(body.reason, /does not declare kale\.project\.json/);
+  assert.equal(queue.sent.length, 0);
+  assert.ok(!requests.some((request) => request.includes("/check-runs")));
+});
+
+test("push webhook still queues unregistered repositories with a Kale project marker", async (t: TestContext) => {
+  const { env, db, queue } = createTestContext();
+  const requests = installPushWebhookGitHubMock(t, {
+    repositoryName: "kale-site",
+    markerExists: true
+  });
+
+  const response = await fetchHonoAppDirect(
+    "POST",
+    "/github/webhook",
+    env,
+    pushWebhookPayload("kale-site"),
+    {
+      "x-github-event": "push"
+    }
+  );
+  assert.equal(response.status, 202);
+
+  const body = await response.json() as {
+    accepted: boolean;
+    jobId: string;
+    status: string;
+    checkRunId: number;
+  };
+  assert.equal(body.accepted, true);
+  assert.equal(body.status, "queued");
+  assert.equal(body.checkRunId, 321);
+  assert.equal(queue.sent.length, 1);
+  assert.equal(queue.sent[0]?.trigger.event, "push");
+  assert.equal(db.getBuildJob(body.jobId)?.status, "queued");
+  assert.ok(requests.some((request) => request === "POST /repos/szweibel/kale-site/check-runs"));
 });
 
 test("CloudflareApiClient paginates R2 bucket lookup", async (t: TestContext) => {
