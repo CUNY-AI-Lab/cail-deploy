@@ -100,6 +100,7 @@ export function createTestContext(overrides: Partial<TestEnv> = {}): {
     SHARED_STATIC_VALIDATION_ATTEMPTS: "1",
     SHARED_STATIC_VALIDATION_RETRY_MS: "0",
     DEPLOY_SERVICE_BASE_URL: "https://deploy.example",
+    BUILD_RUNNER_TOKEN: "runner-token",
     DEFAULT_MAX_LIVE_DEDICATED_WORKERS_PER_OWNER: "5",
     MCP_OAUTH_BASE_URL: "https://auth.example",
     PROJECT_CONTROL_FORM_TOKEN_SECRET: "project-control-form-token-secret",

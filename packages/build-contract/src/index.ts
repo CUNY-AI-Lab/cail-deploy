@@ -205,6 +205,10 @@ export type BuildRunnerJobRequest = {
     startUrl: string;
     completeUrl: string;
   };
+  auth?: {
+    type: "scoped_token";
+    token: string;
+  };
 };
 
 export type BuildRunnerStartPayload = {

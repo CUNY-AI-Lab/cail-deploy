@@ -670,7 +670,7 @@ function renderMissingProjectPage(projectName: string, installUrl: string): stri
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Project Not Found — CAIL Deploy</title>
+    <title>Project Not Found — Kale Deploy</title>
     ${faviconLink()}
     ${baseStyles()}
   </head>
@@ -681,7 +681,7 @@ function renderMissingProjectPage(projectName: string, installUrl: string): stri
         <h1>Project not found</h1>
         <p>The project <strong>${escapeHtml(projectName)}</strong> is not deployed yet.</p>
         <div class="actions">
-          <a class="button" href="${escapeHtml(installUrl)}">Install CAIL Deploy</a>
+          <a class="button" href="${escapeHtml(installUrl)}">Install Kale Deploy</a>
           <a class="button secondary" href="/">Back to directory</a>
         </div>
       </section>
@@ -696,7 +696,7 @@ function renderErrorPage(record: ProjectRecord): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Temporarily Unavailable — CAIL Deploy</title>
+    <title>Temporarily Unavailable — Kale Deploy</title>
     ${faviconLink()}
     ${baseStyles()}
   </head>

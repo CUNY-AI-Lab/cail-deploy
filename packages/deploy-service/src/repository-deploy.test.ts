@@ -213,6 +213,49 @@ test("CloudflareApiClient falls back to account token verification for R2 object
   ]);
 });
 
+test("CloudflareApiClient retries transient asset bucket upload failures", async (t: TestContext) => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+    assert.equal(request.method, "POST");
+    assert.equal(url.pathname, "/client/v4/accounts/account-123/workers/assets/upload");
+    assert.equal(url.searchParams.get("base64"), "true");
+    assert.equal(request.headers.get("authorization"), "Bearer assets-upload-jwt");
+
+    attempts += 1;
+    if (attempts === 1) {
+      return new Response("temporary upstream failure", { status: 502 });
+    }
+
+    return jsonResponse({
+      success: true,
+      errors: [],
+      result: { jwt: "completion-jwt" }
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new CloudflareApiClient({
+    accountId: "account-123",
+    apiToken: "token-123"
+  });
+  const result = await client.uploadAssetsBucket("assets-upload-jwt", [
+    {
+      key: "asset-key",
+      base64: new File(["hello"], "asset.txt", { type: "text/plain" }),
+      contentType: "text/plain"
+    }
+  ]);
+
+  assert.equal(result.jwt, "completion-jwt");
+  assert.equal(attempts, 2);
+});
+
 test("repository status returns a repo-first lifecycle summary", async () => {
   const { env, db } = createTestContext({
     GITHUB_APP_ID: undefined,
@@ -681,6 +724,93 @@ test("validate reuses the repository's existing project slug by default", async 
   assert.equal(response.status, 202);
   assert.equal(queue.sent.length, 1);
   assert.equal(queue.sent[0]?.deployment.suggestedProjectName, "custom-assets-site");
+  assert.equal(queue.sent[0]?.auth?.type, "scoped_token");
+  assert.match(queue.sent[0]?.auth?.token ?? "", /^kale_build_/);
+  assert.notEqual(queue.sent[0]?.auth?.token, env.BUILD_RUNNER_TOKEN);
+});
+
+test("build runner source leases require scoped auth and an active fresh job", async (t: TestContext) => {
+  const { env, db, queue } = createTestContext();
+  installGitHubFetchMock(t, {
+    repositoryName: "cail-assets-build-test",
+    headSha: "abc123def456"
+  });
+
+  const validateResponse = await fetchApp("POST", "/api/validate", env, {
+    repositoryFullName: "szweibel/cail-assets-build-test",
+    ref: "main"
+  });
+  assert.equal(validateResponse.status, 202);
+  const request = queue.sent[0];
+  assert.ok(request);
+  assert.ok(request.auth?.token);
+
+  const missingAuthResponse = await fetchApp("GET", `/internal/build-jobs/${request.jobId}/source`, env);
+  assert.equal(missingAuthResponse.status, 401);
+
+  const badExistingResponse = await fetchApp(
+    "GET",
+    `/internal/build-jobs/${request.jobId}/source`,
+    env,
+    undefined,
+    { authorization: "Bearer bad-token" }
+  );
+  assert.equal(badExistingResponse.status, 401);
+
+  const badMissingResponse = await fetchApp(
+    "GET",
+    "/internal/build-jobs/missing-job/source",
+    env,
+    undefined,
+    { authorization: "Bearer bad-token" }
+  );
+  assert.equal(badMissingResponse.status, 401);
+
+  const sourceResponse = await fetchApp(
+    "GET",
+    `/internal/build-jobs/${request.jobId}/source`,
+    env,
+    undefined,
+    { authorization: `Bearer ${request.auth.token}` }
+  );
+  assert.equal(sourceResponse.status, 200);
+  const source = await sourceResponse.json() as { accessToken: string };
+  assert.equal(source.accessToken, "installation-token");
+
+  const job = db.getBuildJob(request.jobId);
+  assert.ok(job);
+  const staleStartedAt = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+  db.putBuildJob({
+    ...job,
+    status: "in_progress",
+    startedAt: staleStartedAt,
+    updatedAt: staleStartedAt
+  });
+
+  const staleSourceResponse = await fetchApp(
+    "GET",
+    `/internal/build-jobs/${request.jobId}/source`,
+    env,
+    undefined,
+    { authorization: `Bearer ${request.auth.token}` }
+  );
+  assert.equal(staleSourceResponse.status, 409);
+
+  db.putBuildJob({
+    ...job,
+    status: "success",
+    updatedAt: "2026-03-28T12:05:00.000Z",
+    completedAt: "2026-03-28T12:05:00.000Z"
+  });
+
+  const completedSourceResponse = await fetchApp(
+    "GET",
+    `/internal/build-jobs/${request.jobId}/source`,
+    env,
+    undefined,
+    { authorization: `Bearer ${request.auth.token}` }
+  );
+  assert.equal(completedSourceResponse.status, 409);
 });
 
 test("validate does not enforce a daily cap by default", async (t: TestContext) => {

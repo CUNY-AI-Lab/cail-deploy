@@ -329,6 +329,7 @@ const DEFAULT_SHARED_STATIC_VALIDATION_RETRY_MS = 8_000;
 const SHARED_STATIC_VALIDATION_FETCH_BUDGET = 30;
 const STALE_QUEUED_BUILD_WINDOW_MS = 10 * 60 * 1000;
 const STALE_STARTED_BUILD_WINDOW_MS = 2 * 60 * 60 * 1000;
+const BUILD_JOB_SOURCE_LEASE_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_PROJECT_NAME_LENGTH = 63;
 const GITHUB_MANIFEST_STATE_COOKIE = "cail_github_manifest_state";
 const GITHUB_MANIFEST_STATE_MAX_AGE_SECONDS = 60 * 60;
@@ -631,19 +632,18 @@ deployServiceApp.get("/", async (c) => {
     const notesHtml = agent.installNotes.length > 0
       ? `<ul class="install-notes">${agent.installNotes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>`
       : "";
+    const fallbackHtml = agent.manualFallback
+      ? `
+        <details class="install-fallback">
+          <summary>Manual fallback</summary>
+          <div class="prompt-block" data-prompt="${escapeHtml(agent.manualFallback.instruction)}">${escapeHtml(agent.manualFallback.instruction)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div>
+          <p class="tab-hint">${escapeHtml(agent.manualFallback.hint)}</p>
+          ${agent.manualFallback.notes.length > 0 ? `<ul class="install-notes install-notes-subtle">${agent.manualFallback.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>` : ""}
+        </details>
+      `
+      : "";
 
     if (agent.installMode === "app_ui") {
-      const fallbackHtml = agent.manualFallback
-        ? `
-          <div class="install-fallback">
-            <p class="install-fallback-label">Manual fallback</p>
-            <div class="prompt-block" data-prompt="${escapeHtml(agent.manualFallback.instruction)}">${escapeHtml(agent.manualFallback.instruction)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div>
-            <p class="tab-hint">${escapeHtml(agent.manualFallback.hint)}</p>
-            ${agent.manualFallback.notes.length > 0 ? `<ul class="install-notes install-notes-subtle">${agent.manualFallback.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>` : ""}
-          </div>
-        `
-        : "";
-
       return `<div class="tab-panel${index === 0 ? " active" : ""}" data-idx="${index}" role="tabpanel">
         <div class="install-ui-card">
           <p class="install-ui-copy">${escapeHtml(agent.instruction)}</p>
@@ -658,6 +658,7 @@ deployServiceApp.get("/", async (c) => {
       <div class="prompt-block" data-prompt="${escapeHtml(agent.instruction)}">${escapeHtml(agent.instruction)}<button class="copy-btn" type="button" title="Copy to clipboard">${clipboardSvg}</button></div>
       <p class="tab-hint">${escapeHtml(agent.hint)}</p>
       ${notesHtml}
+      ${fallbackHtml}
     </div>`;
   };
 
@@ -2112,13 +2113,14 @@ deployServiceApp.post("/api/deployments", async (c) => {
 });
 
 deployServiceApp.get("/internal/build-jobs/:jobId/source", async (c) => {
-  if (!isAuthorized(c.req.raw, c.env.BUILD_RUNNER_TOKEN)) {
-    return c.json({ error: "Unauthorized." }, 401);
+  const authorization = await authorizeBuildJobRequest(c, c.req.param("jobId"));
+  if (!authorization.ok) {
+    return authorization.response;
   }
 
-  const job = await getBuildJob(c.env.CONTROL_PLANE_DB, c.req.param("jobId"));
-  if (!job) {
-    return c.json({ error: "Build job not found." }, 404);
+  const job = authorization.job;
+  if (!canIssueBuildJobSourceLease(job)) {
+    return c.json({ error: "Source lease is no longer available for this build job." }, 409);
   }
 
   try {
@@ -2131,16 +2133,13 @@ deployServiceApp.get("/internal/build-jobs/:jobId/source", async (c) => {
 });
 
 deployServiceApp.post("/internal/build-jobs/:jobId/start", async (c) => {
-  if (!isAuthorized(c.req.raw, c.env.BUILD_RUNNER_TOKEN)) {
-    return c.json({ error: "Unauthorized." }, 401);
-  }
-
   const jobId = c.req.param("jobId");
-  const job = await getBuildJob(c.env.CONTROL_PLANE_DB, jobId);
-  if (!job) {
-    return c.json({ error: "Build job not found." }, 404);
+  const authorization = await authorizeBuildJobRequest(c, jobId);
+  if (!authorization.ok) {
+    return authorization.response;
   }
 
+  const job = authorization.job;
   if (isCompletedJob(job)) {
     return c.json({ ok: true, alreadyCompleted: true, job });
   }
@@ -2178,16 +2177,13 @@ deployServiceApp.post("/internal/build-jobs/:jobId/start", async (c) => {
 });
 
 deployServiceApp.post("/internal/build-jobs/:jobId/complete", async (c) => {
-  if (!isAuthorized(c.req.raw, c.env.BUILD_RUNNER_TOKEN)) {
-    return c.json({ error: "Unauthorized." }, 401);
-  }
-
   const jobId = c.req.param("jobId");
-  const job = await getBuildJob(c.env.CONTROL_PLANE_DB, jobId);
-  if (!job) {
-    return c.json({ error: "Build job not found." }, 404);
+  const authorization = await authorizeBuildJobRequest(c, jobId);
+  if (!authorization.ok) {
+    return authorization.response;
   }
 
+  const job = authorization.job;
   if (isCompletedJob(job)) {
     return c.json({ ok: true, alreadyCompleted: true, job });
   }
@@ -2478,7 +2474,7 @@ async function handlePushWebhook(
       await attachWebhookDeliveryJob(env.CONTROL_PLANE_DB, deliveryId, jobId);
     }
 
-    const message = createBuildRunnerRequest(env, requestUrl, job, payload.head_commit?.timestamp);
+    const message = await createBuildRunnerRequest(env, requestUrl, job, payload.head_commit?.timestamp);
     await env.BUILD_QUEUE.send(message, { contentType: "json" });
 
     return Response.json(
@@ -2530,12 +2526,12 @@ async function handlePushWebhook(
   }
 }
 
-function createBuildRunnerRequest(
+async function createBuildRunnerRequest(
   env: Env,
   requestUrl: string,
   job: BuildJobRecord,
   pushedAt?: string
-): BuildRunnerJobRequest {
+): Promise<BuildRunnerJobRequest> {
   const serviceBaseUrl = resolveServiceBaseUrl(env, requestUrl);
   const gitHubApiBaseUrl = resolveGitHubApiBaseUrl(env);
   const reservedProjectNames = resolveReservedProjectNames(env, serviceBaseUrl);
@@ -2566,6 +2562,10 @@ function createBuildRunnerRequest(
     callback: {
       startUrl: `${serviceBaseUrl}/internal/build-jobs/${job.jobId}/start`,
       completeUrl: `${serviceBaseUrl}/internal/build-jobs/${job.jobId}/complete`
+    },
+    auth: {
+      type: "scoped_token",
+      token: await createBuildJobScopedToken(env, job)
     }
   };
 }
@@ -4146,6 +4146,107 @@ function isAuthorized(request: Request, expectedToken: string | undefined): bool
   }
 
   return readBearerToken(request) === expectedToken;
+}
+
+type BuildJobAuthorizationResult =
+  | { ok: true; job: BuildJobRecord }
+  | { ok: false; response: Response };
+
+async function authorizeBuildJobRequest(
+  c: Context<{ Bindings: Env }>,
+  jobId: string
+): Promise<BuildJobAuthorizationResult> {
+  const token = readBearerToken(c.req.raw);
+  if (!token) {
+    return { ok: false, response: c.json({ error: "Unauthorized." }, 401) };
+  }
+
+  const job = await getBuildJob(c.env.CONTROL_PLANE_DB, jobId);
+  if (!job) {
+    return {
+      ok: false,
+      response: isAuthorized(c.req.raw, c.env.BUILD_RUNNER_TOKEN)
+        ? c.json({ error: "Build job not found." }, 404)
+        : c.json({ error: "Unauthorized." }, 401)
+    };
+  }
+
+  if (!(await isAuthorizedBuildRunnerToken(token, c.env, job))) {
+    return { ok: false, response: c.json({ error: "Unauthorized." }, 401) };
+  }
+
+  return { ok: true, job };
+}
+
+async function isAuthorizedBuildRunnerToken(
+  token: string,
+  env: Env,
+  job: BuildJobRecord
+): Promise<boolean> {
+  if (resolveConfiguredEnvValue(env.BUILD_RUNNER_TOKEN) === token) {
+    return true;
+  }
+
+  return timingSafeEqual(token, await createBuildJobScopedToken(env, job));
+}
+
+function canIssueBuildJobSourceLease(job: BuildJobRecord, now = new Date()): boolean {
+  if (job.status !== "queued" && job.status !== "in_progress") {
+    return false;
+  }
+
+  const leaseWindowStart = Date.parse(job.startedAt ?? job.createdAt);
+  return Number.isFinite(leaseWindowStart) && now.getTime() - leaseWindowStart <= BUILD_JOB_SOURCE_LEASE_TTL_MS;
+}
+
+async function createBuildJobScopedToken(env: Env, job: BuildJobRecord): Promise<string> {
+  const secret = resolveConfiguredEnvValue(env.BUILD_RUNNER_TOKEN);
+  if (!secret) {
+    throw new HttpError(500, "Missing BUILD_RUNNER_TOKEN secret.");
+  }
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const payload = [
+    "kale-build-job-v1",
+    job.jobId,
+    String(job.installationId),
+    job.repository.fullName,
+    job.headSha,
+    job.createdAt
+  ].join("\0");
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return `kale_build_${job.jobId}.${base64UrlEncode(new Uint8Array(signature))}`;
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary)
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/u, "");
+}
+
+function timingSafeEqual(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  let diff = leftBytes.length ^ rightBytes.length;
+  const length = Math.max(leftBytes.length, rightBytes.length);
+
+  for (let index = 0; index < length; index += 1) {
+    diff |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
+  }
+
+  return diff === 0;
 }
 
 async function requireAgentRequestIdentity(request: Request, env: Env): Promise<AgentRequestIdentity> {
@@ -5831,7 +5932,7 @@ async function queueValidationJob(
   await putBuildJob(env.CONTROL_PLANE_DB, job);
 
   try {
-    await env.BUILD_QUEUE.send(createBuildRunnerRequest(env, requestUrl, job));
+    await env.BUILD_QUEUE.send(await createBuildRunnerRequest(env, requestUrl, job));
   } catch (error) {
     const failedJob = await completeBuildJobFailure(
       env,

@@ -13,6 +13,7 @@ import {
   issueTestMcpAccessToken,
   issueTestMcpPatToken
 } from "./test-support";
+import { KALE_AGENT_BUNDLE_VERSION } from "./harness-onboarding";
 
 test("runtime manifest advertises the agent API without duplicate well-known keys", async () => {
   const { env } = createTestContext();
@@ -153,7 +154,7 @@ test("runtime manifest advertises the agent API without duplicate well-known key
   assert.match(body.client_update_policy.notes[0] ?? "", /Remote Kale MCP and runtime changes apply immediately/i);
   assert.equal(body.agent_harnesses.length, 3);
   assert.deepEqual(body.agent_harnesses.map((entry) => entry.id), ["claude", "codex", "gemini"]);
-  assert.equal(body.agent_harnesses[0]?.local_wrapper.bundle_version, "0.2.9");
+  assert.equal(body.agent_harnesses[0]?.local_wrapper.bundle_version, KALE_AGENT_BUNDLE_VERSION);
   assert.equal(body.agent_harnesses[0]?.local_wrapper.update_mode, "manual");
   assert.equal(body.agent_harnesses[0]?.local_wrapper.update_command, "claude plugins update kale-deploy@cuny-ai-lab -s user");
   assert.equal(body.agent_harnesses[0]?.local_wrapper.restart_required_after_update, true);
@@ -472,7 +473,10 @@ test("landing page presents the agent-first flow and live project social proof",
   assert.match(html, /Use this install step once in your AI agent/i);
   assert.match(html, /codex marketplace add CUNY-AI-Lab\/CAIL-deploy/);
   assert.match(html, /install Kale Deploy from \/plugins/);
-  assert.doesNotMatch(html, /Manual fallback/);
+  assert.match(html, /Manual fallback/);
+  assert.match(html, /Claude installs Kale as a user-scope plugin bundle/);
+  assert.match(html, /Codex CLI does not yet expose a dedicated plugin update command/);
+  assert.match(html, /The --auto-update flag keeps the extension on the latest published version/);
   assert.match(html, /\/extensions install https:\/\/github\.com\/CUNY-AI-Lab\/CAIL-deploy --auto-update/);
   assert.match(html, /Already have a GitHub repo\?/);
   assert.match(html, /Build me a small web app with Kale Deploy and put it online so I can see it live/);
@@ -1104,7 +1108,7 @@ test("connection health reports a stale local wrapper when the harness version i
   assert.equal(body.localWrapperStatus?.status, "stale");
   assert.equal(body.localWrapperStatus?.warning, true);
   assert.equal(body.localWrapperStatus?.localBundleVersion, "0.1.0");
-  assert.equal(body.localWrapperStatus?.expectedBundleVersion, "0.2.9");
+  assert.equal(body.localWrapperStatus?.expectedBundleVersion, KALE_AGENT_BUNDLE_VERSION);
   assert.equal(body.localWrapperStatus?.updateMode, "manual");
   assert.equal(body.localWrapperStatus?.updateCommand, "gemini extensions update kale-deploy");
   assert.match(body.localWrapperStatus?.summary ?? "", /Refresh or update the local wrapper/i);
@@ -1161,7 +1165,7 @@ test("mcp test_connection reports a stale local wrapper when the harness version
   assert.equal(body.result.structuredContent.localWrapperStatus?.status, "stale");
   assert.equal(body.result.structuredContent.localWrapperStatus?.warning, true);
   assert.equal(body.result.structuredContent.localWrapperStatus?.localBundleVersion, "0.1.0");
-  assert.equal(body.result.structuredContent.localWrapperStatus?.expectedBundleVersion, "0.2.9");
+  assert.equal(body.result.structuredContent.localWrapperStatus?.expectedBundleVersion, KALE_AGENT_BUNDLE_VERSION);
   assert.equal(body.result.structuredContent.localWrapperStatus?.updateMode, "unknown");
   assert.match(body.result.structuredContent.summary, /Codex reported local bundle version 0.1.0/i);
 });

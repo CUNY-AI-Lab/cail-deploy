@@ -3,7 +3,8 @@ import test from "node:test";
 
 import {
   buildConnectionHarnessCatalog,
-  buildHarnessSetupPrompts
+  buildHarnessSetupPrompts,
+  KALE_AGENT_BUNDLE_VERSION
 } from "./harness-onboarding";
 
 const promptContext = {
@@ -69,6 +70,19 @@ test("Claude setup prompt tells the harness to finalize from the bootstrap bridg
   assert.match(claude.prompt, /refreshes the Kale OAuth token automatically/i);
   assert.match(claude.prompt, /do not invent `claude mcp auth`, `claude mcp login`, or `claude mcp authenticate` commands/i);
   assert.match(claude.prompt, /claude mcp add -s user kale -- npx -y mcp-remote/i);
+  assert.match(claude.prompt, /harness: "claude"/);
+  assert.match(claude.prompt, new RegExp(`localBundleVersion: "${KALE_AGENT_BUNDLE_VERSION}"`));
   assert.match(claude.prompt, /If OAuth fails/i);
   assert.match(claude.prompt, /https:\/\/cuny\.qzz\.io\/kale\/connect/);
+});
+
+test("installed harness setup prompts include local bundle metadata for stale-wrapper checks", () => {
+  const prompts = buildHarnessSetupPrompts("current", promptContext);
+
+  for (const harnessId of ["claude", "codex", "gemini"]) {
+    const prompt = prompts.find((entry) => entry.id === harnessId)?.prompt ?? "";
+    assert.match(prompt, new RegExp(`harness: "${harnessId}"`));
+    assert.match(prompt, new RegExp(`localBundleVersion: "${KALE_AGENT_BUNDLE_VERSION}"`));
+    assert.match(prompt, /localWrapperStatus/);
+  }
 });

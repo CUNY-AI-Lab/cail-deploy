@@ -286,8 +286,8 @@ function buildLandingPageHarnessInstallInstructionFromConnection(
     installMode: entry.installMode,
     instruction: entry.installInstruction,
     hint: entry.installHint,
-    installNotes: [],
-    manualFallback: undefined
+    installNotes: [...entry.installNotes, ...entry.localWrapper.notes],
+    manualFallback: buildLandingPageManualFallbackFromConnection(entry.manualFallback)
   };
 }
 
@@ -697,6 +697,7 @@ function buildInstalledHarnessSetupPrompts(input: HarnessPromptContext): Harness
   const connectUrl = buildConnectUrl(input);
   const claudeBootstrapCommand = buildClaudeBootstrapCommand(input).replace(/\n/g, " && ");
   const { marketingName } = input;
+  const localBundleVersion = KALE_AGENT_BUNDLE_VERSION;
 
   const claudeSetupPrompt = [
     `Goal: Prepare this Claude Code environment for ${marketingName}. Do not build an app yet.`,
@@ -706,7 +707,7 @@ function buildInstalledHarnessSetupPrompts(input: HarnessPromptContext): Harness
     `3. After the browser OAuth flow completes, replace the temporary bridge with one direct HTTP \`kale\` server by running the installed \`kale-claude-connect.mjs\` helper. It configures \`headersHelper\` so Claude reuses and refreshes the Kale OAuth token automatically.`,
     `4. If OAuth fails, ask the user to generate a token at ${connectUrl} and paste it back.`,
     `5. Call \`get_runtime_manifest\` and use \`dynamic_skill_policy\`, \`client_update_policy\`, and \`agent_harnesses\` as live truth over any local guidance.`,
-    `6. Call \`test_connection\` and use \`nextAction\` and \`summary\` for the current next step.`,
+    `6. Call \`test_connection\` with \`harness: "claude"\` and \`localBundleVersion: "${localBundleVersion}"\`; use \`localWrapperStatus\`, \`nextAction\`, and \`summary\` for the current next step.`,
     `7. Confirm \`register_project\` is available. Only then say ${marketingName} is ready.`,
     "",
     `Do not search the MCP registry first. Do not invent \`claude mcp auth\`, \`claude mcp login\`, or \`claude mcp authenticate\` commands. The ready state is one user-scope \`kale\` HTTP server at ${input.mcpEndpoint}.`
@@ -718,7 +719,7 @@ function buildInstalledHarnessSetupPrompts(input: HarnessPromptContext): Harness
     `1. The \`kale-deploy\` plugin (or, on older Codex builds, the bundled Kale skills) is already installed from the Codex plugin marketplace. Use the installed \`kale-connect\` guidance to connect Kale.`,
     `2. If Kale authentication is needed, ask the user to visit ${connectUrl}, sign in, generate a token, and paste it back.`,
     `3. Call \`get_runtime_manifest\` and use \`dynamic_skill_policy\`, \`client_update_policy\`, and \`agent_harnesses\` as live truth.`,
-    `4. Call \`test_connection\` and use \`nextAction\` and \`summary\` for the current next step.`,
+    `4. Call \`test_connection\` with \`harness: "codex"\` and \`localBundleVersion: "${localBundleVersion}"\`; use \`localWrapperStatus\`, \`nextAction\`, and \`summary\` for the current next step.`,
     `5. Confirm \`register_project\` is available. Only then say ${marketingName} is ready.`
   ].join("\n");
 
@@ -728,7 +729,7 @@ function buildInstalledHarnessSetupPrompts(input: HarnessPromptContext): Harness
     `1. The \`kale-deploy\` extension or skills are already installed, and the Kale MCP server is declared in \`.gemini/settings.json\`. Use the installed \`kale-connect\` skill to connect Kale.`,
     `2. If Kale authentication is needed, ask the user to visit ${connectUrl}, sign in, generate a token, and paste it back.`,
     `3. Call \`get_runtime_manifest\` and use \`dynamic_skill_policy\`, \`client_update_policy\`, and \`agent_harnesses\` as live truth.`,
-    `4. Call \`test_connection\` and use \`nextAction\` and \`summary\` for the current next step.`,
+    `4. Call \`test_connection\` with \`harness: "gemini"\` and \`localBundleVersion: "${localBundleVersion}"\`; use \`localWrapperStatus\`, \`nextAction\`, and \`summary\` for the current next step.`,
     `5. Confirm \`register_project\` is available. Only then say ${marketingName} is ready.`
   ].join("\n");
 

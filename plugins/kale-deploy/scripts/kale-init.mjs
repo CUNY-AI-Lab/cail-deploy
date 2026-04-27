@@ -8,6 +8,7 @@ import {
   assertSupportedShape,
   assertValidProjectName,
   claudeMdTemplate,
+  fileExists,
   indexTsTemplate,
   kaleProjectJsonTemplate,
   packageJsonTemplate,
@@ -18,6 +19,7 @@ import {
 } from "./kale-plugin-lib.mjs";
 
 const [rawName, ...rawArgs] = process.argv.slice(2);
+const force = rawArgs.includes("--force");
 
 if (!rawName) {
   console.error("Usage: kale-init <project-name> --shape static|worker");
@@ -34,6 +36,36 @@ try {
 }
 
 const root = process.cwd();
+const targetFiles = [
+  ".gitignore",
+  "package.json",
+  "tsconfig.json",
+  "wrangler.jsonc",
+  "kale.project.json",
+  "AGENTS.md",
+  "CLAUDE.md",
+  path.join("src", "index.ts"),
+  ...(projectShape === "static" ? [path.join("public", "index.html")] : [])
+];
+
+if (!force) {
+  const existingTargets = [];
+  for (const target of targetFiles) {
+    if (await fileExists(path.join(root, target))) {
+      existingTargets.push(target);
+    }
+  }
+
+  if (existingTargets.length > 0) {
+    console.error("kale-init refuses to overwrite existing project files:");
+    for (const target of existingTargets) {
+      console.error(`- ${target}`);
+    }
+    console.error("Run kale-adapt for existing repositories, or pass --force to replace these files.");
+    process.exit(1);
+  }
+}
+
 await mkdir(path.join(root, "src"), { recursive: true });
 if (projectShape === "static") {
   await mkdir(path.join(root, "public"), { recursive: true });

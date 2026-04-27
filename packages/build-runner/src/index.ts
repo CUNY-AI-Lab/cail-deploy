@@ -39,7 +39,7 @@ const DEFAULT_IDLE_POLL_DELAY_MS = 5_000;
 const DEFAULT_VISIBILITY_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_RETRY_DELAY_SECONDS = 60;
 const DEFAULT_LOG_TAIL_CHARS = 12_000;
-const DEFAULT_COMPATIBILITY_DATE = new Date().toISOString().slice(0, 10);
+const DEFAULT_COMPATIBILITY_DATE = "2026-03-26";
 const DEFAULT_BUILD_WORKER_IMAGE = "kale-build-runner:local";
 const DEFAULT_BUILD_WORKER_CACHE_VOLUME = "cail-build-runner-cache";
 const FALLBACK_ENTRYPOINTS = ["src/index.ts", "src/index.js", "index.ts", "index.js"];
@@ -68,7 +68,6 @@ const TRADITIONAL_NODE_SERVER_PACKAGES = new Set([
 const require = createRequire(import.meta.url);
 const WRANGLER_CLI_PATH = require.resolve("wrangler/wrangler-dist/cli.js");
 const DISPOSABLE_WORKER_MODE = "single-job";
-const DISPOSABLE_WORKER_JOB_ENV = "BUILD_RUNNER_JOB_B64";
 const DISPOSABLE_WORKER_CACHE_ROOT = "/home/node/.cache/kale-build-runner";
 const DISPOSABLE_WORKER_WORK_ROOT = "/tmp/cail-build-runner";
 const DISPOSABLE_WORKER_REPORTED_FAILURE_EXIT_CODE = 10;
@@ -88,6 +87,8 @@ const SANDBOXED_CHILD_ENV_KEYS = [
   "TMPDIR",
   "NPM_CONFIG_CACHE",
   "PNPM_HOME",
+  "BUN_INSTALL",
+  "BUN_INSTALL_CACHE_DIR",
   "USER",
   "XDG_CACHE_HOME",
   "XDG_CONFIG_HOME",
@@ -101,7 +102,6 @@ const SANDBOXED_CHILD_ENV_KEYS = [
 
 type JobRunnerConfig = {
   runnerId: string;
-  buildRunnerToken: string;
   workRoot: string;
   keepWorkdirs: boolean;
 };
@@ -168,7 +168,7 @@ type CompleteCallbackResponse = {
   alreadyCompleted?: boolean;
 };
 
-type PackageManager = "npm" | "pnpm" | "yarn";
+type PackageManager = "bun" | "npm" | "pnpm" | "yarn";
 
 type ProjectPackageJson = {
   description?: string;
@@ -282,7 +282,7 @@ async function main(): Promise<void> {
     const config = loadJobRunnerConfig(process.env);
     await mkdir(config.workRoot, { recursive: true });
     await verifyBuildWorkerHost();
-    const request = parseJobRequestFromEnvironment(process.env);
+    const request = await parseJobRequestFromInput(process.stdin);
     const result = await runBuildJob(config, request);
     process.exitCode = mapDisposableWorkerExitCode(result);
     return;
@@ -400,7 +400,6 @@ async function handleQueueMessage(
 function loadJobRunnerConfig(env: NodeJS.ProcessEnv): JobRunnerConfig {
   return {
     runnerId: required(env.RUNNER_ID ?? env.HOSTNAME ?? "build-runner", "RUNNER_ID"),
-    buildRunnerToken: required(env.BUILD_RUNNER_TOKEN, "BUILD_RUNNER_TOKEN"),
     workRoot: env.RUNNER_WORKDIR_ROOT ?? path.join(tmpdir(), "cail-build-runner"),
     keepWorkdirs: env.RUNNER_KEEP_WORKDIRS === "1" || env.RUNNER_KEEP_WORKDIRS === "true"
   };
@@ -542,13 +541,25 @@ function respondJson(response: ServerResponse, status: number, body: Record<stri
   response.end(JSON.stringify(body));
 }
 
-function parseJobRequestFromEnvironment(env: NodeJS.ProcessEnv): BuildRunnerJobRequest {
-  const encoded = required(env[DISPOSABLE_WORKER_JOB_ENV], DISPOSABLE_WORKER_JOB_ENV);
+async function parseJobRequestFromInput(input: NodeJS.ReadableStream): Promise<BuildRunnerJobRequest> {
+  return parseJobRequestFromString(await readAll(input), "stdin");
+}
+
+function parseJobRequestFromString(value: string, source: string): BuildRunnerJobRequest {
   try {
-    return parseJobRequest(Buffer.from(encoded, "base64url").toString("utf8"));
+    return parseJobRequest(value);
   } catch (error) {
-    throw new Error(`Disposable build worker could not parse ${DISPOSABLE_WORKER_JOB_ENV}: ${errorMessage(error)}`);
+    throw new Error(`Disposable build worker could not parse job request from ${source}: ${errorMessage(error)}`);
   }
+}
+
+async function readAll(input: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of input) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function mapDisposableWorkerExitCode(result: JobExecutionResult): number {
@@ -569,6 +580,7 @@ async function verifyBuildWorkerHost(): Promise<void> {
   await verifyCommandAvailable("tar", ["--version"]);
   await verifyCommandAvailable("npm", ["--version"]);
   await verifyCommandAvailable("corepack", ["--version"]);
+  await verifyCommandAvailable("bun", ["--version"]);
 }
 
 async function verifyCommandAvailable(command: string, args: string[]): Promise<void> {
@@ -656,7 +668,9 @@ function parseJobRequest(body: unknown): BuildRunnerJobRequest {
     !request.source?.tokenUrl ||
     !request.callback?.startUrl ||
     !request.callback?.completeUrl ||
-    !request.deployment?.suggestedProjectName
+    !request.deployment?.suggestedProjectName ||
+    request.auth?.type !== "scoped_token" ||
+    !request.auth.token
   ) {
     throw new Error("Queue message is missing required build fields.");
   }
@@ -760,9 +774,10 @@ async function runDisposableWorkerContainer(
   config: RunnerConfig,
   request: BuildRunnerJobRequest
 ): Promise<DisposableWorkerResult> {
-  const env = buildDisposableWorkerEnv(config, request);
+  const env = buildDisposableWorkerEnv(config);
   const args = buildDisposableWorkerArgs(config, env);
   const result = await runCommandCapture("docker", args, process.cwd(), {
+    input: JSON.stringify(request),
     logLabel: `docker run isolated worker for ${request.jobId}`,
     logTailChars: DEFAULT_LOG_TAIL_CHARS
   });
@@ -800,6 +815,7 @@ function buildDisposableWorkerArgs(
   const args = [
     "run",
     "--rm",
+    "-i",
     "--user",
     "node",
     "--cap-drop",
@@ -818,21 +834,18 @@ function buildDisposableWorkerArgs(
   return args;
 }
 
-function buildDisposableWorkerEnv(
-  config: RunnerConfig,
-  request: BuildRunnerJobRequest
-): Record<string, string> {
+function buildDisposableWorkerEnv(config: RunnerConfig): Record<string, string> {
   return {
     RUNNER_ID: config.runnerId,
-    BUILD_RUNNER_TOKEN: config.buildRunnerToken,
     BUILD_RUNNER_MODE: DISPOSABLE_WORKER_MODE,
-    [DISPOSABLE_WORKER_JOB_ENV]: Buffer.from(JSON.stringify(request)).toString("base64url"),
     RUNNER_WORKDIR_ROOT: DISPOSABLE_WORKER_WORK_ROOT,
     ...(config.keepWorkdirs ? { RUNNER_KEEP_WORKDIRS: "1" } : {}),
     HOME: "/home/node",
     NPM_CONFIG_CACHE: `${DISPOSABLE_WORKER_CACHE_ROOT}/npm`,
     COREPACK_HOME: `${DISPOSABLE_WORKER_CACHE_ROOT}/corepack`,
     PNPM_HOME: `${DISPOSABLE_WORKER_CACHE_ROOT}/pnpm`,
+    BUN_INSTALL: "/home/node/.bun",
+    BUN_INSTALL_CACHE_DIR: `${DISPOSABLE_WORKER_CACHE_ROOT}/bun`,
     YARN_CACHE_FOLDER: `${DISPOSABLE_WORKER_CACHE_ROOT}/yarn`,
     XDG_CACHE_HOME: `${DISPOSABLE_WORKER_CACHE_ROOT}/xdg`
   };
@@ -842,12 +855,12 @@ async function postBuildStart(config: JobRunnerConfig, request: BuildRunnerJobRe
   const payload: BuildRunnerStartPayload = {
     runnerId: config.runnerId,
     startedAt: new Date().toISOString(),
-    summary: "CAIL build runner is preparing the repository and compiling the Worker bundle."
+    summary: "Kale build runner is preparing the repository and compiling the Worker bundle."
   };
 
   const response = await fetch(request.callback.startUrl, {
     method: "POST",
-    headers: jsonHeaders(config),
+    headers: jsonHeaders(resolveBuildJobAuthToken(config, request)),
     body: JSON.stringify(payload)
   });
 
@@ -861,7 +874,7 @@ async function postBuildStart(config: JobRunnerConfig, request: BuildRunnerJobRe
 async function fetchSourceLease(config: JobRunnerConfig, request: BuildRunnerJobRequest): Promise<BuildRunnerSourceLease> {
   const response = await fetch(request.source.tokenUrl, {
     method: "GET",
-    headers: authHeaders(config)
+    headers: authHeaders(resolveBuildJobAuthToken(config, request))
   });
 
   if (!response.ok) {
@@ -914,8 +927,12 @@ async function readProjectPackageJson(projectRoot: string): Promise<ProjectPacka
 
 function detectPackageManager(projectRoot: string, packageJson: ProjectPackageJson | undefined): PackageManager {
   const declared = packageJson?.packageManager?.split("@", 1)[0];
-  if (declared === "pnpm" || declared === "yarn" || declared === "npm") {
+  if (declared === "bun" || declared === "pnpm" || declared === "yarn" || declared === "npm") {
     return declared;
+  }
+
+  if (existsSync(path.join(projectRoot, "bun.lock")) || existsSync(path.join(projectRoot, "bun.lockb"))) {
+    return "bun";
   }
 
   if (existsSync(path.join(projectRoot, "pnpm-lock.yaml"))) {
@@ -935,6 +952,7 @@ function hasBuildScript(packageJson: ProjectPackageJson): boolean {
 
 async function installDependencies(packageManager: PackageManager, projectRoot: string, logs: string[]): Promise<void> {
   const lockfileExists = {
+    bun: existsSync(path.join(projectRoot, "bun.lock")) || existsSync(path.join(projectRoot, "bun.lockb")),
     npm: existsSync(path.join(projectRoot, "package-lock.json")),
     pnpm: existsSync(path.join(projectRoot, "pnpm-lock.yaml")),
     yarn: existsSync(path.join(projectRoot, "yarn.lock"))
@@ -962,13 +980,21 @@ async function runBuildScript(packageManager: PackageManager, projectRoot: strin
 }
 
 function packageManagerCommand(packageManager: PackageManager): string {
-  return packageManager === "npm" ? "npm" : "corepack";
+  if (packageManager === "bun" || packageManager === "npm") {
+    return packageManager;
+  }
+
+  return "corepack";
 }
 
 function packageManagerInstallCommand(
   packageManager: PackageManager,
   hasLockfile: boolean
 ): [string, string[]] {
+  if (packageManager === "bun") {
+    return ["bun", ["install", ...(hasLockfile ? ["--frozen-lockfile"] : [])]];
+  }
+
   if (packageManager === "npm") {
     return ["npm", [hasLockfile ? "ci" : "install"]];
   }
@@ -1497,12 +1523,12 @@ async function postBuildSuccess(
       status: "success",
       runnerId: config.runnerId,
       completedAt: new Date().toISOString(),
-      summary: "CAIL Validate built the Worker bundle successfully without deploying it."
+      summary: "Kale Validate built the Worker bundle successfully without deploying it."
     };
 
     const response = await fetch(request.callback.completeUrl, {
       method: "POST",
-      headers: jsonHeaders(config),
+      headers: jsonHeaders(resolveBuildJobAuthToken(config, request)),
       body: JSON.stringify(payload)
     });
 
@@ -1546,7 +1572,7 @@ async function postBuildSuccess(
   const response = await fetch(request.callback.completeUrl, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${config.buildRunnerToken}`
+      authorization: `Bearer ${resolveBuildJobAuthToken(config, request)}`
     },
     body
   });
@@ -1587,7 +1613,7 @@ async function postBuildFailure(
 
   const response = await fetch(request.callback.completeUrl, {
     method: "POST",
-    headers: jsonHeaders(config),
+    headers: jsonHeaders(resolveBuildJobAuthToken(config, request)),
     body: JSON.stringify(payload)
   });
 
@@ -1598,15 +1624,24 @@ async function postBuildFailure(
   await response.json() as CompleteCallbackResponse;
 }
 
-function authHeaders(config: Pick<JobRunnerConfig, "buildRunnerToken">): Record<string, string> {
+function resolveBuildJobAuthToken(_config: JobRunnerConfig, request: BuildRunnerJobRequest): string {
+  const token = request.auth?.token;
+  if (!token) {
+    throw new RetryableRunnerError("Build job did not include a scoped callback token.");
+  }
+
+  return token;
+}
+
+function authHeaders(token: string): Record<string, string> {
   return {
-    authorization: `Bearer ${config.buildRunnerToken}`
+    authorization: `Bearer ${token}`
   };
 }
 
-function jsonHeaders(config: Pick<JobRunnerConfig, "buildRunnerToken">): Record<string, string> {
+function jsonHeaders(token: string): Record<string, string> {
   return {
-    ...authHeaders(config),
+    ...authHeaders(token),
     "content-type": "application/json"
   };
 }
@@ -1618,6 +1653,7 @@ async function runCommand(
   options: {
     env?: Record<string, string>;
     inheritProcessEnv?: boolean;
+    input?: string;
     logLabel: string;
     logTailChars: number;
   }
@@ -1641,6 +1677,7 @@ async function runCommandCapture(
   options: {
     env?: Record<string, string>;
     inheritProcessEnv?: boolean;
+    input?: string;
     logLabel: string;
     logTailChars: number;
   }
@@ -1653,8 +1690,12 @@ async function runCommandCapture(
           ...process.env,
           ...options.env
         },
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"]
   });
+
+  if (options.input !== undefined) {
+    child.stdin?.end(options.input);
+  }
 
   let output = "";
   const append = (chunk: Buffer | string) => {

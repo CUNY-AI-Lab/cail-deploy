@@ -13,6 +13,7 @@ COPY packages/build-contract/package.json packages/build-contract/package.json
 COPY packages/build-runner/package.json packages/build-runner/package.json
 
 RUN npm ci --include=dev
+RUN npm install --global bun@1.3.5
 
 COPY packages/build-contract packages/build-contract
 COPY packages/build-runner packages/build-runner

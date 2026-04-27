@@ -33,6 +33,8 @@ type CloudflareTokenVerifyAttempt = {
   error?: string;
 };
 
+const ASSETS_UPLOAD_RETRY_DELAYS_MS = [250, 1_000, 2_500];
+
 export class CloudflareApiClient {
   private r2AwsClientPromise: Promise<AwsClient> | null = null;
 
@@ -252,39 +254,42 @@ export class CloudflareApiClient {
     uploadJwt: string,
     files: Array<{ key: string; base64: File; contentType?: string }>
   ): Promise<WorkersAssetsUploadResult> {
-    const body = new FormData();
-
-    for (const entry of files) {
-      const content = await entry.base64.arrayBuffer();
-      const encoded = arrayBufferToBase64(content);
-      body.append(
-        entry.key,
-        new Blob([encoded], { type: entry.contentType ?? "application/octet-stream" }),
-        entry.key
+    let lastStatus = 0;
+    let lastError = "";
+    for (let attempt = 0; attempt <= ASSETS_UPLOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+      const response = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${this.options.accountId}/workers/assets/upload?base64=true`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${uploadJwt}`
+          },
+          body: await buildAssetsUploadBody(files)
+        }
       );
-    }
 
-    const response = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${this.options.accountId}/workers/assets/upload?base64=true`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${uploadJwt}`
-        },
-        body
+      if (response.ok) {
+        const envelope = await response.json<CloudflareEnvelope<WorkersAssetsUploadResult>>();
+        if (envelope.success) {
+          return envelope.result;
+        }
+
+        lastStatus = response.status;
+        lastError = envelope.errors.map((error) => error.message).join("; ");
+      } else {
+        lastStatus = response.status;
+        lastError = await safeResponseText(response);
       }
-    );
 
-    if (!response.ok) {
-      throw new Error(`Cloudflare assets upload failed with ${response.status}.`);
+      if (!isRetryableCloudflareStatus(lastStatus) || attempt >= ASSETS_UPLOAD_RETRY_DELAYS_MS.length) {
+        break;
+      }
+
+      await delay(resolveRetryDelayMs(response, attempt));
     }
 
-    const envelope = await response.json<CloudflareEnvelope<WorkersAssetsUploadResult>>();
-    if (!envelope.success) {
-      throw new Error(envelope.errors.map((error) => error.message).join("; "));
-    }
-
-    return envelope.result;
+    const detail = lastError ? ` ${lastError}` : "";
+    throw new Error(`Cloudflare assets upload failed with ${lastStatus}.${detail}`);
   }
 
   private async jsonRequest<T>(path: string, init: RequestInit): Promise<CloudflareEnvelope<T>> {
@@ -442,6 +447,54 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   }
 
   return btoa(binary);
+}
+
+async function buildAssetsUploadBody(files: Array<{ key: string; base64: File; contentType?: string }>): Promise<FormData> {
+  const body = new FormData();
+
+  for (const entry of files) {
+    const content = await entry.base64.arrayBuffer();
+    const encoded = arrayBufferToBase64(content);
+    body.append(
+      entry.key,
+      new Blob([encoded], { type: entry.contentType ?? "application/octet-stream" }),
+      entry.key
+    );
+  }
+
+  return body;
+}
+
+function isRetryableCloudflareStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function resolveRetryDelayMs(response: Response, attempt: number): number {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const retryAfterSeconds = Number.parseInt(retryAfter, 10);
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      return retryAfterSeconds * 1000;
+    }
+  }
+
+  return ASSETS_UPLOAD_RETRY_DELAYS_MS[attempt] ?? 0;
+}
+
+async function safeResponseText(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch {
+    return "";
+  }
+}
+
+async function delay(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function workerModuleContentType(fileName: string, contentType: string): string {

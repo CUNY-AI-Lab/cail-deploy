@@ -194,6 +194,8 @@ async function buildReport(cwd, options) {
   for (const status of liveWrapperStatuses) {
     if (status.warning && status.updateCommand) {
       nextSteps.push(`${status.harnessLabel}: run '${status.updateCommand}' to refresh the local wrapper.`);
+    } else if (status.warning && status.updateNotes.length > 0) {
+      nextSteps.push(`${status.harnessLabel}: ${status.updateNotes.join(" ")}`);
     }
   }
 
@@ -232,7 +234,10 @@ async function loadLiveWrapperStatuses(input) {
           harnessLabel: harnessLabel(harnessId),
           warning: Boolean(response.localWrapperStatus.warning),
           summary: response.localWrapperStatus.summary,
-          updateCommand: response.localWrapperStatus.updateCommand
+          updateCommand: response.localWrapperStatus.updateCommand,
+          updateNotes: Array.isArray(response.localWrapperStatus.notes)
+            ? response.localWrapperStatus.notes.map((note) => String(note))
+            : []
         });
       }
     } catch (error) {
@@ -242,7 +247,8 @@ async function loadLiveWrapperStatuses(input) {
         harnessLabel: harnessLabel(harnessId),
         warning: true,
         summary: `Could not check live wrapper status: ${message}`,
-        updateCommand: undefined
+        updateCommand: undefined,
+        updateNotes: []
       });
     }
   }
