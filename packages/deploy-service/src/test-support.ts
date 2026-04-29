@@ -639,6 +639,7 @@ export class FakeD1Database {
   private readonly projectDeletionBacklogs = new Map<string, Record<string, unknown>>();
   private readonly featuredProjects = new Map<string, Record<string, unknown>>();
   private readonly ownerCapacityOverrides = new Map<string, Record<string, unknown>>();
+  private readonly webhookDeliveries = new Map<string, Record<string, unknown>>();
   private readonly usedOauthGrants = new Set<string>();
   private readonly usedOauthRefreshTokens = new Set<string>();
 
@@ -802,6 +803,41 @@ export class FakeD1Database {
 
   getBuildJob(jobId: string): BuildJobRecord | undefined {
     return this.buildJobs.get(jobId);
+  }
+
+  getBuildJobByDeliveryId(deliveryId: string): BuildJobRecord | undefined {
+    return Array.from(this.buildJobs.values()).find((job) => job.deliveryId === deliveryId);
+  }
+
+  claimWebhookDelivery(deliveryId: string, eventName: string, receivedAt: string): boolean {
+    if (this.webhookDeliveries.has(deliveryId)) {
+      return false;
+    }
+
+    this.webhookDeliveries.set(deliveryId, {
+      delivery_id: deliveryId,
+      event_name: eventName,
+      received_at: receivedAt,
+      job_id: null
+    });
+    return true;
+  }
+
+  attachWebhookDeliveryJob(deliveryId: string, jobId: string): void {
+    const delivery = this.webhookDeliveries.get(deliveryId);
+    if (delivery) {
+      this.webhookDeliveries.set(deliveryId, {
+        ...delivery,
+        job_id: jobId
+      });
+    }
+  }
+
+  releaseWebhookDelivery(deliveryId: string): void {
+    const delivery = this.webhookDeliveries.get(deliveryId);
+    if (delivery && delivery.job_id === null) {
+      this.webhookDeliveries.delete(deliveryId);
+    }
   }
 
   selectProjectPolicy(githubRepo: string): Record<string, unknown> | null {
@@ -1530,6 +1566,11 @@ class FakePreparedStatement {
       return this.db.selectBuildJob(String(this.params[0])) as T | null;
     }
 
+    if (normalized.includes("from build_jobs") && normalized.includes("where delivery_id = ?")) {
+      const job = this.db.getBuildJobByDeliveryId(String(this.params[0]));
+      return (job ? buildJobRow(job) : null) as T | null;
+    }
+
     if (normalized.includes("from build_jobs") && normalized.includes("where project_name = ?") && normalized.includes("event_name = 'push'")) {
       return this.db.selectLatestPushBuildJob(String(this.params[0])) as T | null;
     }
@@ -1588,6 +1629,15 @@ class FakePreparedStatement {
     if (normalized.includes("insert into oauth_used_refresh_tokens")) {
       const consumed = this.db.consumeOauthRefreshToken(String(this.params[0]));
       return consumed ? ({ jti: String(this.params[0]) } as T) : null;
+    }
+
+    if (normalized.includes("insert into webhook_deliveries")) {
+      const claimed = this.db.claimWebhookDelivery(
+        String(this.params[0]),
+        String(this.params[1]),
+        String(this.params[2])
+      );
+      return claimed ? ({ delivery_id: String(this.params[0]) } as T) : null;
     }
 
     return null;
@@ -1810,6 +1860,14 @@ class FakePreparedStatement {
 
     if (normalized.includes("update build_jobs") && normalized.includes("set deployment_url = ?") && normalized.includes("where project_name = ?")) {
       this.db.updateBuildJobDeploymentUrl(String(this.params[1]), String(this.params[0]));
+    }
+
+    if (normalized.includes("update webhook_deliveries") && normalized.includes("set job_id = ?")) {
+      this.db.attachWebhookDeliveryJob(String(this.params[1]), String(this.params[0]));
+    }
+
+    if (normalized.includes("delete from webhook_deliveries") && normalized.includes("where delivery_id = ?")) {
+      this.db.releaseWebhookDelivery(String(this.params[0]));
     }
 
     if (normalized.includes("update mcp_tokens") && normalized.includes("set revoked_at = datetime('now')") && normalized.includes("where email = ?")) {
