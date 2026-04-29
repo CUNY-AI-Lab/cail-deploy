@@ -14,6 +14,9 @@ KALE_RUNNER_INSTANCE_ID="${KALE_RUNNER_INSTANCE_ID:-}"
 AWS_PROFILE="${AWS_PROFILE:-}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 KALE_HEALTHCHECK_USER_AGENT="${KALE_HEALTHCHECK_USER_AGENT:-Mozilla/5.0 (compatible; KaleHealthcheck/1.0; +https://github.com/CUNY-AI-Lab/cail-deploy)}"
+KALE_FRONT_DOOR_ATTEMPTS="${KALE_FRONT_DOOR_ATTEMPTS:-12}"
+KALE_FRONT_DOOR_RETRY_DELAY_SECONDS="${KALE_FRONT_DOOR_RETRY_DELAY_SECONDS:-10}"
+failures=0
 
 pass() {
   printf 'OK   %s\n' "$1"
@@ -25,7 +28,7 @@ warn() {
 
 fail() {
   printf 'FAIL %s\n' "$1" >&2
-  exit 1
+  failures=$((failures + 1))
 }
 
 fetch_body() {
@@ -49,25 +52,31 @@ check_contains() {
   local url="$2"
   local expected="$3"
   local max_attempts="${4:-1}"
+  local retry_delay="${5:-3}"
   local body attempt
 
   for (( attempt=1; attempt<=max_attempts; attempt++ )); do
     body="$(fetch_body "$url" 2>/dev/null)" || {
-      if [ "$attempt" -lt "$max_attempts" ]; then sleep 3; continue; fi
+      if [ "$attempt" -lt "$max_attempts" ]; then sleep "$retry_delay"; continue; fi
       fail "$label: request failed for $url"
+      return 0
     }
     if printf '%s' "$body" | grep -Fq "$expected"; then
       pass "$label"
       return 0
     fi
-    if [ "$attempt" -lt "$max_attempts" ]; then sleep 3; fi
+    if [ "$attempt" -lt "$max_attempts" ]; then sleep "$retry_delay"; fi
   done
 
   fail "$label: response from $url did not contain $expected"
+  printf 'WARN %s: final response length %s bytes; first 500 bytes follow\n' "$label" "$(printf '%s' "$body" | wc -c | tr -d ' ')" >&2
+  printf '%s\n' "$body" | head -c 500 >&2
+  printf '\n' >&2
 }
 
 check_runner_over_ssh() {
   local ssh_cmd
+  local failures_before="$failures"
   ssh_cmd=(
     ssh
     -o StrictHostKeyChecking=no
@@ -80,10 +89,22 @@ check_runner_over_ssh() {
   local body
   body="$("${ssh_cmd[@]}")" || fail "Runner SSH health check failed"
   printf '%s' "$body" | grep -Fq '"ok":true' || fail "Runner SSH health check did not return ok"
+  [ "$failures" -eq "$failures_before" ] || return 0
   pass "Runner readyz over SSH"
 }
 
 check_runner_instance_state() {
+  local failures_before="$failures"
+  if ! command -v aws >/dev/null 2>&1; then
+    warn "Skipping EC2 instance-state check because aws CLI is not available"
+    return 0
+  fi
+
+  if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+    warn "Skipping EC2 instance-state check because AWS credentials are not configured"
+    return 0
+  fi
+
   local output
   output="$(aws ec2 describe-instances \
     ${AWS_PROFILE:+--profile "$AWS_PROFILE"} \
@@ -92,15 +113,17 @@ check_runner_instance_state() {
     --query 'Reservations[0].Instances[0].State.Name' \
     --output text)" || fail "Runner EC2 state lookup failed"
 
+  [ -n "${output:-}" ] || return 0
   [ "$output" = "running" ] || fail "Runner EC2 instance state is $output"
+  [ "$failures" -eq "$failures_before" ] || return 0
   pass "Runner EC2 instance state"
 }
 
-check_contains "Public front door" "$KALE_BASE_URL" "Kale Deploy" 3
-check_contains "Public healthz" "${KALE_BASE_URL%/}/healthz" '"ok":true'
-check_contains "Runtime manifest" "$KALE_RUNTIME_URL" '"agent_api"'
-check_contains "Direct deploy-service healthz" "$KALE_DEPLOY_SERVICE_HEALTH_URL" '"ok":true'
-check_contains "Direct gateway healthz" "$KALE_GATEWAY_HEALTH_URL" '"ok":true'
+check_contains "Public healthz" "${KALE_BASE_URL%/}/healthz" '"ok":true' 3
+check_contains "Runtime manifest" "$KALE_RUNTIME_URL" '"agent_api"' 3
+check_contains "Direct deploy-service healthz" "$KALE_DEPLOY_SERVICE_HEALTH_URL" '"ok":true' 3
+check_contains "Direct gateway healthz" "$KALE_GATEWAY_HEALTH_URL" '"ok":true' 3
+check_contains "Public front door" "$KALE_BASE_URL" "Kale Deploy" "$KALE_FRONT_DOOR_ATTEMPTS" "$KALE_FRONT_DOOR_RETRY_DELAY_SECONDS"
 
 if [ -n "$KALE_SMOKE_URL" ]; then
   check_contains "Smoke project" "$KALE_SMOKE_URL" '"ok":true'
@@ -118,6 +141,11 @@ if [ -n "$KALE_RUNNER_HOST" ] && [ -n "$KALE_RUNNER_SSH_KEY" ]; then
   check_runner_over_ssh
 else
   warn "Skipping runner SSH health check because KALE_RUNNER_HOST or KALE_RUNNER_SSH_KEY is not set"
+fi
+
+if [ "$failures" -gt 0 ]; then
+  printf 'FAIL Kale Deploy health check completed with %s failure(s)\n' "$failures" >&2
+  exit 1
 fi
 
 pass "Kale Deploy health check completed"
