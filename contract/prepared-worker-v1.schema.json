@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cuny-ai-lab.invalid/kale/prepared-worker-v1.schema.json",
+  "title": "Kale retained prepared Worker",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "projectId",
+    "releaseId",
+    "revisionId",
+    "mainModule",
+    "modules",
+    "compatibilityDate",
+    "compatibilityFlags"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "kale.prepared-worker.v1" },
+    "projectId": { "type": "string", "pattern": "^prj_[0-9a-f]{32}$" },
+    "releaseId": { "type": "string", "pattern": "^rel_[0-9a-f]{32}$" },
+    "revisionId": { "type": "string", "pattern": "^rev_sha256_[0-9a-f]{64}$" },
+    "mainModule": { "type": "string", "minLength": 1 },
+    "modules": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string" }
+    },
+    "compatibilityDate": { "type": "string", "format": "date" },
+    "compatibilityFlags": { "type": "array", "items": { "type": "string" } }
+  }
+}

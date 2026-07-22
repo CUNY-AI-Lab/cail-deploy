@@ -1,0 +1,1 @@
+{"schemaVersion":"kale.artifact.v1","runtime":"worker","entrypoint":"src/index.ts","files":{"src/index.ts":"export default { fetch() { return new Response('kale-fixture-v1') } }"},"compatibility":{"date":"2026-07-22","flags":[]},"requestedBindings":[]}

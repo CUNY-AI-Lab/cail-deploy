@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "kale.cloudflare-compatibility-receipt.v1",
+  "acceptedAt": "2026-07-22",
+  "candidateBom": {
+    "repository": "/Users/stephenzweibel/Apps/kale-integration-acceptance",
+    "revision": "b722a436702ff1e821754e3c185ea017fe73d2f4",
+    "status": "candidate"
+  },
+  "upstream": {
+    "vibesdk": {
+      "repository": "https://github.com/cloudflare/vibesdk",
+      "revision": "99d9cafc5685ad338393177a76c52211de853a1b"
+    }
+  },
+  "packages": {
+    "@cloudflare/worker-bundler": {
+      "tested": "0.2.2",
+      "candidate": null,
+      "maturity": "experimental",
+      "boundary": "src/adapters/cloudflare/worker-bundler.ts",
+      "conformance": "scripts/check-workerd.ts passes with Wrangler 4.113.0 and a real local workerd Worker Loader binding",
+      "knownDrift": "The same package's dist/esbuild.wasm fails in @cloudflare/vitest-pool-workers 0.18.7 with gojs module resolution; test:workerd:pool-known-drift preserves the reproduction.",
+      "rollback": "Repin the previous exact version and republish only after adapter conformance and isolated canary pass. Prepared releases remain deployable without rebuilding."
+    },
+    "@cloudflare/vitest-pool-workers": {
+      "tested": "0.18.7",
+      "maturity": "beta",
+      "knownDrift": "Cannot resolve worker-bundler 0.2.2 dist/esbuild.wasm gojs imports; Wrangler local workerd is the passing conformance runner."
+    },
+    "@cloudflare/workers-types": { "accepted": "5.20260722.1" },
+    "wrangler": { "accepted": "4.113.0" }
+  },
+  "platform": {
+    "compatibilityDate": "2026-07-22",
+    "workflows": "documented public binding",
+    "workerLoader": "experimental platform binding isolated by the worker-bundler adapter",
+    "workersForPlatforms": "documented REST API"
+  }
+}

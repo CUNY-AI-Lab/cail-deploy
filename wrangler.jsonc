@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "kale-release-control-plane-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "vars": {
+    "AUTH_MODE": "test",
+    "SERVICE_AUDIENCE": "https://kale-release-control-plane.invalid",
+    "RUN_ID": "local-test",
+    "OPERATIONAL_SUBJECTS_JSON": "{\"cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\":\"cail-v1-11111111111111111111111111111111\",\"cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\":\"cail-v1-22222222222222222222222222222222\"}",
+    "WFP_ACCOUNT_ID": "replace-with-isolated-account-id",
+    "WFP_NAMESPACE": "replace-with-run-scoped-namespace",
+    "TEST_PRINCIPALS_JSON": "{\"test-owner-a\":\"cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"test-owner-b\":\"cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kale-release-control-plane-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "schema"
+    }
+  ],
+  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "kale-release-control-plane-local" }],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "dispatch_namespaces": [
+    { "binding": "DISPATCHER", "namespace": "replace-with-run-scoped-namespace" }
+  ],
+  "workflows": [
+    {
+      "name": "kale-release-control-plane-local",
+      "binding": "RELEASE_WORKFLOW",
+      "class_name": "ReleaseWorkflow"
+    }
+  ]
+}

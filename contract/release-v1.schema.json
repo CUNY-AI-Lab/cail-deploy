@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cuny-ai-lab.invalid/kale/release-v1.schema.json",
+  "title": "Kale revision and release wire contract",
+  "$defs": {
+    "projectId": { "type": "string", "pattern": "^prj_[0-9a-f]{32}$" },
+    "revisionId": { "type": "string", "pattern": "^rev_sha256_[0-9a-f]{64}$" },
+    "releaseId": { "type": "string", "pattern": "^rel_[0-9a-f]{32}$" },
+    "artifactDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "releaseStatus": {
+      "enum": [
+        "queued",
+        "validating",
+        "building",
+        "prepared",
+        "awaiting_approval",
+        "publishing",
+        "reconciling",
+        "live",
+        "rejected",
+        "failed"
+      ]
+    },
+    "revisionUploadResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectId",
+        "revisionId",
+        "artifactDigest",
+        "artifactBytes",
+        "status",
+        "createdAt"
+      ],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectId" },
+        "revisionId": { "$ref": "#/$defs/revisionId" },
+        "artifactDigest": { "$ref": "#/$defs/artifactDigest" },
+        "artifactBytes": { "type": "integer", "minimum": 1, "maximum": 2097152 },
+        "status": { "const": "ready" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "createReleaseRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revisionId", "target", "approval"],
+      "properties": {
+        "revisionId": { "$ref": "#/$defs/revisionId" },
+        "target": { "enum": ["preview", "production"] },
+        "approval": { "enum": ["required", "automatic"] }
+      }
+    },
+    "release": {
+      "type": "object",
+      "required": [
+        "projectId",
+        "releaseId",
+        "revisionId",
+        "target",
+        "approval",
+        "status",
+        "workflowInstanceId",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectId" },
+        "releaseId": { "$ref": "#/$defs/releaseId" },
+        "revisionId": { "$ref": "#/$defs/revisionId" },
+        "target": { "enum": ["preview", "production"] },
+        "approval": { "enum": ["required", "automatic"] },
+        "status": { "$ref": "#/$defs/releaseStatus" },
+        "workflowInstanceId": { "type": "string", "minLength": 1 },
+        "preparedDigest": { "anyOf": [{ "$ref": "#/$defs/artifactDigest" }, { "type": "null" }] },
+        "publicationName": { "type": ["string", "null"] },
+        "rollbackOfReleaseId": {
+          "anyOf": [{ "$ref": "#/$defs/releaseId" }, { "type": "null" }]
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
