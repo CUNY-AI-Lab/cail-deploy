@@ -365,7 +365,12 @@ async function approveRelease(
     key,
     requestDigest,
   );
-  if (replay) return Response.json(replay, { status: 200 });
+  if (replay) {
+    if (release.status === "awaiting_approval" && release.approved_by_subject === subject) {
+      await sendApprovalEvent(env, release, subject);
+    }
+    return Response.json(replay, { status: 200 });
+  }
   if (release.status !== "awaiting_approval") {
     throw new ApiError(
       409,
@@ -403,11 +408,27 @@ async function approveRelease(
       "A release approval was already accepted.",
     );
   }
-  await env.RELEASE_WORKFLOW.get(release.workflow_instance_id).sendEvent({
-    type: "release-approval",
-    payload: { decision: "approved", actorSubject: subject, revisionId: release.revision_id },
-  });
+  await sendApprovalEvent(env, release, subject);
   return Response.json(response, { status: 202 });
+}
+
+export async function sendApprovalEvent(
+  env: Env,
+  release: ReleaseRow,
+  subject: string,
+): Promise<void> {
+  try {
+    await env.RELEASE_WORKFLOW.get(release.workflow_instance_id).sendEvent({
+      type: "release-approval",
+      payload: { decision: "approved", actorSubject: subject, revisionId: release.revision_id },
+    });
+  } catch {
+    throw new ApiError(
+      503,
+      "approval_delivery_failed",
+      "The approval was saved but Workflow delivery must be retried.",
+    );
+  }
 }
 
 async function reconcileRelease(

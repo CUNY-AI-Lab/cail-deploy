@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { publicationName, publishWorker } from "../src/adapters/cloudflare/wfp";
+import { sendApprovalEvent } from "../src/api";
 import type { Env } from "../src/env";
+import type { ReleaseRow } from "../src/storage";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -37,5 +39,34 @@ describe("Cloudflare volatile boundaries", () => {
       expect(error).toMatchObject({ code: "publication_rejected" });
       expect((error as Error).message).not.toContain("provider-secret-debug-body");
     }
+  });
+
+  test("Workflow approval delivery fails closed without provider error leakage", async () => {
+    const sendEvent = mock(async () => {
+      throw new Error("provider-internal-detail");
+    });
+    const env = {
+      RELEASE_WORKFLOW: { get: () => ({ sendEvent }) },
+    } as unknown as Env;
+    const release = {
+      workflow_instance_id: "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      revision_id: `rev_sha256_${"b".repeat(64)}`,
+    } as ReleaseRow;
+
+    await expect(
+      sendApprovalEvent(env, release, "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    ).rejects.toMatchObject({
+      status: 503,
+      code: "approval_delivery_failed",
+      message: "The approval was saved but Workflow delivery must be retried.",
+    });
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: "release-approval",
+      payload: {
+        decision: "approved",
+        actorSubject: "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        revisionId: `rev_sha256_${"b".repeat(64)}`,
+      },
+    });
   });
 });
