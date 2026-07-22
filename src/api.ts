@@ -418,7 +418,8 @@ export async function sendApprovalEvent(
   subject: string,
 ): Promise<void> {
   try {
-    await env.RELEASE_WORKFLOW.get(release.workflow_instance_id).sendEvent({
+    const instance = await env.RELEASE_WORKFLOW.get(release.workflow_instance_id);
+    await instance.sendEvent({
       type: "release-approval",
       payload: { decision: "approved", actorSubject: subject, revisionId: release.revision_id },
     });

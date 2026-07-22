@@ -4,7 +4,7 @@ export interface TestWorkflowInstance {
 
 export interface TestWorkflowBinding {
   create(options: { id: string; params: ReleaseWorkflowParams }): Promise<{ id: string }>;
-  get(id: string): TestWorkflowInstance;
+  get(id: string): Promise<TestWorkflowInstance>;
 }
 
 export interface ReleaseWorkflowParams {

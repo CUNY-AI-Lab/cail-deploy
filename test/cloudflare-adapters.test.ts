@@ -46,7 +46,7 @@ describe("Cloudflare volatile boundaries", () => {
       throw new Error("provider-internal-detail");
     });
     const env = {
-      RELEASE_WORKFLOW: { get: () => ({ sendEvent }) },
+      RELEASE_WORKFLOW: { get: async () => ({ sendEvent }) },
     } as unknown as Env;
     const release = {
       workflow_instance_id: "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
