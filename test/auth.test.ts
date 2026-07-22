@@ -6,6 +6,7 @@ import {
 } from "@cuny-ai-lab/cail-identity/testing";
 import { authenticate } from "../src/auth";
 import type { Env } from "../src/env";
+import { workerHandler } from "../src/handler";
 import { operationalLogSubject } from "../src/operational-events";
 
 const audience = "https://deploy.integration.invalid";
@@ -110,5 +111,32 @@ describe("CAIL identity boundary", () => {
         env({ CAIL_IDENTITY_JWKS: issuer.jwksJson, CAIL_IDENTITY_ISSUER: issuer.issuer }),
       ),
     ).rejects.toMatchObject({ code: "credential_ambiguity" });
+  });
+
+  test("serializes an async authentication rejection at the Worker boundary", async () => {
+    const issuer = await createTestIdentityIssuer({
+      issuer: "https://identity.integration.invalid",
+    });
+    const wrongAudience = await issuer.mintIdentityJwt({ audience: "https://other.invalid" });
+    const requestId = "019f8bdc-342a-76e1-ba71-005d69808f86";
+    const response = await workerHandler.fetch(
+      new Request("https://deploy.invalid/v1/projects", {
+        method: "POST",
+        headers: {
+          "X-CAIL-Identity-JWT": wrongAudience,
+          "X-CAIL-Request-Id": requestId,
+        },
+      }),
+      env({ CAIL_IDENTITY_JWKS: issuer.jwksJson, CAIL_IDENTITY_ISSUER: issuer.issuer }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "invalid_credential",
+        message: "The CAIL identity JWT is invalid.",
+        requestId,
+      },
+    });
   });
 });
