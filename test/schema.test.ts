@@ -1,7 +1,51 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { RELEASE_INSERT_SQL } from "../src/api";
 
 describe("durable release invariants", () => {
+  test("production release insert matches the durable schema", async () => {
+    const db = new Database(":memory:");
+    db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
+    const now = new Date().toISOString();
+    const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const revisionId = `rev_sha256_${"b".repeat(64)}`;
+    const releaseId = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    db.run("INSERT INTO projects VALUES (?, ?, ?, ?)", [
+      projectId,
+      "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "test",
+      now,
+    ]);
+    db.run("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)", [
+      projectId,
+      revisionId,
+      "b".repeat(64),
+      1,
+      "key",
+      "ready",
+      now,
+    ]);
+
+    db.run(RELEASE_INSERT_SQL, [
+      releaseId,
+      projectId,
+      revisionId,
+      "preview",
+      "required",
+      releaseId,
+      null,
+      "cail-v1-11111111111111111111111111111111",
+      "019f8bdc-342a-76e1-ba71-005d69808f86",
+      now,
+      now,
+      now,
+    ]);
+
+    expect(db.query("SELECT status FROM releases WHERE release_id = ?").get(releaseId)).toEqual({
+      status: "queued",
+    });
+  });
+
   test("workflow terminal replay records one terminal event", async () => {
     const db = new Database(":memory:");
     db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());

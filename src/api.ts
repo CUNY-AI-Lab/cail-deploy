@@ -35,6 +35,8 @@ import type { PreparedEnvelope } from "./workflow";
 
 const ARTIFACT_MEDIA_TYPE = "application/vnd.cuny.kale.artifact.v1+json";
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
+export const RELEASE_INSERT_SQL = `INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, rollback_of_release_id, operational_subject, request_id, admitted_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`;
 
 function requiredIdempotencyKey(request: Request): string {
   const key = request.headers.get("Idempotency-Key");
@@ -261,10 +263,7 @@ async function startRelease(
     updatedAt: now,
   };
   await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, rollback_of_release_id, operational_subject, request_id, admitted_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(
+    env.DB.prepare(RELEASE_INSERT_SQL).bind(
       releaseId,
       projectId,
       revisionId,
