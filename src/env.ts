@@ -40,7 +40,6 @@ export interface Env {
   TEST_PRINCIPALS_JSON?: string;
   CAIL_IDENTITY_JWKS?: string;
   CAIL_IDENTITY_ISSUER?: string;
-  OPERATIONAL_SUBJECTS_JSON?: string;
   SERVICE_AUDIENCE: string;
   SERVICE_RELEASE?: string;
   RUN_ID: string;

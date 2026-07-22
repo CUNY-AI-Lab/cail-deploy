@@ -26,7 +26,6 @@ function logger(env: Env) {
 }
 
 export function operationalLogSubject(
-  env: Env,
   ownershipSubject: string,
   signedOperationalSubject?: string,
 ): string | undefined {
@@ -43,31 +42,7 @@ export function operationalLogSubject(
     }
     return signedOperationalSubject;
   }
-  if (env.AUTH_MODE !== "test") {
-    return undefined;
-  }
-  let mapping: Record<string, string>;
-  try {
-    mapping = JSON.parse(env.OPERATIONAL_SUBJECTS_JSON ?? "{}") as Record<string, string>;
-  } catch {
-    throw new ApiError(
-      503,
-      "operational_identity_not_configured",
-      "The operational identity map is invalid.",
-    );
-  }
-  const subject = mapping[ownershipSubject];
-  if (
-    !isOperationalLogSubject(subject) ||
-    subject.slice("cail-v1-".length) === ownershipSubject.slice("cail-".length)
-  ) {
-    throw new ApiError(
-      503,
-      "operational_identity_not_configured",
-      "A distinct operational pseudonym is required.",
-    );
-  }
-  return subject;
+  return undefined;
 }
 
 export function emitReleaseAdmission(

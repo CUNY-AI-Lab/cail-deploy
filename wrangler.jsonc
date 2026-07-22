@@ -8,9 +8,8 @@
   "observability": { "enabled": true },
   "vars": {
     "AUTH_MODE": "test",
-    "SERVICE_AUDIENCE": "https://kale-release-control-plane.invalid",
+    "SERVICE_AUDIENCE": "cail:deploy",
     "RUN_ID": "local-test",
-    "OPERATIONAL_SUBJECTS_JSON": "{\"cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\":\"cail-v1-11111111111111111111111111111111\",\"cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\":\"cail-v1-22222222222222222222222222222222\"}",
     "WFP_ACCOUNT_ID": "replace-with-isolated-account-id",
     "WFP_NAMESPACE": "replace-with-run-scoped-namespace",
     "TEST_PRINCIPALS_JSON": "{\"test-owner-a\":\"cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"test-owner-b\":\"cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"

@@ -8,7 +8,7 @@ All JSON responses use `content-type: application/json`. Errors have the exact s
 {"error":{"code":"stable_code","message":"Plain-language detail.","requestId":"request-id"}}
 ```
 
-Authentication accepts exactly one credential. The isolated integration stack verifies `X-CAIL-Identity-JWT` with RS256/JWKS, exact issuer, and exact scalar Deploy audience. Ownership uses only its verified `subject`. A signed optional `operationalSubject` may identify user-attributed operational events; when absent, Deploy emits service-attributed events and does not derive or map from the ownership subject. The local component-test mode accepts only its explicit bearer map.
+Authentication accepts exactly one credential. The isolated integration stack verifies `X-CAIL-Identity-JWT` with RS256/JWKS, exact issuer, and exact scalar Deploy audience `cail:deploy`. Ownership uses only its verified `subject`. A signed optional `operationalSubject` may identify user-attributed operational events; when absent, Deploy emits service-attributed events and does not derive or map from the ownership subject. The local component-test mode accepts only its explicit bearer map and has no user operational identity.
 
 Clients propagate correlation through `X-CAIL-Request-Id`, which must be a UUID. Deploy returns that same value in errors and release operational events.
 

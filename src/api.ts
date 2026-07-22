@@ -247,7 +247,7 @@ async function startRelease(
 
   const releaseId = opaqueId("rel");
   const now = new Date().toISOString();
-  const logSubject = operationalLogSubject(env, subject, signedOperationalSubject);
+  const logSubject = operationalLogSubject(subject, signedOperationalSubject);
   const response = {
     projectId,
     releaseId,

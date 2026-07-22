@@ -6,6 +6,7 @@ import {
 } from "@cuny-ai-lab/cail-identity/testing";
 import { authenticate } from "../src/auth";
 import type { Env } from "../src/env";
+import { operationalLogSubject } from "../src/operational-events";
 
 const audience = "https://deploy.integration.invalid";
 
@@ -14,6 +15,16 @@ function env(overrides: Partial<Env>): Env {
 }
 
 describe("CAIL identity boundary", () => {
+  test("never maps an ownership subject into an operational subject", () => {
+    expect(operationalLogSubject(TEST_SUBJECTS.alice)).toBeUndefined();
+    expect(operationalLogSubject(TEST_SUBJECTS.alice, TEST_OPERATIONAL_SUBJECTS.alice)).toBe(
+      TEST_OPERATIONAL_SUBJECTS.alice,
+    );
+    expect(() =>
+      operationalLogSubject(TEST_SUBJECTS.alice, TEST_SUBJECTS.alice.replace(/^cail-/, "cail-v1-")),
+    ).toThrow("distinct operational pseudonym");
+  });
+
   test("accepts one offline RS256 token at the exact issuer and audience", async () => {
     const issuer = await createTestIdentityIssuer({
       issuer: "https://identity.integration.invalid",
