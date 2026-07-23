@@ -19,6 +19,7 @@ import {
 } from "./domain/digests";
 import { ApiError } from "./domain/errors";
 import type { Env } from "./env";
+import type { ReleaseWorkflowParams } from "./env";
 import {
   emitReleaseAdmission,
   emitReleaseTerminal,
@@ -38,6 +39,69 @@ const ARTIFACT_MEDIA_TYPE = "application/vnd.cuny.kale.artifact.v1+json";
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
 export const RELEASE_INSERT_SQL = `INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, rollback_of_release_id, operational_subject, request_id, admitted_at, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`;
+
+function workflowInstanceNotFound(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.name === "WorkflowInstanceNotFoundError" ||
+    /(?:workflow )?instance(?: with id [^ ]+)? (?:was )?(?:not found|does not exist)/iu.test(
+      error.message,
+    )
+  );
+}
+
+export async function ensureWorkflowInstance(
+  env: Pick<Env, "RELEASE_WORKFLOW">,
+  id: string,
+  params: ReleaseWorkflowParams,
+): Promise<void> {
+  try {
+    await env.RELEASE_WORKFLOW.get(id);
+    return;
+  } catch (cause) {
+    if (!workflowInstanceNotFound(cause)) {
+      throw new ApiError(
+        503,
+        "workflow_lookup_failed",
+        "The release Workflow state could not be read.",
+        { cause },
+      );
+    }
+  }
+
+  try {
+    await env.RELEASE_WORKFLOW.create({ id, params });
+    return;
+  } catch (createCause) {
+    try {
+      await env.RELEASE_WORKFLOW.get(id);
+      return;
+    } catch (recoveryCause) {
+      throw new ApiError(
+        503,
+        "workflow_start_failed",
+        "The release was saved but its Workflow could not be confirmed.",
+        {
+          cause: new AggregateError(
+            [createCause, recoveryCause],
+            "Workflow creation and recovery both failed.",
+          ),
+        },
+      );
+    }
+  }
+}
+
+function workflowParams(release: ReleaseRow): ReleaseWorkflowParams {
+  return {
+    projectId: release.project_id,
+    releaseId: release.release_id,
+    revisionId: release.revision_id,
+    requestId: release.request_id,
+    ...(release.operational_subject ? { logSubject: release.operational_subject } : {}),
+    admittedAt: release.admitted_at,
+  };
+}
 
 function requiredIdempotencyKey(request: Request): string {
   const key = request.headers.get("Idempotency-Key");
@@ -246,7 +310,30 @@ async function startRelease(
   const requestDigest = await sha256Hex(canonicalJson(requestShape));
   const operation = rollbackOfReleaseId ? `rollback:${rollbackOfReleaseId}` : "create_release";
   const replay = await idempotentResponse(env, projectId, operation, key, requestDigest);
-  if (replay) return Response.json(replay, { status: 200 });
+  if (replay) {
+    const replayReleaseId =
+      typeof replay === "object" &&
+      replay !== null &&
+      "releaseId" in replay &&
+      typeof replay.releaseId === "string" &&
+      RELEASE_PATTERN.test(replay.releaseId)
+        ? replay.releaseId
+        : null;
+    if (!replayReleaseId) {
+      throw new ApiError(
+        500,
+        "idempotency_record_invalid",
+        "The stored release replay record is invalid.",
+      );
+    }
+    const replayRelease = await requireRelease(env, projectId, replayReleaseId);
+    await ensureWorkflowInstance(
+      env,
+      replayRelease.workflow_instance_id,
+      workflowParams(replayRelease),
+    );
+    return Response.json(replay, { status: 200 });
+  }
 
   const releaseId = opaqueId("rel");
   const now = new Date().toISOString();
@@ -286,9 +373,13 @@ async function startRelease(
     ).bind(projectId, operation, key, requestDigest, JSON.stringify(response), now),
   ]);
   emitReleaseAdmission(env, releaseId, requestId, logSubject);
-  await env.RELEASE_WORKFLOW.create({
-    id: releaseId,
-    params: { projectId, releaseId, revisionId, requestId, logSubject, admittedAt: now },
+  await ensureWorkflowInstance(env, releaseId, {
+    projectId,
+    releaseId,
+    revisionId,
+    requestId,
+    ...(logSubject ? { logSubject } : {}),
+    admittedAt: now,
   });
   return Response.json(response, { status: 202 });
 }

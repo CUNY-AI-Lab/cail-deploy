@@ -13,6 +13,7 @@
     "RUN_ID": "local-test",
     "WFP_ACCOUNT_ID": "replace-with-isolated-account-id",
     "WFP_NAMESPACE": "replace-with-run-scoped-namespace",
+    "WFP_PUBLISH_TIMEOUT_MS": "30000",
     "TEST_PRINCIPALS_JSON": "{\"test-owner-a\":\"cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"test-owner-b\":\"cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"
   },
   "d1_databases": [

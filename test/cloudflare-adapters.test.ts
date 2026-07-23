@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { publicationName, publishWorker } from "../src/adapters/cloudflare/wfp";
+import {
+  publicationName,
+  publicationTimeoutMs,
+  publishWorker,
+} from "../src/adapters/cloudflare/wfp";
 import { sendApprovalEvent } from "../src/api";
 import type { Env } from "../src/env";
 import type { ReleaseRow } from "../src/storage";
@@ -10,6 +14,67 @@ afterEach(() => {
 });
 
 describe("Cloudflare volatile boundaries", () => {
+  test("WfP publication timeout configuration is bounded", () => {
+    expect(publicationTimeoutMs(undefined)).toBe(30_000);
+    expect(publicationTimeoutMs("1000")).toBe(1_000);
+    expect(() => publicationTimeoutMs("999")).toThrow(
+      "WfP publication timeout must be an integer between 1000 and 120000 milliseconds.",
+    );
+    expect(() => publicationTimeoutMs("120001")).toThrow(
+      "WfP publication timeout must be an integer between 1000 and 120000 milliseconds.",
+    );
+    expect(() => publicationTimeoutMs("not-a-number")).toThrow(
+      "WfP publication timeout must be an integer between 1000 and 120000 milliseconds.",
+    );
+  });
+
+  test("a hanging WfP PUT becomes an ambiguous publication at the configured deadline", async () => {
+    globalThis.fetch = mock(
+      async (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) {
+            reject(new Error("missing timeout signal"));
+            return;
+          }
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    ) as typeof fetch;
+
+    let captured: unknown;
+    try {
+      await publishWorker(
+        {
+          CLOUDFLARE_API_TOKEN: "test-only",
+          WFP_ACCOUNT_ID: "account",
+          WFP_NAMESPACE: "namespace",
+          WFP_PUBLISH_TIMEOUT_MS: "1000",
+          RUN_ID: "ki-20260722123456-abcdef12",
+        } as Env,
+        "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        `rev_sha256_${"b".repeat(64)}`,
+        {
+          mainModule: "index.js",
+          modules: { "index.js": "export default {}" },
+          compatibilityDate: "2026-07-22",
+          compatibilityFlags: [],
+        },
+      );
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(captured).toMatchObject({
+      status: 502,
+      code: "publication_ambiguous",
+      message: "Workers for Platforms did not return a publication result.",
+    });
+    expect((captured as Error).cause).toBeInstanceOf(DOMException);
+    expect(((captured as Error).cause as DOMException).name).toBe("TimeoutError");
+  });
+
   test("WfP names are run-scoped and 4xx is deterministic rejection", async () => {
     expect(
       publicationName("ki-20260722123456-abcdef12", "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),

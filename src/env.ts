@@ -77,6 +77,7 @@ export interface Env {
   RUN_ID: string;
   WFP_ACCOUNT_ID: string;
   WFP_NAMESPACE: string;
+  WFP_PUBLISH_TIMEOUT_MS?: string;
   CLOUDFLARE_API_TOKEN?: string;
   ALLOW_PRODUCTION_TARGET?: string;
 }

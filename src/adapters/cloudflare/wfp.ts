@@ -2,8 +2,28 @@ import type { PreparedWorker } from "./worker-bundler";
 import { ApiError } from "../../domain/errors";
 import type { Env } from "../../env";
 
+const DEFAULT_PUBLISH_TIMEOUT_MS = 30_000;
+const MIN_PUBLISH_TIMEOUT_MS = 1_000;
+const MAX_PUBLISH_TIMEOUT_MS = 120_000;
+
 export function publicationName(runId: string, projectId: string): string {
   return `kp-${runId}-${projectId.slice(4, 16)}`;
+}
+
+export function publicationTimeoutMs(raw: string | undefined): number {
+  const value = raw === undefined ? DEFAULT_PUBLISH_TIMEOUT_MS : Number(raw);
+  if (
+    !Number.isSafeInteger(value) ||
+    value < MIN_PUBLISH_TIMEOUT_MS ||
+    value > MAX_PUBLISH_TIMEOUT_MS
+  ) {
+    throw new ApiError(
+      503,
+      "publisher_configuration_error",
+      `WfP publication timeout must be an integer between ${MIN_PUBLISH_TIMEOUT_MS} and ${MAX_PUBLISH_TIMEOUT_MS} milliseconds.`,
+    );
+  }
+  return value;
 }
 
 export async function publishWorker(
@@ -19,6 +39,7 @@ export async function publishWorker(
       "The isolated publisher credential is not configured.",
     );
   }
+  const timeout = publicationTimeoutMs(env.WFP_PUBLISH_TIMEOUT_MS);
   const name = publicationName(env.RUN_ID, projectId);
   const metadata = {
     main_module: prepared.mainModule,
@@ -39,13 +60,15 @@ export async function publishWorker(
         method: "PUT",
         headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}` },
         body: form,
+        signal: AbortSignal.timeout(timeout),
       },
     );
-  } catch {
+  } catch (cause) {
     throw new ApiError(
       502,
       "publication_ambiguous",
       "Workers for Platforms did not return a publication result.",
+      { cause },
     );
   }
   if (!response.ok) {
