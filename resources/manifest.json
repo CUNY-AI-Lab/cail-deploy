@@ -9,7 +9,7 @@
       "kind": "cloudflare-worker",
       "name": "ki-20260722223510-ecade68e-deploy",
       "id": "4ebb0971-b96a-4574-953c-3a556f5ce0bb",
-      "purpose": "Workers.dev-only Kale release API, OAuth MCP surface, and Workflow host at accepted source e332fcc4b2a1e0a38ef50404314de91be3533840; ID is active composite Worker version 42 after the authorized identity-only common-issuer refresh at 2026-07-23T02:41:08.674886Z; all 18 binding names and types were preserved; completed teardown of ki-20260722223510-ecade68e-workbench is a prerequisite to Worker deletion",
+      "purpose": "Deleted Workers.dev-only Kale release API, OAuth MCP surface, and Workflow host at accepted source e332fcc4b2a1e0a38ef50404314de91be3533840; final composite was Worker version 42; Wrangler deletion completed 2026-07-23T07:49:14.169Z after the Workbench prerequisite and both secret deletions, and exact status returned code 10007",
       "component": "deploy",
       "createdAt": "2026-07-22T22:45:37.620Z",
       "endpoint": "https://ki-20260722223510-ecade68e-deploy.ailab-452.workers.dev",
@@ -27,13 +27,13 @@
       "teardownCommand": "CLOUDFLARE_ACCOUNT_ID=452c33847cf5cb1e46f391fca32fd1b5 bunx wrangler delete ki-20260722223510-ecade68e-deploy --force",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/workers/scripts/ki-20260722223510-ecade68e-deploy/settings' 'CLOUDFLARE_API_TOKEN'",
       "deletionOrder": 2,
-      "state": "retained-for-integration"
+      "state": "deleted"
     },
     {
       "kind": "cloudflare-worker-secret-binding",
       "name": "ki-20260722223510-ecade68e-deploy:CAIL_IDENTITY_JWKS",
       "id": "CAIL_IDENTITY_JWKS",
-      "purpose": "Run-scoped offline CAIL identity JWKS, rotated in place at active Worker version 4ebb0971-b96a-4574-953c-3a556f5ce0bb for issuer https://ki-20260722223510-ecade68e.identity.invalid/cail-sso and public JWKS SHA-256 d961bd2e5ba764b9bade72e5847fa9c309d7ef6b3bf0db7c5e8eaa24da7e0bc5; binding name only and secret value omitted",
+      "purpose": "Deleted run-scoped offline CAIL identity JWKS binding; Wrangler deletion completed 2026-07-23T07:34:07.626Z and the exact Worker secret inventory was empty at 2026-07-23T07:34:42.124Z; binding name only and secret value omitted",
       "component": "deploy",
       "createdAt": "2026-07-22T23:38:55.109Z",
       "endpoint": null,
@@ -42,13 +42,13 @@
       "teardownCommand": "bunx wrangler secret delete CAIL_IDENTITY_JWKS --config wrangler.integration.jsonc",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/workers/scripts/ki-20260722223510-ecade68e-deploy/secrets/CAIL_IDENTITY_JWKS?url_encoded=true' 'CLOUDFLARE_API_TOKEN'",
       "deletionOrder": 0,
-      "state": "retained-for-integration"
+      "state": "deleted"
     },
     {
       "kind": "cloudflare-worker-secret-binding",
       "name": "ki-20260722223510-ecade68e-deploy:CLOUDFLARE_API_TOKEN",
       "id": "CLOUDFLARE_API_TOKEN",
-      "purpose": "Integration-owned Workers Scripts Write credential used only by the WfP publisher; binding name only, secret value omitted",
+      "purpose": "Deleted Worker binding for the integration-owned Workers Scripts Write publisher credential; Wrangler deletion completed 2026-07-23T07:34:35.302Z and the exact Worker secret inventory was empty at 2026-07-23T07:34:42.124Z; binding name only and secret value omitted",
       "component": "deploy",
       "createdAt": "2026-07-22T23:12:39.846Z",
       "endpoint": null,
@@ -61,13 +61,13 @@
       "teardownCommand": "bunx wrangler secret delete CLOUDFLARE_API_TOKEN --config wrangler.integration.jsonc",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/workers/scripts/ki-20260722223510-ecade68e-deploy/secrets/CLOUDFLARE_API_TOKEN?url_encoded=true' 'CLOUDFLARE_API_TOKEN'",
       "deletionOrder": 0,
-      "state": "retained-for-integration"
+      "state": "deleted"
     },
     {
       "kind": "cloudflare-api-token",
       "name": "ki-20260722223510-ecade68e-deploy-publisher",
       "id": "fee5a5c7df87b7a88ef6e001e673fdcf",
-      "purpose": "Newly created for this integration run through the Cloudflare Dashboard; Workers Scripts Write only on account 452c33847cf5cb1e46f391fca32fd1b5, no production resource reuse, expires 2026-07-29; Integration accepted the recorded date-level creation and expiry evidence without another provider lookup",
+      "purpose": "Deleted integration-owned publisher token, originally Workers Scripts Write only on account 452c33847cf5cb1e46f391fca32fd1b5; the authenticated dashboard exact-row deletion completed between 2026-07-23T07:49:23.352Z and 2026-07-23T07:52:10.307Z, and fresh inventory plus direct exact-ID detail proved absence without viewing the token value",
       "component": "deploy",
       "createdAt": "2026-07-22T23:09:00.000Z",
       "endpoint": null,
@@ -76,13 +76,13 @@
       "teardownCommand": "curl --fail-with-body --request DELETE https://api.cloudflare.com/client/v4/user/tokens/fee5a5c7df87b7a88ef6e001e673fdcf --header 'Authorization: Bearer <fresh API Tokens Write credential omitted>'",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/user/tokens/fee5a5c7df87b7a88ef6e001e673fdcf' 'CF_API_TOKENS_READ_TOKEN'",
       "deletionOrder": 2,
-      "state": "retained-for-integration"
+      "state": "deleted"
     },
     {
       "kind": "cloudflare-kv-namespace",
       "name": "ki-20260722223510-ecade68e-deploy-oauth",
       "id": "3a7ad73fa37a4d0a97df3c6eec9e4457",
-      "purpose": "Test-only OAuth dynamic-client, grant, and token storage bound to the accepted public MCP slice; successful canary retained six client, four grant, and four token keys, including four harmless pre-canary DCR-only keys",
+      "purpose": "Deleted test-only OAuth dynamic-client, grant, and token storage; Wrangler exact-ID deletion completed 2026-07-23T07:52:10.307Z and authenticated paginated inventory plus direct exact-ID dashboard detail proved absence",
       "component": "deploy",
       "createdAt": "2026-07-23T00:24:57.000Z",
       "endpoint": null,
@@ -91,13 +91,13 @@
       "teardownCommand": "CLOUDFLARE_ACCOUNT_ID=452c33847cf5cb1e46f391fca32fd1b5 bunx wrangler kv namespace delete --namespace-id 3a7ad73fa37a4d0a97df3c6eec9e4457 --skip-confirmation --config wrangler.integration.jsonc",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/storage/kv/namespaces/3a7ad73fa37a4d0a97df3c6eec9e4457' 'CLOUDFLARE_API_TOKEN'",
       "deletionOrder": 3,
-      "state": "retained-for-integration"
+      "state": "deleted"
     },
     {
       "kind": "cloudflare-workflow",
       "name": "ki-20260722223510-ecade68e-deploy-workflow",
       "id": "ki-20260722223510-ecade68e-deploy-workflow",
-      "purpose": "Durable validation, preparation, approval, publication, and reconciliation; accepted component-owned source release completed on Workflow version 96ff3fe0-b094-4ceb-b6fc-27bd7e8b090c",
+      "purpose": "Deleted durable validation, preparation, approval, publication, and reconciliation Workflow; deletion completed 2026-07-23T07:52:18.471Z and exact describe returned not-found code 10200",
       "component": "deploy",
       "createdAt": "2026-07-22T22:45:42.000Z",
       "endpoint": null,
@@ -106,13 +106,13 @@
       "teardownCommand": "CLOUDFLARE_ACCOUNT_ID=452c33847cf5cb1e46f391fca32fd1b5 bunx wrangler workflows delete ki-20260722223510-ecade68e-deploy-workflow",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/workflows/ki-20260722223510-ecade68e-deploy-workflow' 'CLOUDFLARE_API_TOKEN'",
       "deletionOrder": 3,
-      "state": "retained-for-integration"
+      "state": "deleted"
     },
     {
       "kind": "cloudflare-dispatch-worker",
       "name": "ki-20260722223510-ecade68e-deploy-wfp-script-68704fe50228",
       "id": "kp-ki-20260722223510-ecade68e-68704fe50228",
-      "purpose": "Run-scoped WfP publication for project prj_68704fe5022845bfac3fb4b68c53df61; rollback rewrote the same target with the same retained bytes",
+      "purpose": "Deleted run-scoped WfP publication for project prj_68704fe5022845bfac3fb4b68c53df61; dashboard deletion was accepted, a delayed exact GET temporarily returned 200, and the later official exact DELETE returned structured 404 code 10007, proving the asynchronous deletion had completed",
       "component": "deploy",
       "createdAt": "2026-07-22T23:26:02.862Z",
       "endpoint": null,
@@ -121,13 +121,13 @@
       "teardownCommand": "bun -e 'const p=Bun.spawn([\"bunx\",\"wrangler\",\"auth\",\"token\"],{stdout:\"pipe\",stderr:\"pipe\"}); const token=(await new Response(p.stdout).text()).trim(); if(await p.exited) process.exit(1); const r=await fetch(\"https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/workers/dispatch/namespaces/ki-20260722223510-ecade68e-deploy-wfp/scripts/kp-ki-20260722223510-ecade68e-68704fe50228\",{method:\"DELETE\",headers:{Authorization:`Bearer ${token}`}}); if(!r.ok) process.exit(1)'",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/workers/dispatch/namespaces/ki-20260722223510-ecade68e-deploy-wfp/scripts/kp-ki-20260722223510-ecade68e-68704fe50228' 'CLOUDFLARE_API_TOKEN'",
       "deletionOrder": 1,
-      "state": "retained-for-integration"
+      "state": "deleted"
     },
     {
       "kind": "cloudflare-dispatch-namespace",
       "name": "ki-20260722223510-ecade68e-deploy-wfp",
       "id": "fc6d23f3-38f2-481b-8d45-0f55ce5e48cb",
-      "purpose": "Run-isolated Workers for Platforms publication target",
+      "purpose": "Deleted run-isolated Workers for Platforms publication namespace; Wrangler deletion completed 2026-07-23T07:52:45.946Z and exact get returned not-found code 100119",
       "component": "deploy",
       "createdAt": "2026-07-22T22:44:39.723Z",
       "endpoint": null,
@@ -136,13 +136,13 @@
       "teardownCommand": "CLOUDFLARE_ACCOUNT_ID=452c33847cf5cb1e46f391fca32fd1b5 bunx wrangler dispatch-namespace delete ki-20260722223510-ecade68e-deploy-wfp",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/workers/dispatch/namespaces/ki-20260722223510-ecade68e-deploy-wfp' 'CLOUDFLARE_API_TOKEN'",
       "deletionOrder": 4,
-      "state": "retained-for-integration"
+      "state": "deleted"
     },
     {
       "kind": "cloudflare-r2-bucket",
       "name": "ki-20260722223510-ecade68e-deploy-r2",
       "id": "ki-20260722223510-ecade68e-deploy-r2",
-      "purpose": "Immutable revision and retained prepared Worker bytes; bucket must be emptied and the empty operation allowed to complete before deletion",
+      "purpose": "Deleted immutable revision/prepared-byte bucket; the exact strongly consistent object listing was empty after deleting prepared/ and revisions/, Cloudflare accepted deletion despite lagging object-count metrics, and exact bucket info returned not-found code 10006",
       "component": "deploy",
       "createdAt": "2026-07-22T22:44:38.852Z",
       "endpoint": null,
@@ -151,13 +151,13 @@
       "teardownCommand": "Cloudflare Dashboard R2: empty bucket ki-20260722223510-ecade68e-deploy-r2 and wait for completion; then CLOUDFLARE_ACCOUNT_ID=452c33847cf5cb1e46f391fca32fd1b5 bunx wrangler r2 bucket delete ki-20260722223510-ecade68e-deploy-r2",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/r2/buckets/ki-20260722223510-ecade68e-deploy-r2' 'CLOUDFLARE_API_TOKEN'",
       "deletionOrder": 5,
-      "state": "retained-for-integration"
+      "state": "deleted"
     },
     {
       "kind": "cloudflare-d1-database",
       "name": "ki-20260722223510-ecade68e-deploy-d1",
       "id": "3a430775-f558-4fc9-b376-28862f182033",
-      "purpose": "Authoritative test project ownership and release history; canonical 0001/0002 ledger plus seven successful-canary consent-nonce rows (five consumed, two unconsumed)",
+      "purpose": "Deleted authoritative test project ownership and release history database; Wrangler deletion completed last at 2026-07-23T07:56:01.785Z and exact D1 info returned not-found code 7404",
       "component": "deploy",
       "createdAt": "2026-07-22T22:44:37.748Z",
       "endpoint": null,
@@ -166,7 +166,7 @@
       "teardownCommand": "CLOUDFLARE_ACCOUNT_ID=452c33847cf5cb1e46f391fca32fd1b5 bunx wrangler d1 delete ki-20260722223510-ecade68e-deploy-d1 --skip-confirmation",
       "verifyDeletedCommand": "bun -e 'const [url,envName]=Bun.argv.slice(1); const token=process.env[envName]; if(!token) throw new Error(`missing_${envName}`); const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)}); const body=await response.json().catch(()=>null); const errors=body?.errors; if(response.status!==404||body?.success!==false||!Array.isArray(errors)||errors.length===0||!errors.every((error)=>Number.isInteger(error?.code)&&typeof error?.message===\"string\")) process.exit(1)' 'https://api.cloudflare.com/client/v4/accounts/452c33847cf5cb1e46f391fca32fd1b5/d1/database/3a430775-f558-4fc9-b376-28862f182033' 'CLOUDFLARE_API_TOKEN'",
       "deletionOrder": 6,
-      "state": "retained-for-integration"
+      "state": "deleted"
     }
   ]
 }
