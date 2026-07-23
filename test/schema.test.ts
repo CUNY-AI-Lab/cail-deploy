@@ -2,6 +2,28 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { RELEASE_INSERT_SQL } from "../src/api";
 import { CONSUME_CONSENT_NONCE_SQL } from "../src/oauth-consent";
+import { appendTerminalStatus } from "../src/storage";
+
+class SqliteD1 {
+  constructor(private readonly db: Database) {}
+
+  prepare(query: string) {
+    return {
+      bind: (...values: unknown[]) => ({ query, values }),
+    };
+  }
+
+  async batch(
+    statements: Array<{ query: string; values: unknown[] }>,
+  ): Promise<Array<{ meta: { changes: number } }>> {
+    return this.db.transaction(() =>
+      statements.map(({ query, values }) => {
+        const result = this.db.prepare(query).run(...values);
+        return { meta: { changes: result.changes } };
+      }),
+    )();
+  }
+}
 
 describe("durable release invariants", () => {
   test("production release insert matches the durable schema", async () => {
@@ -47,7 +69,7 @@ describe("durable release invariants", () => {
     });
   });
 
-  test("workflow terminal replay records one terminal event", async () => {
+  test("workflow terminal replay keeps the release row and terminal event in agreement", async () => {
     const db = new Database(":memory:");
     db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
     const now = new Date().toISOString();
@@ -80,22 +102,23 @@ describe("durable release invariants", () => {
         now,
       ],
     );
-    const insert =
-      "INSERT OR IGNORE INTO release_events (release_id, sequence, type, occurred_at, detail_json) VALUES (?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1), 'release.failed', ?, '{}')";
-    db.run(insert, [
-      "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      now,
-    ]);
-    db.run(insert, [
-      "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      now,
-    ]);
-    const count = db
-      .query("SELECT COUNT(*) AS count FROM release_events WHERE type = 'release.failed'")
-      .get() as { count: number };
-    expect(count.count).toBe(1);
+    const env = {
+      DB: new SqliteD1(db),
+    } as unknown as Parameters<typeof appendTerminalStatus>[0];
+    const releaseId = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    expect(await appendTerminalStatus(env, releaseId, "live", "release.live")).toBe(true);
+    expect(await appendTerminalStatus(env, releaseId, "live", "release.live")).toBe(false);
+    expect(await appendTerminalStatus(env, releaseId, "failed", "release.failed")).toBe(false);
+
+    expect(db.query("SELECT status FROM releases WHERE release_id = ?").get(releaseId)).toEqual({
+      status: "live",
+    });
+    expect(
+      db
+        .query("SELECT type FROM release_events WHERE release_id = ? ORDER BY sequence")
+        .all(releaseId),
+    ).toEqual([{ type: "release.live" }]);
   });
 
   test("approval compare-and-set accepts only one idempotency contender", async () => {

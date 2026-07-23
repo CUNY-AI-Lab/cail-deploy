@@ -107,17 +107,20 @@ export async function appendTerminalStatus(
 ): Promise<boolean> {
   const now = new Date().toISOString();
   const results = await env.DB.batch([
-    env.DB.prepare("UPDATE releases SET status = ?, updated_at = ? WHERE release_id = ?").bind(
-      status,
-      now,
-      releaseId,
-    ),
     env.DB.prepare(
       `INSERT OR IGNORE INTO release_events (release_id, sequence, type, occurred_at, detail_json)
          VALUES (?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1), ?, ?, ?)`,
     ).bind(releaseId, releaseId, type, now, JSON.stringify(detail)),
+    env.DB.prepare(
+      `UPDATE releases SET status = ?, updated_at = ?
+       WHERE release_id = ?
+         AND EXISTS (
+           SELECT 1 FROM release_events
+           WHERE release_id = ? AND type = ?
+         )`,
+    ).bind(status, now, releaseId, releaseId, type),
   ]);
-  return (results[1]?.meta.changes ?? 0) === 1;
+  return (results[0]?.meta.changes ?? 0) === 1;
 }
 
 export async function idempotentResponse(
