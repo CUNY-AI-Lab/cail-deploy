@@ -4,5 +4,12 @@
   "main": "test/workerd/worker-entry.ts",
   "compatibility_date": "2026-07-22",
   "compatibility_flags": ["nodejs_compat"],
-  "worker_loaders": [{ "binding": "LOADER" }]
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "workflows": [
+    {
+      "name": "kale-release-control-plane-admission-workerd-gate",
+      "binding": "RELEASE_WORKFLOW",
+      "class_name": "AdmissionWorkflow"
+    }
+  ]
 }

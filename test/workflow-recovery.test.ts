@@ -1,9 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import {
-  ensureWorkflowInstance,
-  handleApiForPrincipal,
-  WorkflowInstanceNotFoundError,
-} from "../src/api";
+import { ensureWorkflowInstance, handleApiForPrincipal } from "../src/api";
 import { apiErrorSnapshot } from "../src/domain/errors";
 import type { Env, ReleaseWorkflowParams, TestWorkflowBinding } from "../src/env";
 
@@ -22,13 +18,11 @@ const params: ReleaseWorkflowParams = {
   admittedAt: "2026-07-23T00:00:00.000Z",
 };
 
-function notFound(): Error {
-  return new WorkflowInstanceNotFoundError();
-}
-
 describe("release Workflow recovery", () => {
-  test("uses an existing deterministic instance without creating another", async () => {
-    const get = mock(async () => ({ id: releaseId }));
+  test("creates a genuinely missing deterministic instance exactly once", async () => {
+    const get = mock(async () => {
+      throw new Error("GET_MUST_NOT_RUN_AFTER_SUCCESSFUL_CREATE");
+    });
     const create = mock(async () => ({ id: releaseId }));
 
     await ensureWorkflowInstance(
@@ -37,14 +31,34 @@ describe("release Workflow recovery", () => {
       params,
     );
 
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith({ id: releaseId, params });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  test("recovers an existing deterministic instance after create rejects", async () => {
+    const duplicate = new Error("Workflow instance ID is already retained");
+    const create = mock(async () => {
+      throw duplicate;
+    });
+    const get = mock(async () => ({ id: releaseId }));
+
+    await ensureWorkflowInstance(
+      { RELEASE_WORKFLOW: { get, create } as unknown as TestWorkflowBinding },
+      releaseId,
+      params,
+    );
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith({ id: releaseId, params });
     expect(get).toHaveBeenCalledTimes(1);
-    expect(create).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledWith(releaseId);
   });
 
   test("recovers a lost create response by re-reading the deterministic ID", async () => {
     let exists = false;
     const get = mock(async () => {
-      if (!exists) throw notFound();
+      if (!exists) throw new Error("Workflow instance is not visible.");
       return { id: releaseId };
     });
     const lostResponse = new Error("workflow create response lost");
@@ -59,18 +73,13 @@ describe("release Workflow recovery", () => {
       params,
     );
 
-    expect(get).toHaveBeenCalledTimes(2);
+    expect(get).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledWith({ id: releaseId, params });
   });
 
   test("accepts a concurrent create race only after re-reading the instance", async () => {
-    let reads = 0;
-    const get = mock(async () => {
-      reads += 1;
-      if (reads === 1) throw notFound();
-      return { id: releaseId };
-    });
+    const get = mock(async () => ({ id: releaseId }));
     const duplicate = Object.assign(new Error("Workflow instance ID is already used"), {
       code: 409,
     });
@@ -84,57 +93,19 @@ describe("release Workflow recovery", () => {
       params,
     );
 
-    expect(get).toHaveBeenCalledTimes(2);
+    expect(get).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledTimes(1);
   });
 
-  test("does not treat an arbitrary lookup failure as absence", async () => {
-    const lookupFailure = new Error("Workflow binding transport failed");
-    const get = mock(async () => {
-      throw lookupFailure;
-    });
-    const create = mock(async () => ({ id: releaseId }));
-
-    await expect(
-      ensureWorkflowInstance(
-        {
-          RELEASE_WORKFLOW: {
-            get,
-            create,
-          } as unknown as TestWorkflowBinding,
-        },
-        releaseId,
-        params,
-      ),
-    ).rejects.toMatchObject({
-      status: 503,
-      code: "workflow_lookup_failed",
-      cause: lookupFailure,
-    });
-    expect(create).not.toHaveBeenCalled();
-  });
-
-  test("does not inspect or create after a hostile lookup rejection", async () => {
-    const privateSentinel = new Error("PRIVATE_WORKFLOW_LOOKUP_SENTINEL");
-    let traps = 0;
-    const lookupFailure = new Proxy(Object.create(null) as object, {
-      get() {
-        traps += 1;
-        throw privateSentinel;
-      },
-      getOwnPropertyDescriptor() {
-        traps += 1;
-        throw privateSentinel;
-      },
-      getPrototypeOf() {
-        traps += 1;
-        throw privateSentinel;
-      },
+  test("preserves arbitrary create and recovery failures without inspecting them", async () => {
+    const createFailure = new Error("Workflow create transport failed");
+    const recoveryFailure = new Error("Workflow lookup transport failed");
+    const create = mock(async () => {
+      throw createFailure;
     });
     const get = mock(async () => {
-      throw lookupFailure;
+      throw recoveryFailure;
     });
-    const create = mock(async () => ({ id: releaseId }));
 
     let captured: unknown;
     try {
@@ -154,50 +125,76 @@ describe("release Workflow recovery", () => {
 
     expect(apiErrorSnapshot(captured)).toEqual({
       status: 503,
-      code: "workflow_lookup_failed",
-      message: "The release Workflow state could not be read.",
+      code: "workflow_start_failed",
+      message: "The release was saved but its Workflow could not be confirmed.",
     });
-    expect((captured as Error).cause).toBe(lookupFailure);
-    expect(create).not.toHaveBeenCalled();
-    expect(traps).toBe(0);
+    const cause = (captured as Error).cause;
+    expect(cause).toBeInstanceOf(AggregateError);
+    expect((cause as AggregateError).errors).toEqual([createFailure, recoveryFailure]);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledTimes(1);
   });
 
-  test("recognizes owned absence without reading mutable error fields", async () => {
-    const missing = new WorkflowInstanceNotFoundError();
-    let accessorReads = 0;
-    for (const property of ["name", "message"]) {
-      Object.defineProperty(missing, property, {
-        configurable: true,
-        get() {
-          accessorReads += 1;
-          throw new Error(`PRIVATE_WORKFLOW_${property}_ACCESSOR`);
-        },
-      });
-    }
-    const get = mock(async () => {
-      throw missing;
+  test("does not inspect hostile create or recovery failures", async () => {
+    const createFailure = new Error("PRIVATE_WORKFLOW_CREATE_FAILURE");
+    const privateSentinel = new Error("PRIVATE_WORKFLOW_RECOVERY_SENTINEL");
+    let traps = 0;
+    const recoveryFailure = new Proxy(Object.create(null) as object, {
+      get() {
+        traps += 1;
+        throw privateSentinel;
+      },
+      getOwnPropertyDescriptor() {
+        traps += 1;
+        throw privateSentinel;
+      },
+      getPrototypeOf() {
+        traps += 1;
+        throw privateSentinel;
+      },
     });
-    const create = mock(async () => ({ id: releaseId }));
+    const create = mock(async () => {
+      throw createFailure;
+    });
+    const get = mock(async () => {
+      throw recoveryFailure;
+    });
 
-    await ensureWorkflowInstance(
-      { RELEASE_WORKFLOW: { get, create } as unknown as TestWorkflowBinding },
-      releaseId,
-      params,
-    );
+    let captured: unknown;
+    try {
+      await ensureWorkflowInstance(
+        {
+          RELEASE_WORKFLOW: {
+            get,
+            create,
+          } as unknown as TestWorkflowBinding,
+        },
+        releaseId,
+        params,
+      );
+    } catch (error) {
+      captured = error;
+    }
 
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(apiErrorSnapshot(captured)).toEqual({
+      status: 503,
+      code: "workflow_start_failed",
+      message: "The release was saved but its Workflow could not be confirmed.",
+    });
+    const cause = (captured as Error).cause as AggregateError;
+    expect(cause).toBeInstanceOf(AggregateError);
+    expect(cause.errors[0]).toBe(createFailure);
+    expect(cause.errors[1]).toBe(recoveryFailure);
     expect(create).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith({ id: releaseId, params });
-    expect(accessorReads).toBe(0);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(traps).toBe(0);
   });
 
   test("preserves create and recovery causes when the instance remains absent", async () => {
     const createFailure = new Error("Workflow create failed");
     const recoveryFailure = new Error("Workflow instance still not found");
-    let reads = 0;
     const get = mock(async () => {
-      reads += 1;
-      throw reads === 1 ? notFound() : recoveryFailure;
+      throw recoveryFailure;
     });
     const create = mock(async () => {
       throw createFailure;
@@ -322,9 +319,7 @@ describe("release Workflow recovery", () => {
       ).join("");
     }
 
-    const get = mock(async () => {
-      throw notFound();
-    });
+    const get = mock(async () => ({ id: releaseId }));
     const create = mock(async () => ({ id: releaseId }));
     const env = {
       DB: {

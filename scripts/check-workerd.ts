@@ -27,12 +27,23 @@ try {
       const response = await fetch(`http://127.0.0.1:${port}/`);
       if (!response.ok)
         throw new Error(`workerd returned ${response.status}: ${await response.text()}`);
-      const result = (await response.json()) as { mainModule?: string; moduleCount?: number };
-      if (!result.mainModule || !result.moduleCount) {
-        throw new Error("workerd did not return prepared Worker modules.");
+      const result = (await response.json()) as {
+        mainModule?: string;
+        moduleCount?: number;
+        workflowId?: string;
+        workflowStatus?: string;
+      };
+      if (
+        !result.mainModule ||
+        !result.moduleCount ||
+        result.workflowId !== "workflow-admission-workerd-gate-v1" ||
+        !result.workflowStatus ||
+        result.workflowStatus === "unknown"
+      ) {
+        throw new Error("workerd did not return prepared modules and one deterministic Workflow.");
       }
       console.log(
-        `Worker Bundler workerd gate passed: ${result.mainModule}, ${result.moduleCount} module(s)`,
+        `Workerd gates passed: ${result.mainModule}, ${result.moduleCount} module(s), Workflow ${result.workflowId} ${result.workflowStatus}`,
       );
       lastError = undefined;
       break;

@@ -59,38 +59,11 @@ export function previewTimeoutMs(raw: string | undefined): number {
   return value;
 }
 
-const workflowInstanceNotFoundErrors = new WeakSet<object>();
-
-export class WorkflowInstanceNotFoundError extends Error {
-  constructor() {
-    super("The Workflow instance does not exist.");
-    workflowInstanceNotFoundErrors.add(this);
-  }
-}
-
-function workflowInstanceNotFound(error: unknown): boolean {
-  return workflowInstanceNotFoundErrors.has(error as object);
-}
-
 export async function ensureWorkflowInstance(
   env: Pick<Env, "RELEASE_WORKFLOW">,
   id: string,
   params: ReleaseWorkflowParams,
 ): Promise<void> {
-  try {
-    await env.RELEASE_WORKFLOW.get(id);
-    return;
-  } catch (cause) {
-    if (!workflowInstanceNotFound(cause)) {
-      throw new ApiError(
-        503,
-        "workflow_lookup_failed",
-        "The release Workflow state could not be read.",
-        { cause },
-      );
-    }
-  }
-
   try {
     await env.RELEASE_WORKFLOW.create({ id, params });
     return;
