@@ -1,3 +1,16 @@
+export interface ApiErrorSnapshot {
+  readonly status: number;
+  readonly code: string;
+  readonly message: string;
+}
+
+const apiErrorSnapshots = new WeakMap<object, ApiErrorSnapshot>();
+const internalErrorSnapshot: ApiErrorSnapshot = Object.freeze({
+  status: 500,
+  code: "internal_error",
+  message: "The request could not be completed.",
+});
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -7,14 +20,23 @@ export class ApiError extends Error {
   ) {
     super(message, options);
     this.name = "ApiError";
+    apiErrorSnapshots.set(
+      this,
+      Object.freeze({
+        status,
+        code,
+        message,
+      }),
+    );
   }
 }
 
+export function apiErrorSnapshot(error: unknown): ApiErrorSnapshot | undefined {
+  return apiErrorSnapshots.get(error as object);
+}
+
 export function errorResponse(error: unknown, requestId: string): Response {
-  const apiError =
-    error instanceof ApiError
-      ? error
-      : new ApiError(500, "internal_error", "The request could not be completed.");
+  const apiError = apiErrorSnapshot(error) ?? internalErrorSnapshot;
   return Response.json(
     { error: { code: apiError.code, message: apiError.message, requestId } },
     { status: apiError.status },

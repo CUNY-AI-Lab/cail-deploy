@@ -1,9 +1,9 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
-import { prepareAndSmokeWorker, type PreparedWorker } from "./adapters/cloudflare/worker-bundler";
 import { publishWorker } from "./adapters/cloudflare/wfp";
-import { artifactSchema, type Artifact } from "./domain/contracts";
+import { type PreparedWorker, prepareAndSmokeWorker } from "./adapters/cloudflare/worker-bundler";
+import { type Artifact, artifactSchema } from "./domain/contracts";
 import { canonicalJson, sha256Hex } from "./domain/digests";
-import { ApiError } from "./domain/errors";
+import { ApiError, apiErrorSnapshot } from "./domain/errors";
 import type { Env, ReleaseWorkflowParams } from "./env";
 import { emitReleaseTerminal } from "./operational-events";
 import { appendReleaseStatus, appendTerminalStatus, getRevision, requireRelease } from "./storage";
@@ -158,7 +158,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
         },
       );
     } catch (error) {
-      if (error instanceof ApiError && error.code === "publication_ambiguous") {
+      if (apiErrorSnapshot(error)?.code === "publication_ambiguous") {
         await step.do("record ambiguous publication", () =>
           appendReleaseStatus(this.env, releaseId, "reconciling", "release.reconciling", {
             code: "publication_ambiguous",

@@ -1,6 +1,6 @@
 import { authenticate } from "./auth";
 import { canonicalJson, sha256Hex } from "./domain/digests";
-import { ApiError } from "./domain/errors";
+import { ApiError, apiErrorSnapshot } from "./domain/errors";
 import type { Env, OAuthAuthorizationRequest, OAuthHelpersLike } from "./env";
 import { OAUTH_REQUIRED_SCOPE } from "./oauth-principal";
 
@@ -44,7 +44,7 @@ async function parseAuthorizationRequest(
   try {
     return requireAuthorizationRequest(await helpers.parseAuthRequest(request), env);
   } catch (error) {
-    if (error instanceof ApiError) throw error;
+    if (apiErrorSnapshot(error)) throw error;
     throw new ApiError(
       400,
       "invalid_authorization_request",

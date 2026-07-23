@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { ARTIFACT_MEDIA_TYPE, handleApiForPrincipal, MAX_ARTIFACT_BYTES } from "./api";
 import type { Principal } from "./auth";
 import {
@@ -8,9 +9,8 @@ import {
   rollbackSchema,
 } from "./domain/contracts";
 import { parseContentDigest } from "./domain/digests";
-import { ApiError, errorResponse } from "./domain/errors";
+import { ApiError, apiErrorSnapshot, errorResponse } from "./domain/errors";
 import type { Env } from "./env";
-import { z } from "zod";
 
 const idempotencyKeySchema = z
   .string()
@@ -316,7 +316,7 @@ export async function handleMcpWithPrincipal(
       throw new ApiError(404, "mcp_tool_not_found", "The MCP tool was not found.");
     }
   } catch (error) {
-    if (!(error instanceof ApiError)) throw error;
+    if (!apiErrorSnapshot(error)) throw error;
     return mcpToolResult(message.id, errorResponse(error, requestId), requestId);
   }
   let response: Response;

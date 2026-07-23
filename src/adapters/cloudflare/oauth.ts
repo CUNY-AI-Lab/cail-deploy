@@ -1,5 +1,5 @@
-import { OAuthProvider, type OAuthProviderOptions } from "@cloudflare/workers-oauth-provider";
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { OAuthProvider, type OAuthProviderOptions } from "@cloudflare/workers-oauth-provider";
 import { ApiError, errorResponse } from "../../domain/errors";
 import type { Env, OAuthHelpersLike } from "../../env";
 import { workerHandler } from "../../handler";
@@ -32,19 +32,6 @@ function withRequestId(response: Response, requestId: string): Response {
   });
 }
 
-function invalidRequestIdResponse(requestId: string): Response {
-  return Response.json(
-    {
-      error: {
-        code: "invalid_request_id",
-        message: "X-CAIL-Request-Id must be a UUID.",
-        requestId,
-      },
-    },
-    { status: 400 },
-  );
-}
-
 class McpOAuthApiHandler extends WorkerEntrypoint<Env, OAuthPrincipalProps> {
   override async fetch(request: Request): Promise<Response> {
     let requestId: string = crypto.randomUUID();
@@ -69,9 +56,6 @@ class McpOAuthApiHandler extends WorkerEntrypoint<Env, OAuthPrincipalProps> {
         requestId,
       );
     } catch (error) {
-      if (error instanceof TypeError && error.message.startsWith("X-CAIL-Request-Id")) {
-        return withRequestId(invalidRequestIdResponse(requestId), requestId);
-      }
       return withRequestId(errorResponse(error, requestId), requestId);
     }
   }
@@ -92,9 +76,6 @@ const oauthDefaultHandler = {
           requestId,
         );
       } catch (error) {
-        if (error instanceof TypeError && error.message.startsWith("X-CAIL-Request-Id")) {
-          return withRequestId(invalidRequestIdResponse(requestId), requestId);
-        }
         return withRequestId(errorResponse(error, requestId), requestId);
       }
     }
@@ -155,9 +136,6 @@ export const oauthWorkerHandler = {
       const options = createOAuthProviderOptions(env);
       return await new OAuthProvider<Env>(options).fetch(request, env, executionContext);
     } catch (error) {
-      if (error instanceof TypeError && error.message.startsWith("X-CAIL-Request-Id")) {
-        return invalidRequestIdResponse(requestId);
-      }
       return errorResponse(error, requestId);
     }
   },

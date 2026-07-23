@@ -18,18 +18,6 @@ export const workerHandler = {
       }
       return await handleApi(request, env, requestId);
     } catch (error) {
-      if (error instanceof TypeError && error.message.startsWith("X-CAIL-Request-Id")) {
-        return Response.json(
-          {
-            error: {
-              code: "invalid_request_id",
-              message: "X-CAIL-Request-Id must be a UUID.",
-              requestId,
-            },
-          },
-          { status: 400 },
-        );
-      }
       return errorResponse(error, requestId);
     }
   },
