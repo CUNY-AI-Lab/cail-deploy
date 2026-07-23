@@ -148,6 +148,91 @@ function parsedBody<T>(result: { success: true; data: T } | { success: false }):
   return result.data;
 }
 
+function logRequestBodyDiagnostic(event: "body_cancel_failed", requestId: string): void {
+  console.error({
+    event: `deploy.request.${event}`,
+    error: event,
+    requestId,
+  });
+}
+
+async function cancelRequestBody(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  requestId: string,
+): Promise<void> {
+  try {
+    await reader.cancel();
+  } catch {
+    logRequestBodyDiagnostic("body_cancel_failed", requestId);
+  }
+}
+
+export async function readArtifactBody(request: Request, requestId: string): Promise<Uint8Array> {
+  const declaredLength = request.headers.get("Content-Length");
+  if (
+    declaredLength !== null &&
+    /^\d+$/u.test(declaredLength) &&
+    Number(declaredLength) > MAX_ARTIFACT_BYTES
+  ) {
+    if (request.body) {
+      const reader = request.body.getReader();
+      await cancelRequestBody(reader, requestId);
+      reader.releaseLock();
+    }
+    throw new ApiError(
+      413,
+      "artifact_size_invalid",
+      "The artifact must be between 1 byte and 2 MiB.",
+    );
+  }
+
+  if (!request.body) {
+    throw new ApiError(
+      413,
+      "artifact_size_invalid",
+      "The artifact must be between 1 byte and 2 MiB.",
+    );
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_ARTIFACT_BYTES) {
+        await cancelRequestBody(reader, requestId);
+        throw new ApiError(
+          413,
+          "artifact_size_invalid",
+          "The artifact must be between 1 byte and 2 MiB.",
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (total === 0) {
+    throw new ApiError(
+      413,
+      "artifact_size_invalid",
+      "The artifact must be between 1 byte and 2 MiB.",
+    );
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 function releaseResponse(release: ReleaseRow) {
   return {
     projectId: release.project_id,
@@ -192,6 +277,7 @@ async function uploadRevision(
   env: Env,
   subject: string,
   projectId: string,
+  requestId: string,
 ): Promise<Response> {
   await requireOwnedProject(env, projectId, subject);
   if (request.headers.get("Content-Type")?.split(";", 1)[0] !== ARTIFACT_MEDIA_TYPE) {
@@ -209,14 +295,7 @@ async function uploadRevision(
       "Content-Digest must contain one SHA-256 digest.",
     );
   }
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_ARTIFACT_BYTES) {
-    throw new ApiError(
-      413,
-      "artifact_size_invalid",
-      "The artifact must be between 1 byte and 2 MiB.",
-    );
-  }
+  const bytes = await readArtifactBody(request, requestId);
   const digest = await sha256Hex(bytes);
   if (digest !== bytesToHex(expected)) {
     throw new ApiError(400, "digest_mismatch", "Content-Digest does not match the uploaded bytes.");
@@ -643,7 +722,7 @@ export async function handleApiForPrincipal(
 
   const revisionMatch = url.pathname.match(/^\/v1\/projects\/(prj_[0-9a-f]{32})\/revisions$/u);
   if (request.method === "POST" && revisionMatch?.[1])
-    return uploadRevision(request, env, principal.subject, revisionMatch[1]);
+    return uploadRevision(request, env, principal.subject, revisionMatch[1], requestId);
 
   const previewMatch = url.pathname.match(/^\/v1\/projects\/(prj_[0-9a-f]{32})\/preview$/u);
   if (request.method === "GET" && previewMatch?.[1])
