@@ -59,14 +59,17 @@ export function previewTimeoutMs(raw: string | undefined): number {
   return value;
 }
 
+const workflowInstanceNotFoundErrors = new WeakSet<object>();
+
+export class WorkflowInstanceNotFoundError extends Error {
+  constructor() {
+    super("The Workflow instance does not exist.");
+    workflowInstanceNotFoundErrors.add(this);
+  }
+}
+
 function workflowInstanceNotFound(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return (
-    error.name === "WorkflowInstanceNotFoundError" ||
-    /(?:workflow )?instance(?: with id [^ ]+)? (?:was )?(?:not found|does not exist)/iu.test(
-      error.message,
-    )
-  );
+  return workflowInstanceNotFoundErrors.has(error as object);
 }
 
 export async function ensureWorkflowInstance(

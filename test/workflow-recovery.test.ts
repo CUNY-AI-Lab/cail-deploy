@@ -1,5 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
-import { ensureWorkflowInstance, handleApiForPrincipal } from "../src/api";
+import {
+  ensureWorkflowInstance,
+  handleApiForPrincipal,
+  WorkflowInstanceNotFoundError,
+} from "../src/api";
+import { apiErrorSnapshot } from "../src/domain/errors";
 import type { Env, ReleaseWorkflowParams, TestWorkflowBinding } from "../src/env";
 
 const subject = `cail-${"a".repeat(32)}`;
@@ -18,9 +23,7 @@ const params: ReleaseWorkflowParams = {
 };
 
 function notFound(): Error {
-  const error = new Error(`Workflow instance ${releaseId} not found`);
-  error.name = "WorkflowInstanceNotFoundError";
-  return error;
+  return new WorkflowInstanceNotFoundError();
 }
 
 describe("release Workflow recovery", () => {
@@ -109,6 +112,83 @@ describe("release Workflow recovery", () => {
       cause: lookupFailure,
     });
     expect(create).not.toHaveBeenCalled();
+  });
+
+  test("does not inspect or create after a hostile lookup rejection", async () => {
+    const privateSentinel = new Error("PRIVATE_WORKFLOW_LOOKUP_SENTINEL");
+    let traps = 0;
+    const lookupFailure = new Proxy(Object.create(null) as object, {
+      get() {
+        traps += 1;
+        throw privateSentinel;
+      },
+      getOwnPropertyDescriptor() {
+        traps += 1;
+        throw privateSentinel;
+      },
+      getPrototypeOf() {
+        traps += 1;
+        throw privateSentinel;
+      },
+    });
+    const get = mock(async () => {
+      throw lookupFailure;
+    });
+    const create = mock(async () => ({ id: releaseId }));
+
+    let captured: unknown;
+    try {
+      await ensureWorkflowInstance(
+        {
+          RELEASE_WORKFLOW: {
+            get,
+            create,
+          } as unknown as TestWorkflowBinding,
+        },
+        releaseId,
+        params,
+      );
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(apiErrorSnapshot(captured)).toEqual({
+      status: 503,
+      code: "workflow_lookup_failed",
+      message: "The release Workflow state could not be read.",
+    });
+    expect((captured as Error).cause).toBe(lookupFailure);
+    expect(create).not.toHaveBeenCalled();
+    expect(traps).toBe(0);
+  });
+
+  test("recognizes owned absence without reading mutable error fields", async () => {
+    const missing = new WorkflowInstanceNotFoundError();
+    let accessorReads = 0;
+    for (const property of ["name", "message"]) {
+      Object.defineProperty(missing, property, {
+        configurable: true,
+        get() {
+          accessorReads += 1;
+          throw new Error(`PRIVATE_WORKFLOW_${property}_ACCESSOR`);
+        },
+      });
+    }
+    const get = mock(async () => {
+      throw missing;
+    });
+    const create = mock(async () => ({ id: releaseId }));
+
+    await ensureWorkflowInstance(
+      { RELEASE_WORKFLOW: { get, create } as unknown as TestWorkflowBinding },
+      releaseId,
+      params,
+    );
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith({ id: releaseId, params });
+    expect(accessorReads).toBe(0);
   });
 
   test("preserves create and recovery causes when the instance remains absent", async () => {

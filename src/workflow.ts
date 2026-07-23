@@ -16,6 +16,16 @@ interface PreparedEnvelope extends PreparedWorker {
   revisionId: string;
 }
 
+function artifactIntegrityFailure(message: string): ApiError {
+  return new ApiError(500, "artifact_integrity_failed", message);
+}
+
+function terminalFailureType(error: unknown): "artifact_integrity_failed" | "release_failed" {
+  return apiErrorSnapshot(error)?.code === "artifact_integrity_failed"
+    ? "artifact_integrity_failed"
+    : "release_failed";
+}
+
 export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowParams> {
   async run(event: WorkflowEvent<ReleaseWorkflowParams>, step: WorkflowStep): Promise<void> {
     const { projectId, releaseId, revisionId, requestId, logSubject, admittedAt } = event.payload;
@@ -30,7 +40,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
         if (!object) throw new Error("Revision object is missing.");
         const bytes = await object.arrayBuffer();
         if ((await sha256Hex(bytes)) !== revision.artifact_digest)
-          throw new Error("Revision digest changed.");
+          throw artifactIntegrityFailure("Revision digest changed.");
         return artifactSchema.parse(JSON.parse(new TextDecoder().decode(bytes))) as Artifact;
       });
       if (artifact.requestedBindings.length > 0)
@@ -54,7 +64,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
             if (!retained) throw new Error("Rollback prepared artifact is missing.");
             const preparedJson = await retained.text();
             if ((await sha256Hex(preparedJson)) !== source.prepared_digest) {
-              throw new Error("Rollback prepared artifact digest changed.");
+              throw artifactIntegrityFailure("Rollback prepared artifact digest changed.");
             }
             return {
               preparedKey: source.prepared_key,
@@ -131,7 +141,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
           if (!retained) throw new Error("Prepared artifact is missing.");
           const retainedJson = await retained.text();
           if ((await sha256Hex(retainedJson)) !== preparedDigest)
-            throw new Error("Prepared artifact digest changed.");
+            throw artifactIntegrityFailure("Prepared artifact digest changed.");
           const name = await publishWorker(
             this.env,
             projectId,
@@ -170,10 +180,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
         error,
         () =>
           step.do("record terminal failure", async () => {
-            const errorType =
-              error instanceof Error && error.message.includes("digest")
-                ? "artifact_integrity_failed"
-                : "release_failed";
+            const errorType = terminalFailureType(error);
             const terminal = await appendTerminalStatus(
               this.env,
               releaseId,
