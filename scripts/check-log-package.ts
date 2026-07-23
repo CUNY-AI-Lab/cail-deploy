@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const parentRevision = "bd68a3184bb3402080f17487aff7b36b9da8b967";
 const packageName = "@cuny-ai-lab/cail-log";
 const packageVersion = "0.6.0";
+const legacyArchiveName = "cuny-ai-lab-cail-log-0.6.0.tgz";
 const archiveName = "cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz";
 const dependencyPath = `file:vendor/${archiveName}`;
 const archiveSha256 = "8689422456eb4b7c672538ba91efb7606e9287df473a99a91ee2a60b5f9ba215";
@@ -34,27 +34,50 @@ function run(command: string[], cwd = root): Uint8Array {
   return result.stdout;
 }
 
-async function writeGitFile(revision: string, path: string, destination: string): Promise<void> {
-  await writeFile(destination, run(["git", "show", `${revision}:${path}`]));
+async function acceptedArchiveBytes(): Promise<Uint8Array> {
+  const bytes = await readFile(join(root, "vendor", archiveName));
+  if (bytes.byteLength !== 50_269 || sha256(bytes) !== archiveSha256) {
+    throw new Error("log_package_gate_failed:archive_receipt");
+  }
+  return bytes;
 }
 
 async function writeParentFixture(directory: string): Promise<void> {
   const vendor = join(directory, "vendor");
   await mkdir(vendor, { recursive: true });
-  await Promise.all([
-    writeGitFile(parentRevision, "package.json", join(directory, "package.json")),
-    writeGitFile(parentRevision, "bun.lock", join(directory, "bun.lock")),
-    writeGitFile(
-      parentRevision,
-      "vendor/cuny-ai-lab-cail-identity-4.6.0.tgz",
-      join(vendor, "cuny-ai-lab-cail-identity-4.6.0.tgz"),
-    ),
-    writeGitFile(
-      parentRevision,
-      "vendor/cuny-ai-lab-cail-log-0.6.0.tgz",
-      join(vendor, "cuny-ai-lab-cail-log-0.6.0.tgz"),
-    ),
-  ]);
+  const legacyDependencyPath = `file:vendor/${legacyArchiveName}`;
+  await writeFile(
+    join(directory, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "cail-log-legacy-cache-seed",
+        private: true,
+        dependencies: { [packageName]: legacyDependencyPath },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    join(directory, "bun.lock"),
+    `{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "cail-log-legacy-cache-seed",
+      "dependencies": {
+        "${packageName}": "${legacyDependencyPath}",
+      },
+    },
+  },
+  "packages": {
+    "${packageName}": ["${packageName}@vendor/${legacyArchiveName}", {}],
+  },
+}
+`,
+  );
+  await writeFile(join(vendor, legacyArchiveName), await acceptedArchiveBytes());
 }
 
 async function writeChildFixture(directory: string, minimal = false): Promise<void> {
@@ -117,15 +140,15 @@ async function writeChildFixture(directory: string, minimal = false): Promise<vo
       ),
     ]);
   }
-  await writeFile(join(vendor, archiveName), await readFile(join(root, "vendor", archiveName)));
+  await writeFile(join(vendor, archiveName), await acceptedArchiveBytes());
 }
 
 async function verifyInstalledPackage(directory: string): Promise<void> {
   const archive = join(directory, "vendor", archiveName);
+  await acceptedArchiveBytes();
   const archiveBytes = await readFile(archive);
-  if (archiveBytes.byteLength !== 50_269 || sha256(archiveBytes) !== archiveSha256) {
+  if (archiveBytes.byteLength !== 50_269 || sha256(archiveBytes) !== archiveSha256)
     throw new Error("log_package_gate_failed:archive_receipt");
-  }
 
   const installedRoot = join(directory, "node_modules/@cuny-ai-lab/cail-log");
   const entries = new TextDecoder()
@@ -232,19 +255,19 @@ let primaryError: unknown;
 try {
   temporaryRoot = await mkdtemp(join(tmpdir(), "kale-deploy-log-cache-"));
   await stat(temporaryRoot);
-  const parent = join(temporaryRoot, "parent");
+  const legacySeed = join(temporaryRoot, "legacy-seed");
   const child = join(temporaryRoot, "child");
   const coldChild = join(temporaryRoot, "cold-child");
   const coldCache = join(temporaryRoot, "cold-cache");
   await Promise.all([
-    mkdir(parent, { mode: 0o700 }),
+    mkdir(legacySeed, { mode: 0o700 }),
     mkdir(child, { mode: 0o700 }),
     mkdir(coldChild, { mode: 0o700 }),
     mkdir(coldCache, { mode: 0o700 }),
   ]);
 
-  await writeParentFixture(parent);
-  run(["bun", "install", "--frozen-lockfile", "--offline"], parent);
+  await writeParentFixture(legacySeed);
+  run(["bun", "install", "--frozen-lockfile", "--offline"], legacySeed);
 
   await writeChildFixture(child);
   run(["bun", "install", "--frozen-lockfile", "--offline"], child);
@@ -266,6 +289,4 @@ try {
   }
 }
 
-console.log(
-  `Log parent-warmed and cold-cache package gates passed: ${parentRevision}:${archiveSha256}`,
-);
+console.log(`Log legacy-path-warmed and cold-cache package gates passed: ${archiveSha256}`);
