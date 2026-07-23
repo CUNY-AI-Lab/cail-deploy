@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "kale.oauth-mcp.v1",
+  "provider": {
+    "package": "@cloudflare/workers-oauth-provider",
+    "version": "0.5.0",
+    "sourceRevision": "b4bc502c3421f2bc8a61760fb84790f09d0fa529",
+    "npmTarballSha256": "097c5955e8eb6092575a008d9e3b960fc945b48c8fb26ae252bedd9482bdce11"
+  },
+  "routes": {
+    "protectedResourceMetadata": "/.well-known/oauth-protected-resource/mcp",
+    "authorizationServerMetadata": "/.well-known/oauth-authorization-server",
+    "register": "/oauth/register",
+    "authorize": "/api/oauth/authorize",
+    "token": "/oauth/token",
+    "resource": "/mcp"
+  },
+  "authorization": {
+    "responseTypes": ["code"],
+    "grantTypes": ["authorization_code", "refresh_token"],
+    "scope": "cail:deploy",
+    "pkceMethods": ["S256"],
+    "accessTokenTtlSeconds": 3600,
+    "refreshTokenTtlSeconds": 2592000,
+    "dynamicClientRegistrationTtlSeconds": 7776000,
+    "implicitFlow": false,
+    "tokenExchangeGrant": false,
+    "clientIdMetadataDocument": false
+  },
+  "identity": {
+    "authorizationCredential": "X-CAIL-Identity-JWT",
+    "audience": "cail:deploy",
+    "principalProps": ["subject", "operationalSubject", "scope"],
+    "ownershipField": "subject",
+    "optionalOperationalField": "operationalSubject"
+  },
+  "state": {
+    "providerBinding": "OAUTH_KV",
+    "consentMigration": "schema/0002_oauth_consent.sql",
+    "consentTtlSeconds": 600
+  }
+}

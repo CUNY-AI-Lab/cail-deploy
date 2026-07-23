@@ -1,4 +1,4 @@
-import { workerHandler } from "./handler";
+import { oauthWorkerHandler } from "./adapters/cloudflare/oauth";
 export { ReleaseWorkflow } from "./workflow";
 
-export default workerHandler;
+export default oauthWorkerHandler;

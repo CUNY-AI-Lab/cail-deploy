@@ -1,5 +1,6 @@
-import { ARTIFACT_MEDIA_TYPE, handleApi } from "./api";
-import { ApiError } from "./domain/errors";
+import { ARTIFACT_MEDIA_TYPE, handleApiForPrincipal } from "./api";
+import type { Principal } from "./auth";
+import { ApiError, errorResponse } from "./domain/errors";
 import type { Env } from "./env";
 
 const tools = [
@@ -11,7 +12,12 @@ const tools = [
   ["kale.rollback_release", ["projectId", "releaseId", "approval", "idempotencyKey"]],
 ] as const;
 
-export async function handleMcp(request: Request, env: Env, requestId: string): Promise<Response> {
+export async function handleMcpWithPrincipal(
+  request: Request,
+  env: Env,
+  requestId: string,
+  principal: Principal,
+): Promise<Response> {
   const message = (await request.json()) as {
     jsonrpc?: string;
     id?: unknown;
@@ -49,6 +55,9 @@ export async function handleMcp(request: Request, env: Env, requestId: string): 
       },
     });
   }
+  if (message.method === "notifications/initialized") {
+    return new Response(null, { status: 202 });
+  }
   if (message.method !== "tools/call")
     throw new ApiError(400, "unknown_mcp_method", "The MCP method is not supported.");
   const name = message.params?.name;
@@ -56,10 +65,6 @@ export async function handleMcp(request: Request, env: Env, requestId: string): 
   if (typeof name !== "string")
     throw new ApiError(400, "invalid_mcp", "tools/call requires a tool name.");
   const headers = new Headers();
-  const authorization = request.headers.get("Authorization");
-  const identityJwt = request.headers.get("X-CAIL-Identity-JWT");
-  if (authorization) headers.set("Authorization", authorization);
-  if (identityJwt) headers.set("X-CAIL-Identity-JWT", identityJwt);
   if (args.idempotencyKey) headers.set("Idempotency-Key", args.idempotencyKey);
   let path: string;
   let method: "GET" | "POST" = "POST";
@@ -91,11 +96,17 @@ export async function handleMcp(request: Request, env: Env, requestId: string): 
   } else {
     throw new ApiError(404, "mcp_tool_not_found", "The MCP tool was not found.");
   }
-  const response = await handleApi(
-    new Request(new URL(path, request.url), { method, headers, body }),
-    env,
-    requestId,
-  );
+  let response: Response;
+  try {
+    response = await handleApiForPrincipal(
+      new Request(new URL(path, request.url), { method, headers, body }),
+      env,
+      principal,
+      requestId,
+    );
+  } catch (error) {
+    response = errorResponse(error, requestId);
+  }
   const text = await response.text();
   return Response.json({
     jsonrpc: "2.0",

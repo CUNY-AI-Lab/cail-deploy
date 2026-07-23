@@ -6,7 +6,7 @@ import type { Env } from "./env";
 export interface Principal {
   subject: string;
   operationalSubject?: string;
-  authentication: "isolated-test-bearer" | "cail-identity-jwt";
+  authentication: "isolated-test-bearer" | "cail-identity-jwt" | "oauth-access-token";
 }
 
 export async function authenticate(request: Request, env: Env): Promise<Principal> {

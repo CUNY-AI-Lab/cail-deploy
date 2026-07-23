@@ -9,6 +9,7 @@
   "vars": {
     "AUTH_MODE": "test",
     "SERVICE_AUDIENCE": "cail:deploy",
+    "PUBLIC_BASE_URL": "http://127.0.0.1:8787",
     "RUN_ID": "local-test",
     "WFP_ACCOUNT_ID": "replace-with-isolated-account-id",
     "WFP_NAMESPACE": "replace-with-run-scoped-namespace",
@@ -23,6 +24,7 @@
     }
   ],
   "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "kale-release-control-plane-local" }],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "00000000000000000000000000000001" }],
   "worker_loaders": [{ "binding": "LOADER" }],
   "dispatch_namespaces": [
     { "binding": "DISPATCHER", "namespace": "replace-with-run-scoped-namespace" }

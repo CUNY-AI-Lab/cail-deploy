@@ -8,7 +8,7 @@ All JSON responses use `content-type: application/json`. Errors have the exact s
 {"error":{"code":"stable_code","message":"Plain-language detail.","requestId":"request-id"}}
 ```
 
-Authentication accepts exactly one credential. The isolated integration stack verifies `X-CAIL-Identity-JWT` with RS256/JWKS, exact issuer, and exact scalar Deploy audience `cail:deploy`. Ownership uses only its verified `subject`. A signed optional `operationalSubject` may identify user-attributed operational events; when absent, Deploy emits service-attributed events and does not derive or map from the ownership subject. The local component-test mode accepts only its explicit bearer map and has no user operational identity.
+The raw service API accepts exactly one `X-CAIL-Identity-JWT`. The isolated integration stack verifies it with RS256/JWKS, exact issuer, expiry, and exact scalar Deploy audience `cail:deploy`. Ownership uses only its verified `subject`. A signed optional `operationalSubject` may identify user-attributed operational events; when absent, Deploy emits service-attributed events and does not derive or map from the ownership subject. The local component-test mode accepts only its explicit bearer map and has no user operational identity.
 
 Clients propagate correlation through `X-CAIL-Request-Id`, which must be a UUID. Deploy returns that same value in errors and release operational events.
 
@@ -26,7 +26,19 @@ Clients propagate correlation through `X-CAIL-Request-Id`, which must be a UUID.
 
 ## MCP
 
-`POST /mcp` exposes the same operations through JSON-RPC 2.0 tools. `kale.upload_revision` carries `artifactBase64` and `contentDigest`; all other arguments mirror the service API. `/.well-known/oauth-protected-resource` identifies the MCP resource and configured CAIL authorization server. MCP never has more authority than the bearer principal.
+`POST /mcp` exposes the same operations through JSON-RPC 2.0 tools. `kale.upload_revision` carries `artifactBase64` and `contentDigest`; all other arguments mirror the service API. MCP never has more authority than the provider-validated bearer principal, and the bearer is never forwarded into the raw API authentication function.
+
+The public surface is frozen in `contract/oauth-mcp-v1.json`:
+
+- `GET /.well-known/oauth-protected-resource/mcp` identifies the exact absolute `/mcp` resource, the same-origin authorization server, and only `cail:deploy`.
+- `GET /.well-known/oauth-authorization-server` identifies `POST /oauth/register`, `GET|POST /api/oauth/authorize`, and `POST /oauth/token`.
+- Authorization uses a public OAuth 2.1 authorization-code client with S256 PKCE. Plain PKCE, implicit flow, token exchange, CIMD, and external/PAT tokens are disabled.
+- Both authorize methods independently verify `X-CAIL-Identity-JWT` with the same exact issuer and `cail:deploy` audience. GET renders explicit client/scope consent but grants nothing. POST consumes one opaque ten-minute D1 nonce bound to the verified subject, client, canonical authorization request, and expiry.
+- The grant carries only `{subject, operationalSubject?, scope:["cail:deploy"]}`. The Cloudflare provider validates the bearer and passes those props to the MCP adapter; Deploy validates their representation before constructing its existing `Principal`.
+- `Authorization` is accepted only on `/mcp`; raw `/v1` remains identity-JWT-only. Supplying both credentials to `/mcp` returns `credential_ambiguity`.
+- Missing, invalid, expired, or wrong-resource bearer tokens return the provider's RFC 9728 `401` challenge. Missing scope returns `403` with `scope="cail:deploy"`. Tokens and provider internals are never included in application error bodies.
+
+The exact provider pin is `@cloudflare/workers-oauth-provider@0.5.0`, source `b4bc502c3421f2bc8a61760fb84790f09d0fa529`, npm tarball SHA-256 `097c5955e8eb6092575a008d9e3b960fc945b48c8fb26ae252bedd9482bdce11`. Its default refresh-token TTL is 30 days and dynamic-registration TTL is 90 days. These are test-only protocol records in `OAUTH_KV`; D1 project/revision/release state does not depend on them.
 
 ## Artifact
 

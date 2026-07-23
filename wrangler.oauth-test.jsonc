@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "kale-release-control-plane-oauth-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "vars": {
+    "AUTH_MODE": "cail-jwt",
+    "SERVICE_AUDIENCE": "cail:deploy",
+    "PUBLIC_BASE_URL": "http://127.0.0.1:8787",
+    "CAIL_IDENTITY_ISSUER": "https://identity.oauth-test.invalid",
+    "CAIL_IDENTITY_JWKS": "{\"keys\":[]}",
+    "RUN_ID": "oauth-local-test",
+    "WFP_ACCOUNT_ID": "not-used",
+    "WFP_NAMESPACE": "not-used"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kale-release-control-plane-oauth-local",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "schema"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "kale-release-control-plane-oauth-local"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "00000000000000000000000000000001"
+    }
+  ]
+}

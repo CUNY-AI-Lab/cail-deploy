@@ -13,6 +13,18 @@
     }
   },
   "packages": {
+    "@cloudflare/workers-oauth-provider": {
+      "accepted": "0.5.0",
+      "sourceRepository": "https://github.com/cloudflare/workers-oauth-provider",
+      "sourceRevision": "b4bc502c3421f2bc8a61760fb84790f09d0fa529",
+      "npmTarballSha256": "097c5955e8eb6092575a008d9e3b960fc945b48c8fb26ae252bedd9482bdce11",
+      "npmIntegritySha512": "KlqhvvG6XAkemDlckeiqpMpXzYjpfW+IXkxfIHJOxnrotfZdVVkeiAMTTtmYBizwvY/t6FtR9d2Da+NZLboM5g==",
+      "maturity": "0.x volatile adapter",
+      "boundary": "src/adapters/cloudflare/oauth.ts",
+      "conformance": "scripts/check-oauth.ts runs the real provider in local Wrangler workerd with ephemeral KV/D1/R2 and the standard MCP SDK client",
+      "replacement": "Use Cloudflare's documented successor only after source conformance and an isolated canary. The CAIL project/revision/release and Principal contracts do not depend on provider classes.",
+      "rollback": "Keep the accepted d95 HTTP API runtime frozen or repin 0.5.0; OAuth KV state is test-only and may be deleted without affecting D1 ownership or release history."
+    },
     "@cloudflare/worker-bundler": {
       "tested": "0.2.2",
       "candidate": null,
@@ -34,6 +46,7 @@
     "compatibilityDate": "2026-07-22",
     "workflows": "documented public binding",
     "workerLoader": "experimental platform binding isolated by the worker-bundler adapter",
-    "workersForPlatforms": "documented REST API"
+    "workersForPlatforms": "documented REST API",
+    "oauth": "@cloudflare/workers-oauth-provider is isolated to one adapter and stores protocol grants/tokens in OAUTH_KV; CAIL identity and Deploy Principal remain application contracts"
   }
 }

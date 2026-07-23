@@ -1,0 +1,24 @@
+{
+  "schemaRevision": "0.1.0",
+  "runId": "ki-20260722223510-ecade68e",
+  "owner": "kale-integration-acceptance",
+  "accountId": "452c33847cf5cb1e46f391fca32fd1b5",
+  "createdAt": "2026-07-23T00:08:56.000Z",
+  "resources": [
+    {
+      "kind": "cloudflare-kv-namespace",
+      "name": "ki-20260722223510-ecade68e-deploy-oauth",
+      "id": null,
+      "purpose": "Planned test-only OAuth dynamic-client, grant, and token storage for the accepted public MCP slice; not created",
+      "component": "deploy",
+      "createdAt": "2026-07-23T00:08:56.000Z",
+      "endpoint": null,
+      "dependencies": [],
+      "createCommand": "CLOUDFLARE_ACCOUNT_ID=452c33847cf5cb1e46f391fca32fd1b5 bunx wrangler kv namespace create ki-20260722223510-ecade68e-deploy-oauth --binding OAUTH_KV --config wrangler.integration.jsonc",
+      "teardownCommand": "CLOUDFLARE_ACCOUNT_ID=452c33847cf5cb1e46f391fca32fd1b5 bunx wrangler kv namespace delete --namespace-id <provider-id-after-creation> --skip-confirmation --config wrangler.integration.jsonc",
+      "verifyDeletedCommand": "! CLOUDFLARE_ACCOUNT_ID=452c33847cf5cb1e46f391fca32fd1b5 bunx wrangler kv namespace list | rg -F 'ki-20260722223510-ecade68e-deploy-oauth'",
+      "deletionOrder": 3,
+      "state": "planned"
+    }
+  ]
+}

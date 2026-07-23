@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { RELEASE_INSERT_SQL } from "../src/api";
+import { CONSUME_CONSENT_NONCE_SQL } from "../src/oauth-consent";
 
 describe("durable release invariants", () => {
   test("production release insert matches the durable schema", async () => {
@@ -140,5 +141,86 @@ describe("durable release invariants", () => {
     const second = approve.run("cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now, releaseId);
     expect(first.changes).toBe(1);
     expect(second.changes).toBe(0);
+  });
+});
+
+describe("OAuth consent nonce invariants", () => {
+  test("one subject/client/request-bound nonce is consumed once before expiry", async () => {
+    const db = new Database(":memory:");
+    db.exec(await Bun.file(new URL("../schema/0002_oauth_consent.sql", import.meta.url)).text());
+    const nonce = `ocn_${"a".repeat(32)}`;
+    const subject = "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const clientId = "client-a";
+    const digest = "request-a";
+    db.run(
+      "INSERT INTO oauth_consent_nonces (nonce, owner_subject, client_id, request_digest, expires_at) VALUES (?, ?, ?, ?, ?)",
+      [nonce, subject, clientId, digest, "2099-01-01T00:00:00.000Z"],
+    );
+    const consume = db.prepare(CONSUME_CONSENT_NONCE_SQL);
+    const parameters = [
+      "2026-07-22T00:00:00.000Z",
+      nonce,
+      subject,
+      clientId,
+      digest,
+      "2026-07-22T00:00:00.000Z",
+    ];
+    expect(consume.run(...parameters).changes).toBe(1);
+    expect(consume.run(...parameters).changes).toBe(0);
+  });
+
+  test("changed subject, client, request, and expired nonce do not consume", async () => {
+    const variants = [
+      [
+        "cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "client-a",
+        "request-a",
+        "2026-07-22T00:00:00.000Z",
+      ],
+      [
+        "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "client-b",
+        "request-a",
+        "2026-07-22T00:00:00.000Z",
+      ],
+      [
+        "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "client-a",
+        "request-b",
+        "2026-07-22T00:00:00.000Z",
+      ],
+      [
+        "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "client-a",
+        "request-a",
+        "2100-01-01T00:00:00.000Z",
+      ],
+    ];
+    for (const [subject, clientId, digest, now] of variants) {
+      const db = new Database(":memory:");
+      db.exec(await Bun.file(new URL("../schema/0002_oauth_consent.sql", import.meta.url)).text());
+      db.run(
+        "INSERT INTO oauth_consent_nonces (nonce, owner_subject, client_id, request_digest, expires_at) VALUES (?, ?, ?, ?, ?)",
+        [
+          `ocn_${"a".repeat(32)}`,
+          "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "client-a",
+          "request-a",
+          "2099-01-01T00:00:00.000Z",
+        ],
+      );
+      expect(
+        db
+          .prepare(CONSUME_CONSENT_NONCE_SQL)
+          .run(
+            "2026-07-22T00:00:00.000Z",
+            `ocn_${"a".repeat(32)}`,
+            subject as string,
+            clientId as string,
+            digest as string,
+            now as string,
+          ).changes,
+      ).toBe(0);
+    }
   });
 });

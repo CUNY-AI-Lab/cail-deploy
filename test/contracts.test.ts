@@ -66,4 +66,51 @@ describe("immutable artifact contract", () => {
     ) as { $defs: { releaseStatus: { enum: string[] } } };
     expect(releaseContract.$defs.releaseStatus.enum).toEqual([...releaseStatuses]);
   });
+
+  test("machine-readable OAuth MCP contract freezes the public surface", async () => {
+    const contract = JSON.parse(
+      await Bun.file(new URL("../contract/oauth-mcp-v1.json", import.meta.url)).text(),
+    ) as {
+      provider: { version: string; sourceRevision: string; npmTarballSha256: string };
+      routes: Record<string, string>;
+      authorization: {
+        scope: string;
+        pkceMethods: string[];
+        accessTokenTtlSeconds: number;
+        implicitFlow: boolean;
+        tokenExchangeGrant: boolean;
+        clientIdMetadataDocument: boolean;
+      };
+      identity: { audience: string; principalProps: string[] };
+    };
+    expect(contract.provider).toEqual({
+      package: "@cloudflare/workers-oauth-provider",
+      version: "0.5.0",
+      sourceRevision: "b4bc502c3421f2bc8a61760fb84790f09d0fa529",
+      npmTarballSha256: "097c5955e8eb6092575a008d9e3b960fc945b48c8fb26ae252bedd9482bdce11",
+    });
+    expect(contract.routes).toEqual({
+      protectedResourceMetadata: "/.well-known/oauth-protected-resource/mcp",
+      authorizationServerMetadata: "/.well-known/oauth-authorization-server",
+      register: "/oauth/register",
+      authorize: "/api/oauth/authorize",
+      token: "/oauth/token",
+      resource: "/mcp",
+    });
+    expect(contract.authorization).toMatchObject({
+      scope: "cail:deploy",
+      pkceMethods: ["S256"],
+      accessTokenTtlSeconds: 3600,
+      implicitFlow: false,
+      tokenExchangeGrant: false,
+      clientIdMetadataDocument: false,
+    });
+    expect(contract.identity).toEqual({
+      authorizationCredential: "X-CAIL-Identity-JWT",
+      audience: "cail:deploy",
+      principalProps: ["subject", "operationalSubject", "scope"],
+      ownershipField: "subject",
+      optionalOperationalField: "operationalSubject",
+    });
+  });
 });

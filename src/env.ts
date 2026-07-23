@@ -30,9 +30,40 @@ export interface DispatchNamespaceLike {
   get(name: string): { fetch(request: Request): Promise<Response> };
 }
 
+export interface OAuthAuthorizationRequest {
+  responseType: string;
+  clientId: string;
+  redirectUri: string;
+  scope: string[];
+  state: string;
+  codeChallenge?: string;
+  codeChallengeMethod?: string;
+  resource?: string | string[];
+}
+
+export interface OAuthClient {
+  clientId: string;
+  redirectUris: string[];
+  clientName?: string;
+}
+
+export interface OAuthHelpersLike {
+  parseAuthRequest(request: Request): Promise<OAuthAuthorizationRequest>;
+  lookupClient(clientId: string): Promise<OAuthClient | null>;
+  completeAuthorization(options: {
+    request: OAuthAuthorizationRequest;
+    userId: string;
+    metadata: Record<string, never>;
+    scope: string[];
+    props: unknown;
+  }): Promise<{ redirectTo: string }>;
+}
+
 export interface Env {
   DB: D1Database;
   ARTIFACTS: R2Bucket;
+  OAUTH_KV: KVNamespace;
+  OAUTH_PROVIDER?: OAuthHelpersLike;
   LOADER: WorkerLoaderLike;
   DISPATCHER: DispatchNamespaceLike;
   RELEASE_WORKFLOW: TestWorkflowBinding;
@@ -41,9 +72,9 @@ export interface Env {
   CAIL_IDENTITY_JWKS?: string;
   CAIL_IDENTITY_ISSUER?: string;
   SERVICE_AUDIENCE: string;
+  PUBLIC_BASE_URL: string;
   SERVICE_RELEASE?: string;
   RUN_ID: string;
-  CAIL_AUTHORIZATION_SERVER?: string;
   WFP_ACCOUNT_ID: string;
   WFP_NAMESPACE: string;
   CLOUDFLARE_API_TOKEN?: string;

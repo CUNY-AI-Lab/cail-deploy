@@ -1,5 +1,6 @@
 import { publishWorker } from "./adapters/cloudflare/wfp";
 import { authenticate } from "./auth";
+import type { Principal } from "./auth";
 import {
   approvalSchema,
   artifactSchema,
@@ -498,6 +499,15 @@ export async function handleApi(
   requestId: string = crypto.randomUUID(),
 ): Promise<Response> {
   const principal = await authenticate(request, env);
+  return handleApiForPrincipal(request, env, principal, requestId);
+}
+
+export async function handleApiForPrincipal(
+  request: Request,
+  env: Env,
+  principal: Principal,
+  requestId: string = crypto.randomUUID(),
+): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "POST" && url.pathname === "/v1/projects")
     return createProject(request, env, principal.subject);
