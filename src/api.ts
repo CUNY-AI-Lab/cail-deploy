@@ -37,8 +37,27 @@ import type { PreparedEnvelope } from "./workflow";
 
 const ARTIFACT_MEDIA_TYPE = "application/vnd.cuny.kale.artifact.v1+json";
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
+const DEFAULT_PREVIEW_TIMEOUT_MS = 5_000;
+const MIN_PREVIEW_TIMEOUT_MS = 100;
+const MAX_PREVIEW_TIMEOUT_MS = 30_000;
 export const RELEASE_INSERT_SQL = `INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, rollback_of_release_id, operational_subject, request_id, admitted_at, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`;
+
+export function previewTimeoutMs(raw: string | undefined): number {
+  const value = raw === undefined ? DEFAULT_PREVIEW_TIMEOUT_MS : Number(raw);
+  if (
+    !Number.isSafeInteger(value) ||
+    value < MIN_PREVIEW_TIMEOUT_MS ||
+    value > MAX_PREVIEW_TIMEOUT_MS
+  ) {
+    throw new ApiError(
+      503,
+      "preview_configuration_error",
+      `Preview timeout must be an integer between ${MIN_PREVIEW_TIMEOUT_MS} and ${MAX_PREVIEW_TIMEOUT_MS} milliseconds.`,
+    );
+  }
+  return value;
+}
 
 function workflowInstanceNotFound(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -432,8 +451,27 @@ async function previewProject(
   const headers = new Headers(request.headers);
   headers.delete("Authorization");
   headers.delete("X-CAIL-Identity-JWT");
-  const target = new Request(new URL("/", request.url), { method: "GET", headers });
-  return env.DISPATCHER.get(release.publication_name).fetch(target);
+  const signal = AbortSignal.any([
+    request.signal,
+    AbortSignal.timeout(previewTimeoutMs(env.PREVIEW_TIMEOUT_MS)),
+  ]);
+  if (signal.aborted) {
+    throw new ApiError(503, "preview_unavailable", "The live preview is unavailable.", {
+      cause: signal.reason,
+    });
+  }
+  const target = new Request(new URL("/", request.url), {
+    method: "GET",
+    headers,
+    signal,
+  });
+  try {
+    return await env.DISPATCHER.get(release.publication_name).fetch(target);
+  } catch (cause) {
+    throw new ApiError(503, "preview_unavailable", "The live preview is unavailable.", {
+      cause,
+    });
+  }
 }
 
 async function approveRelease(
