@@ -342,6 +342,106 @@ describe("release reconciliation authority", () => {
     ]);
   });
 
+  test("same-request takeover fences stale success until the newer holder completes", async () => {
+    const { db, env } = await fixture("reconciling");
+    const resolvers: Array<(response: Response) => void> = [];
+    globalThis.fetch = mock(
+      async () =>
+        new Promise<Response>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    ) as typeof fetch;
+
+    const stale = handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
+    for (let attempt = 0; attempt < 100 && resolvers.length < 1; attempt += 1) {
+      await Bun.sleep(1);
+    }
+    expect(resolvers).toHaveLength(1);
+    db.sqlite.run(
+      "UPDATE idempotency SET created_at = '2000-01-01T00:00:00.000Z' WHERE project_id = ? AND operation = ?",
+      [projectId, `reconcile:${releaseId}`],
+    );
+
+    const current = handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
+    for (let attempt = 0; attempt < 100 && resolvers.length < 2; attempt += 1) {
+      await Bun.sleep(1);
+    }
+    expect(resolvers).toHaveLength(2);
+    const renewed = db.sqlite
+      .query("SELECT response_json, created_at FROM idempotency WHERE project_id = ?")
+      .get(projectId) as { response_json: string; created_at: string };
+
+    resolvers[0]?.(new Response(null, { status: 200 }));
+    await expect(stale).rejects.toMatchObject({
+      status: 409,
+      code: "release_reconciliation_raced",
+    });
+    expect(
+      db.sqlite
+        .query("SELECT response_json, created_at FROM idempotency WHERE project_id = ?")
+        .get(projectId),
+    ).toEqual(renewed);
+    expect(
+      db.sqlite
+        .query("SELECT status, publication_name FROM releases WHERE release_id = ?")
+        .get(releaseId),
+    ).toEqual({ status: "reconciling", publication_name: null });
+    expect(
+      db.sqlite
+        .query("SELECT COUNT(*) AS count FROM release_events WHERE release_id = ?")
+        .get(releaseId),
+    ).toEqual({ count: 0 });
+
+    resolvers[1]?.(new Response(null, { status: 200 }));
+    expect((await current).status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test("same-request takeover prevents stale failure cleanup from releasing the newer claim", async () => {
+    const { db, env } = await fixture("reconciling");
+    const resolvers: Array<(response: Response) => void> = [];
+    globalThis.fetch = mock(
+      async () =>
+        new Promise<Response>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    ) as typeof fetch;
+
+    const stale = handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
+    for (let attempt = 0; attempt < 100 && resolvers.length < 1; attempt += 1) {
+      await Bun.sleep(1);
+    }
+    expect(resolvers).toHaveLength(1);
+    db.sqlite.run(
+      "UPDATE idempotency SET created_at = '2000-01-01T00:00:00.000Z' WHERE project_id = ? AND operation = ?",
+      [projectId, `reconcile:${releaseId}`],
+    );
+
+    const current = handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
+    for (let attempt = 0; attempt < 100 && resolvers.length < 2; attempt += 1) {
+      await Bun.sleep(1);
+    }
+    expect(resolvers).toHaveLength(2);
+    const renewed = db.sqlite
+      .query("SELECT response_json, created_at FROM idempotency WHERE project_id = ?")
+      .get(projectId) as { response_json: string; created_at: string };
+
+    resolvers[0]?.(new Response(null, { status: 400 }));
+    await expect(stale).rejects.toMatchObject({
+      status: 502,
+      code: "publication_rejected",
+    });
+    expect(
+      db.sqlite
+        .query("SELECT response_json, created_at FROM idempotency WHERE project_id = ?")
+        .get(projectId),
+    ).toEqual(renewed);
+
+    resolvers[1]?.(new Response(null, { status: 200 }));
+    expect((await current).status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
   test("preserves publication failure cause and permits one later deterministic retry", async () => {
     const { env } = await fixture("publishing");
     const providerFailure = new Error("PRIVATE_PROVIDER_FAILURE");

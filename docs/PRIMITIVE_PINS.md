@@ -9,4 +9,4 @@ These packages are unpublished. This repository consumes reviewed local tarballs
 
 The identity tarball contains `contract/identity-jwt-claims-v1.json`. Deploy uses only the verified ownership subject and optional signed operational subject. It never derives or maps one from the other. A verified identity without `log_sub` continues the release with service-attributed operational events.
 
-The Log tarball is the deterministic 50,269-byte package produced from the exact clean source head and tree above. Request correlation accepts canonical lowercase UUIDv4 or UUIDv7 with the IETF variant. Action, call, and usage identifiers remain UUIDv4-only.
+The Log tarball is the deterministic 50,269-byte package produced from the exact clean source head and tree above. Its source- and hash-qualified repository path is `vendor/cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz`; changing the path gives Bun a distinct cache identity from the rejected parent archive while the package's accepted internal version remains 0.6.0. Request correlation accepts canonical lowercase UUIDv4 or UUIDv7 with the IETF variant. Action, call, and usage identifiers remain UUIDv4-only.

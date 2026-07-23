@@ -8,7 +8,7 @@
         "@cloudflare/worker-bundler": "0.2.2",
         "@cloudflare/workers-oauth-provider": "0.5.0",
         "@cuny-ai-lab/cail-identity": "file:vendor/cuny-ai-lab-cail-identity-4.6.0.tgz",
-        "@cuny-ai-lab/cail-log": "file:vendor/cuny-ai-lab-cail-log-0.6.0.tgz",
+        "@cuny-ai-lab/cail-log": "file:vendor/cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz",
         "zod": "4.4.3",
       },
       "devDependencies": {
@@ -67,7 +67,7 @@
 
     "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@vendor/cuny-ai-lab-cail-identity-4.6.0.tgz", { "dependencies": { "jose": "6.2.3" } }],
 
-    "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@vendor/cuny-ai-lab-cail-log-0.6.0.tgz", {}],
+    "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@vendor/cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz", {}],
 
     "@emnapi/core": ["@emnapi/core@1.11.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.2", "tslib": "^2.4.0" } }, "sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ=="],
 

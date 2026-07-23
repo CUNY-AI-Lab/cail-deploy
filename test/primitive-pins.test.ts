@@ -10,7 +10,7 @@ const logReceipt = {
   sourceTree: "618c4bdfae0effadbe23cfd6c4dfb1fcf6440697",
   tarBytes: 50_269,
   tarSha256: "8689422456eb4b7c672538ba91efb7606e9287df473a99a91ee2a60b5f9ba215",
-  dependencyPath: "file:vendor/cuny-ai-lab-cail-log-0.6.0.tgz",
+  dependencyPath: "file:vendor/cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz",
 } as const;
 
 function sha256(bytes: Uint8Array): string {
@@ -31,7 +31,7 @@ function tarEntry(tarPath: string, entry: string): Uint8Array {
 
 describe("reviewed primitive package authority", () => {
   test("pins the exact independently accepted clean Log source and tar receipt", async () => {
-    const tarPath = join(root, "vendor/cuny-ai-lab-cail-log-0.6.0.tgz");
+    const tarPath = join(root, "vendor/cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz");
     const tarBytes = await Bun.file(tarPath).bytes();
     expect(tarBytes.byteLength).toBe(logReceipt.tarBytes);
     expect(sha256(tarBytes)).toBe(logReceipt.tarSha256);
@@ -48,7 +48,7 @@ describe("reviewed primitive package authority", () => {
   });
 
   test("installs every packaged Log file from the reviewed vendored tar", async () => {
-    const tarPath = join(root, "vendor/cuny-ai-lab-cail-log-0.6.0.tgz");
+    const tarPath = join(root, "vendor/cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz");
     const installedRoot = join(root, "node_modules/@cuny-ai-lab/cail-log");
     const entries = new TextDecoder().decode(tarList(tarPath)).trim().split("\n");
     expect(entries.length).toBeGreaterThan(0);

@@ -723,7 +723,7 @@ async function reconcileRelease(
         release,
         name,
         requestDigest,
-        authority.activeResponse,
+        authority.token,
         requestId,
       );
     } catch (cause) {
@@ -761,7 +761,7 @@ async function reconcileRelease(
     return Response.json(releaseResponse(current));
   } catch (primary) {
     try {
-      await releaseReconciliationAuthority(env, release, requestDigest, authority.activeResponse);
+      await releaseReconciliationAuthority(env, release, requestDigest, authority.token);
     } catch {
       emitDeployDiagnostic("reconcile_claim_release_failed", { releaseId, requestId });
     }

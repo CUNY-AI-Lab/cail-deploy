@@ -46,7 +46,13 @@ type ReconciliationClaim =
   | { state: "retryable" };
 
 export type ReconciliationAuthority =
-  | { state: "acquired"; activeResponse: string }
+  | {
+      state: "acquired";
+      token: {
+        responseJson: string;
+        createdAt: string;
+      };
+    }
   | { state: "blocked" }
   | { state: "complete"; publicationName: string }
   | { state: "in_progress" };
@@ -163,7 +169,8 @@ export async function acquireReconciliationAuthority(
            WHERE release_id = releases.release_id
              AND type IN ('release.live', 'release.failed', 'release.rejected')
          )
-     )`,
+     )
+     RETURNING response_json, created_at`,
   )
     .bind(
       release.project_id,
@@ -176,9 +183,12 @@ export async function acquireReconciliationAuthority(
       release.prepared_key,
       release.prepared_digest,
     )
-    .run();
-  if ((inserted.meta.changes ?? 0) === 1) {
-    return { state: "acquired", activeResponse };
+    .first<{ response_json: string; created_at: string }>();
+  if (inserted) {
+    return {
+      state: "acquired",
+      token: { responseJson: inserted.response_json, createdAt: inserted.created_at },
+    };
   }
 
   let row = await reconciliationRow(env, release, leaseMs);
@@ -220,9 +230,10 @@ export async function acquireReconciliationAuthority(
            AND NOT EXISTS (
              SELECT 1 FROM release_events
              WHERE release_id = releases.release_id
-               AND type IN ('release.live', 'release.failed', 'release.rejected')
+             AND type IN ('release.live', 'release.failed', 'release.rejected')
            )
-       )`,
+       )
+     RETURNING response_json, created_at`,
   )
     .bind(
       activeResponse,
@@ -239,9 +250,12 @@ export async function acquireReconciliationAuthority(
       release.prepared_key,
       release.prepared_digest,
     )
-    .run();
-  if ((retried.meta.changes ?? 0) === 1) {
-    return { state: "acquired", activeResponse };
+    .first<{ response_json: string; created_at: string }>();
+  if (retried) {
+    return {
+      state: "acquired",
+      token: { responseJson: retried.response_json, createdAt: retried.created_at },
+    };
   }
 
   row = await reconciliationRow(env, release, leaseMs);
@@ -272,12 +286,12 @@ export async function releaseReconciliationAuthority(
   env: Env,
   release: ReleaseRow,
   requestDigest: string,
-  activeResponse: string,
+  token: { responseJson: string; createdAt: string },
 ): Promise<void> {
   await env.DB.prepare(
     `UPDATE idempotency SET response_json = ?
      WHERE project_id = ? AND operation = ? AND idempotency_key = ?
-       AND request_digest = ? AND response_json = ?`,
+       AND request_digest = ? AND response_json = ? AND created_at = ?`,
   )
     .bind(
       JSON.stringify({ state: "retryable" }),
@@ -285,7 +299,8 @@ export async function releaseReconciliationAuthority(
       reconciliationOperation(release.release_id),
       RECONCILIATION_KEY,
       requestDigest,
-      activeResponse,
+      token.responseJson,
+      token.createdAt,
     )
     .run();
 }
@@ -295,7 +310,7 @@ export async function completeReconciliation(
   release: ReleaseRow,
   publicationName: string,
   requestDigest: string,
-  activeResponse: string,
+  token: { responseJson: string; createdAt: string },
   requestId: string,
 ): Promise<boolean> {
   const now = new Date().toISOString();
@@ -309,7 +324,7 @@ export async function completeReconciliation(
          AND EXISTS (
            SELECT 1 FROM idempotency
            WHERE project_id = ? AND operation = ? AND idempotency_key = ?
-             AND request_digest = ? AND response_json = ?
+             AND request_digest = ? AND response_json = ? AND created_at = ?
          )
          AND NOT EXISTS (
            SELECT 1 FROM release_events
@@ -327,19 +342,31 @@ export async function completeReconciliation(
       reconciliationOperation(release.release_id),
       RECONCILIATION_KEY,
       requestDigest,
-      activeResponse,
+      token.responseJson,
+      token.createdAt,
     ),
     env.DB.prepare(
       `INSERT OR IGNORE INTO release_events
          (release_id, sequence, type, occurred_at, detail_json)
        SELECT ?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1),
          'release.live', ?, ?
-       WHERE changes() = 1`,
+       WHERE changes() = 1
+         AND EXISTS (
+           SELECT 1 FROM idempotency
+           WHERE project_id = ? AND operation = ? AND idempotency_key = ?
+             AND request_digest = ? AND response_json = ? AND created_at = ?
+         )`,
     ).bind(
       release.release_id,
       release.release_id,
       now,
       JSON.stringify({ publicationName, reconciled: true, requestId }),
+      release.project_id,
+      reconciliationOperation(release.release_id),
+      RECONCILIATION_KEY,
+      requestDigest,
+      token.responseJson,
+      token.createdAt,
     ),
     env.DB.prepare(
       `UPDATE releases SET status = 'live', updated_at = ?
@@ -347,12 +374,28 @@ export async function completeReconciliation(
          AND EXISTS (
            SELECT 1 FROM release_events
            WHERE release_id = ? AND type = 'release.live'
+         )
+         AND EXISTS (
+           SELECT 1 FROM idempotency
+           WHERE project_id = ? AND operation = ? AND idempotency_key = ?
+             AND request_digest = ? AND response_json = ? AND created_at = ?
          )`,
-    ).bind(now, release.release_id, publicationName, release.release_id),
+    ).bind(
+      now,
+      release.release_id,
+      publicationName,
+      release.release_id,
+      release.project_id,
+      reconciliationOperation(release.release_id),
+      RECONCILIATION_KEY,
+      requestDigest,
+      token.responseJson,
+      token.createdAt,
+    ),
     env.DB.prepare(
       `UPDATE idempotency SET response_json = ?
        WHERE project_id = ? AND operation = ? AND idempotency_key = ?
-         AND request_digest = ? AND response_json = ?
+         AND request_digest = ? AND response_json = ? AND created_at = ?
          AND EXISTS (
            SELECT 1 FROM releases
            WHERE release_id = ? AND status = 'live' AND publication_name = ?
@@ -363,7 +406,8 @@ export async function completeReconciliation(
       reconciliationOperation(release.release_id),
       RECONCILIATION_KEY,
       requestDigest,
-      activeResponse,
+      token.responseJson,
+      token.createdAt,
       release.release_id,
       publicationName,
     ),
