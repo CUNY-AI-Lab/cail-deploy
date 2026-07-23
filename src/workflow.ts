@@ -7,6 +7,7 @@ import { ApiError } from "./domain/errors";
 import type { Env, ReleaseWorkflowParams } from "./env";
 import { emitReleaseTerminal } from "./operational-events";
 import { appendReleaseStatus, appendTerminalStatus, getRevision, requireRelease } from "./storage";
+import { finalizeWorkflowFailure } from "./workflow-failure";
 
 interface PreparedEnvelope extends PreparedWorker {
   schemaVersion: "kale.prepared-worker.v1";
@@ -165,31 +166,35 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
         );
         return;
       }
-      await step.do("record terminal failure", async () => {
-        const errorType =
-          error instanceof Error && error.message.includes("digest")
-            ? "artifact_integrity_failed"
-            : "release_failed";
-        const terminal = await appendTerminalStatus(
-          this.env,
-          releaseId,
-          "failed",
-          "release.failed",
-          { code: errorType },
-        );
-        if (terminal)
-          emitReleaseTerminal(
-            this.env,
-            releaseId,
-            requestId,
-            logSubject,
-            admittedAt,
-            "error",
-            "upstream_failure",
-            errorType,
-          );
-      });
-      throw error;
+      await finalizeWorkflowFailure(
+        error,
+        () =>
+          step.do("record terminal failure", async () => {
+            const errorType =
+              error instanceof Error && error.message.includes("digest")
+                ? "artifact_integrity_failed"
+                : "release_failed";
+            const terminal = await appendTerminalStatus(
+              this.env,
+              releaseId,
+              "failed",
+              "release.failed",
+              { code: errorType },
+            );
+            if (terminal)
+              emitReleaseTerminal(
+                this.env,
+                releaseId,
+                requestId,
+                logSubject,
+                admittedAt,
+                "error",
+                "upstream_failure",
+                errorType,
+              );
+          }),
+        { releaseId, requestId },
+      );
     }
   }
 }

@@ -107,8 +107,9 @@ describe("Cloudflare volatile boundaries", () => {
   });
 
   test("Workflow approval delivery fails closed without provider error leakage", async () => {
+    const providerFailure = new Error("provider-internal-detail");
     const sendEvent = mock(async () => {
-      throw new Error("provider-internal-detail");
+      throw providerFailure;
     });
     const env = {
       RELEASE_WORKFLOW: { get: async () => ({ sendEvent }) },
@@ -124,6 +125,7 @@ describe("Cloudflare volatile boundaries", () => {
       status: 503,
       code: "approval_delivery_failed",
       message: "The approval was saved but Workflow delivery must be retried.",
+      cause: providerFailure,
     });
     expect(sendEvent).toHaveBeenCalledWith({
       type: "release-approval",

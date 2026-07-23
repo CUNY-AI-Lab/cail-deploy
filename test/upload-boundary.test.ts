@@ -38,6 +38,31 @@ describe("revision upload body boundary", () => {
     expect(cancelled).toBe(true);
   });
 
+  test("does not wait for declared oversized body cancellation to settle", async () => {
+    let pulls = 0;
+    let cancelled = false;
+    const request = streamingRequest(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new Uint8Array([1]));
+        },
+        cancel() {
+          cancelled = true;
+          return new Promise<void>(() => undefined);
+        },
+      }),
+      maxArtifactBytes + 1,
+    );
+
+    await expect(readArtifactBody(request, requestId)).rejects.toMatchObject({
+      status: 413,
+      code: "artifact_size_invalid",
+    });
+    expect(pulls).toBe(0);
+    expect(cancelled).toBe(true);
+  });
+
   test("cancels a chunked body at the first byte beyond the limit", async () => {
     let cancelled = false;
     let pulls = 0;
@@ -63,6 +88,40 @@ describe("revision upload body boundary", () => {
     });
     expect(pulls).toBe(2);
     expect(cancelled).toBe(true);
+  });
+
+  test("preserves the chunked overflow error when cancellation rejects", async () => {
+    const diagnostics: unknown[] = [];
+    const originalConsoleError = console.error;
+    console.error = (diagnostic: unknown) => {
+      diagnostics.push(diagnostic);
+    };
+    const request = streamingRequest(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(maxArtifactBytes + 1));
+        },
+        cancel() {
+          return Promise.reject(new Error("private cancel failure"));
+        },
+      }),
+    );
+
+    try {
+      await expect(readArtifactBody(request, requestId)).rejects.toMatchObject({
+        status: 413,
+        code: "artifact_size_invalid",
+      });
+      await Promise.resolve();
+      expect(diagnostics).toContainEqual({
+        event: "deploy.request.body_cancel_failed",
+        error: "body_cancel_failed",
+        requestId,
+      });
+      expect(JSON.stringify(diagnostics)).not.toContain("private cancel failure");
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 
   test("accepts an exact-limit streamed body", async () => {

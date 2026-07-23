@@ -1,4 +1,4 @@
-import { ARTIFACT_MEDIA_TYPE, handleApiForPrincipal } from "./api";
+import { ARTIFACT_MEDIA_TYPE, handleApiForPrincipal, MAX_ARTIFACT_BYTES } from "./api";
 import type { Principal } from "./auth";
 import {
   createProjectSchema,
@@ -19,13 +19,15 @@ const idempotencyKeySchema = z
   .regex(/^[A-Za-z0-9._:-]+$/u);
 const projectIdSchema = z.string().regex(PROJECT_PATTERN);
 const releaseIdSchema = z.string().regex(RELEASE_PATTERN);
+export const MAX_ARTIFACT_BASE64_CHARS = Math.ceil(MAX_ARTIFACT_BYTES / 3) * 4;
+export const MAX_MCP_BODY_BYTES = MAX_ARTIFACT_BASE64_CHARS + 16 * 1024;
 const createProjectArgumentsSchema = createProjectSchema
   .extend({ idempotencyKey: idempotencyKeySchema })
-  .loose();
+  .strict();
 const uploadRevisionArgumentsSchema = z
   .object({
     projectId: projectIdSchema,
-    artifactBase64: z.string().min(1),
+    artifactBase64: z.string().min(1).max(MAX_ARTIFACT_BASE64_CHARS),
     contentDigest: z
       .string()
       .refine(
@@ -33,19 +35,19 @@ const uploadRevisionArgumentsSchema = z
         "Content-Digest must contain one SHA-256 digest.",
       ),
   })
-  .loose();
+  .strict();
 const createReleaseArgumentsSchema = createReleaseSchema
   .extend({
     projectId: projectIdSchema,
     idempotencyKey: idempotencyKeySchema,
   })
-  .loose();
+  .strict();
 const getReleaseArgumentsSchema = z
   .object({ projectId: projectIdSchema, releaseId: releaseIdSchema })
-  .loose();
+  .strict();
 const approveReleaseArgumentsSchema = getReleaseArgumentsSchema
   .extend({ idempotencyKey: idempotencyKeySchema })
-  .loose();
+  .strict();
 const rollbackReleaseArgumentsSchema = z
   .object({
     projectId: projectIdSchema,
@@ -53,7 +55,7 @@ const rollbackReleaseArgumentsSchema = z
     approval: rollbackSchema.shape.approval,
     idempotencyKey: idempotencyKeySchema,
   })
-  .loose();
+  .strict();
 
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 
@@ -80,8 +82,27 @@ function parseToolArguments<T>(schema: z.ZodType<T>, value: unknown): T {
   return result.data;
 }
 
+function base64DecodedLength(value: string): number {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return (value.length / 4) * 3 - padding;
+}
+
+function rejectOversizedArtifactArgument(value: unknown): void {
+  if (typeof value !== "object" || value === null) return;
+  const artifactBase64 = (value as Record<string, unknown>).artifactBase64;
+  if (
+    typeof artifactBase64 === "string" &&
+    (artifactBase64.length > MAX_ARTIFACT_BASE64_CHARS ||
+      (artifactBase64.length % 4 === 0 && base64DecodedLength(artifactBase64) > MAX_ARTIFACT_BYTES))
+  ) {
+    throw invalidToolArguments();
+  }
+}
+
 function decodeArtifactBase64(value: string): Uint8Array<ArrayBuffer> {
+  if (value.length > MAX_ARTIFACT_BASE64_CHARS) throw invalidToolArguments();
   if (!CANONICAL_BASE64.test(value)) throw invalidToolArguments();
+  if (base64DecodedLength(value) > MAX_ARTIFACT_BYTES) throw invalidToolArguments();
   const decoded = atob(value);
   if (btoa(decoded) !== value) throw invalidToolArguments();
   const bytes = new Uint8Array(new ArrayBuffer(decoded.length));
@@ -89,6 +110,97 @@ function decodeArtifactBase64(value: string): Uint8Array<ArrayBuffer> {
     bytes[index] = decoded.charCodeAt(index);
   }
   return bytes;
+}
+
+function emitMcpBodyDiagnostic(
+  event: "body_cancel_failed" | "body_release_failed",
+  requestId: string,
+): void {
+  console.error({
+    event: `deploy.mcp.request.${event}`,
+    error: event,
+    requestId,
+  });
+}
+
+function cancelMcpBody(reader: ReadableStreamDefaultReader<Uint8Array>, requestId: string): void {
+  void reader.cancel().catch(() => {
+    emitMcpBodyDiagnostic("body_cancel_failed", requestId);
+  });
+}
+
+function releaseMcpBodyReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  requestId: string,
+): void {
+  try {
+    reader.releaseLock();
+  } catch {
+    emitMcpBodyDiagnostic("body_release_failed", requestId);
+  }
+}
+
+async function readMcpMessage(
+  request: Request,
+  requestId: string,
+): Promise<{
+  jsonrpc?: string;
+  id?: unknown;
+  method?: string;
+  params?: Record<string, unknown>;
+}> {
+  const tooLarge = () =>
+    new ApiError(413, "mcp_request_too_large", "The MCP request body exceeds the supported limit.");
+  const declaredLength = request.headers.get("Content-Length");
+  if (
+    declaredLength !== null &&
+    /^\d+$/u.test(declaredLength) &&
+    Number(declaredLength) > MAX_MCP_BODY_BYTES
+  ) {
+    if (request.body) {
+      const reader = request.body.getReader();
+      cancelMcpBody(reader, requestId);
+      releaseMcpBodyReader(reader, requestId);
+    }
+    throw tooLarge();
+  }
+  if (!request.body)
+    throw new ApiError(400, "invalid_mcp", "The MCP request body must be valid JSON.");
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_MCP_BODY_BYTES) {
+        cancelMcpBody(reader, requestId);
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    releaseMcpBodyReader(reader, requestId);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as {
+      jsonrpc?: string;
+      id?: unknown;
+      method?: string;
+      params?: Record<string, unknown>;
+    };
+  } catch (cause) {
+    throw new ApiError(400, "invalid_mcp", "The MCP request body must be valid JSON.", { cause });
+  }
 }
 
 async function mcpToolResult(
@@ -118,12 +230,7 @@ export async function handleMcpWithPrincipal(
   requestId: string,
   principal: Principal,
 ): Promise<Response> {
-  const message = (await request.json()) as {
-    jsonrpc?: string;
-    id?: unknown;
-    method?: string;
-    params?: Record<string, unknown>;
-  };
+  const message = await readMcpMessage(request, requestId);
   if (message.jsonrpc !== "2.0")
     throw new ApiError(400, "invalid_mcp", "MCP requires JSON-RPC 2.0.");
   if (message.method === "initialize") {
@@ -176,6 +283,7 @@ export async function handleMcpWithPrincipal(
       headers.set("Idempotency-Key", args.idempotencyKey);
       body = JSON.stringify({ name: args.name });
     } else if (name === "kale.upload_revision") {
+      rejectOversizedArtifactArgument(argumentsValue);
       const args = parseToolArguments(uploadRevisionArgumentsSchema, argumentsValue);
       path = `/v1/projects/${args.projectId}/revisions`;
       headers.set("Content-Type", ARTIFACT_MEDIA_TYPE);

@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Principal } from "../src/auth";
 import type { Env } from "../src/env";
-import { handleMcpWithPrincipal } from "../src/mcp";
+import { handleMcpWithPrincipal, MAX_ARTIFACT_BASE64_CHARS, MAX_MCP_BODY_BYTES } from "../src/mcp";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
 const principal: Principal = {
@@ -98,6 +98,60 @@ describe("MCP tool argument boundary", () => {
           idempotencyKey: "rollback-1",
         },
       },
+      {
+        name: "kale.create_project",
+        arguments: {
+          name: "Strict project",
+          idempotencyKey: "strict-create",
+          unexpected: true,
+        },
+      },
+      {
+        name: "kale.upload_revision",
+        arguments: {
+          ...uploadBase,
+          artifactBase64: "e30=",
+          unexpected: true,
+        },
+      },
+      {
+        name: "kale.create_release",
+        arguments: {
+          projectId: "prj_22222222222222222222222222222222",
+          revisionId: `rev_sha256_${"a".repeat(64)}`,
+          target: "staging",
+          approval: "automatic",
+          idempotencyKey: "strict-release",
+          unexpected: true,
+        },
+      },
+      {
+        name: "kale.get_release",
+        arguments: {
+          projectId: "prj_22222222222222222222222222222222",
+          releaseId: "rel_33333333333333333333333333333333",
+          unexpected: true,
+        },
+      },
+      {
+        name: "kale.approve_release",
+        arguments: {
+          projectId: "prj_22222222222222222222222222222222",
+          releaseId: "rel_33333333333333333333333333333333",
+          idempotencyKey: "strict-approve",
+          unexpected: true,
+        },
+      },
+      {
+        name: "kale.rollback_release",
+        arguments: {
+          projectId: "prj_22222222222222222222222222222222",
+          releaseId: "rel_33333333333333333333333333333333",
+          approval: "required",
+          idempotencyKey: "strict-rollback",
+          unexpected: true,
+        },
+      },
     ]) {
       const result = await client.callTool(request);
       expect(result.isError).toBe(true);
@@ -112,5 +166,219 @@ describe("MCP tool argument boundary", () => {
     }
 
     expect(envReads).toBe(0);
+  });
+
+  test("rejects oversized artifactBase64 before decoding or API access", async () => {
+    let envReads = 0;
+    const env = new Proxy({} as Env, {
+      get() {
+        envReads += 1;
+        throw new Error("The API handler must not run for oversized artifacts.");
+      },
+    });
+    const originalAtob = globalThis.atob;
+    let atobCalls = 0;
+    globalThis.atob = ((value: string) => {
+      atobCalls += 1;
+      return originalAtob(value);
+    }) as typeof atob;
+
+    try {
+      const response = await handleMcpWithPrincipal(
+        new Request("https://deploy.invalid/mcp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 7,
+            method: "tools/call",
+            params: {
+              name: "kale.upload_revision",
+              arguments: {
+                projectId: "prj_22222222222222222222222222222222",
+                artifactBase64: "A".repeat(MAX_ARTIFACT_BASE64_CHARS + 1),
+                contentDigest: "sha-256=:+3Ef2SMBqe9arjRcw9oGQI59KRuODN/x1ENMIW5FnoI=:",
+              },
+            },
+          }),
+        }),
+        env,
+        requestId,
+        principal,
+      );
+
+      expect(response.status).toBe(200);
+      const result = (await response.json()) as {
+        result: { content: [{ text: string }]; isError: boolean };
+      };
+      expect(result.result.isError).toBe(true);
+      expect(JSON.parse(result.result.content[0].text)).toEqual({
+        error: {
+          code: "invalid_mcp_arguments",
+          message: "The MCP tool arguments do not match the tool contract.",
+          requestId,
+        },
+      });
+      expect(atobCalls).toBe(0);
+      expect(envReads).toBe(0);
+    } finally {
+      globalThis.atob = originalAtob;
+    }
+  });
+
+  test("rejects base64 that decodes beyond the artifact byte limit before allocation", async () => {
+    let envReads = 0;
+    const env = new Proxy({} as Env, {
+      get() {
+        envReads += 1;
+        throw new Error("The API handler must not run for oversized artifacts.");
+      },
+    });
+    const originalAtob = globalThis.atob;
+    let atobCalls = 0;
+    globalThis.atob = ((value: string) => {
+      atobCalls += 1;
+      return originalAtob(value);
+    }) as typeof atob;
+
+    try {
+      const response = await handleMcpWithPrincipal(
+        new Request("https://deploy.invalid/mcp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 8,
+            method: "tools/call",
+            params: {
+              name: "kale.upload_revision",
+              arguments: {
+                projectId: "prj_22222222222222222222222222222222",
+                artifactBase64: "A".repeat(MAX_ARTIFACT_BASE64_CHARS),
+                contentDigest: "sha-256=:+3Ef2SMBqe9arjRcw9oGQI59KRuODN/x1ENMIW5FnoI=:",
+              },
+            },
+          }),
+        }),
+        env,
+        requestId,
+        principal,
+      );
+
+      expect(response.status).toBe(200);
+      const result = (await response.json()) as {
+        result: { content: [{ text: string }]; isError: boolean };
+      };
+      expect(result.result.isError).toBe(true);
+      expect(JSON.parse(result.result.content[0].text).error.code).toBe("invalid_mcp_arguments");
+      expect(atobCalls).toBe(0);
+      expect(envReads).toBe(0);
+    } finally {
+      globalThis.atob = originalAtob;
+    }
+  });
+
+  test("rejects declared oversized outer JSON without reading, decoding, or API access", async () => {
+    let pulls = 0;
+    let cancelled = false;
+    let envReads = 0;
+    let decoderReads = 0;
+    const env = new Proxy({} as Env, {
+      get() {
+        envReads += 1;
+        throw new Error("The API handler must not run for oversized MCP JSON.");
+      },
+    });
+    const textDecoderDescriptor = Object.getOwnPropertyDescriptor(globalThis, "TextDecoder");
+    Object.defineProperty(globalThis, "TextDecoder", {
+      configurable: true,
+      get() {
+        decoderReads += 1;
+        return textDecoderDescriptor?.value;
+      },
+    });
+    const request = new Request("https://deploy.invalid/mcp", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new Uint8Array([1]));
+        },
+        cancel() {
+          cancelled = true;
+          return new Promise<void>(() => undefined);
+        },
+      }),
+      duplex: "half",
+      headers: {
+        "Content-Length": String(MAX_MCP_BODY_BYTES + 1),
+        "Content-Type": "application/json",
+      },
+    } as RequestInit);
+
+    try {
+      await expect(
+        handleMcpWithPrincipal(request, env, requestId, principal),
+      ).rejects.toMatchObject({
+        status: 413,
+        code: "mcp_request_too_large",
+      });
+      expect(pulls).toBe(0);
+      expect(cancelled).toBe(true);
+      expect(decoderReads).toBe(0);
+      expect(envReads).toBe(0);
+    } finally {
+      if (textDecoderDescriptor)
+        Object.defineProperty(globalThis, "TextDecoder", textDecoderDescriptor);
+    }
+  });
+
+  test("rejects chunked oversized outer JSON without decoding or API access", async () => {
+    let cancelled = false;
+    let envReads = 0;
+    let decoderReads = 0;
+    const env = new Proxy({} as Env, {
+      get() {
+        envReads += 1;
+        throw new Error("The API handler must not run for oversized MCP JSON.");
+      },
+    });
+    const textDecoderDescriptor = Object.getOwnPropertyDescriptor(globalThis, "TextDecoder");
+    Object.defineProperty(globalThis, "TextDecoder", {
+      configurable: true,
+      get() {
+        decoderReads += 1;
+        return textDecoderDescriptor?.value;
+      },
+    });
+    const request = new Request("https://deploy.invalid/mcp", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(MAX_MCP_BODY_BYTES + 1));
+        },
+        cancel() {
+          cancelled = true;
+          return new Promise<void>(() => undefined);
+        },
+      }),
+      duplex: "half",
+      headers: { "Content-Type": "application/json" },
+    } as RequestInit);
+
+    try {
+      await expect(
+        handleMcpWithPrincipal(request, env, requestId, principal),
+      ).rejects.toMatchObject({
+        status: 413,
+        code: "mcp_request_too_large",
+      });
+      expect(cancelled).toBe(true);
+      expect(decoderReads).toBe(0);
+      expect(envReads).toBe(0);
+    } finally {
+      if (textDecoderDescriptor)
+        Object.defineProperty(globalThis, "TextDecoder", textDecoderDescriptor);
+    }
   });
 });

@@ -638,13 +638,30 @@ try {
   const listed = await standardClient.listTools();
   assert(listed.tools.length === 6, "standard MCP client did not list six tools");
 
+  const spoofedProjectResult = await standardClient.callTool({
+    name: "kale.create_project",
+    arguments: {
+      name: "OAuth MCP fixture",
+      idempotencyKey: "oauth-standard-client-project-spoofed",
+      subject: TEST_SUBJECTS.bob,
+      log_sub: TEST_OPERATIONAL_SUBJECTS.bob,
+    },
+  });
+  assert(spoofedProjectResult.isError === true, "MCP accepted undeclared identity arguments");
+  const spoofedProjectError = JSON.parse(toolText(spoofedProjectResult)) as {
+    error?: { code?: string; requestId?: string };
+  };
+  assert(
+    spoofedProjectError.error?.code === "invalid_mcp_arguments" &&
+      spoofedProjectError.error.requestId === requestId,
+    "MCP undeclared identity rejection lost its correlated contract",
+  );
+
   const projectResult = await standardClient.callTool({
     name: "kale.create_project",
     arguments: {
       name: "OAuth MCP fixture",
       idempotencyKey: "oauth-standard-client-project",
-      subject: TEST_SUBJECTS.bob,
-      log_sub: TEST_OPERATIONAL_SUBJECTS.bob,
     },
   });
   const project = JSON.parse(toolText(projectResult)) as { projectId: string };
@@ -768,6 +785,7 @@ try {
           "forged_expired_wrong_resource_bearer",
           "credential_ambiguity",
           "cross_subject_upload_read_approval",
+          "mcp_undeclared_identity_arguments",
           "request_id_authorize_and_mcp_response",
         ],
       },

@@ -36,7 +36,7 @@ import {
 import type { PreparedEnvelope } from "./workflow";
 
 const ARTIFACT_MEDIA_TYPE = "application/vnd.cuny.kale.artifact.v1+json";
-const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
+export const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_PREVIEW_TIMEOUT_MS = 5_000;
 const MIN_PREVIEW_TIMEOUT_MS = 100;
 const MAX_PREVIEW_TIMEOUT_MS = 30_000;
@@ -148,7 +148,10 @@ function parsedBody<T>(result: { success: true; data: T } | { success: false }):
   return result.data;
 }
 
-function logRequestBodyDiagnostic(event: "body_cancel_failed", requestId: string): void {
+function logRequestBodyDiagnostic(
+  event: "body_cancel_failed" | "body_release_failed",
+  requestId: string,
+): void {
   console.error({
     event: `deploy.request.${event}`,
     error: event,
@@ -156,14 +159,23 @@ function logRequestBodyDiagnostic(event: "body_cancel_failed", requestId: string
   });
 }
 
-async function cancelRequestBody(
+function cancelRequestBody(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   requestId: string,
-): Promise<void> {
-  try {
-    await reader.cancel();
-  } catch {
+): void {
+  void reader.cancel().catch(() => {
     logRequestBodyDiagnostic("body_cancel_failed", requestId);
+  });
+}
+
+function releaseRequestBodyReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  requestId: string,
+): void {
+  try {
+    reader.releaseLock();
+  } catch {
+    logRequestBodyDiagnostic("body_release_failed", requestId);
   }
 }
 
@@ -176,8 +188,8 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
   ) {
     if (request.body) {
       const reader = request.body.getReader();
-      await cancelRequestBody(reader, requestId);
-      reader.releaseLock();
+      cancelRequestBody(reader, requestId);
+      releaseRequestBodyReader(reader, requestId);
     }
     throw new ApiError(
       413,
@@ -203,7 +215,7 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
       if (done) break;
       total += value.byteLength;
       if (total > MAX_ARTIFACT_BYTES) {
-        await cancelRequestBody(reader, requestId);
+        cancelRequestBody(reader, requestId);
         throw new ApiError(
           413,
           "artifact_size_invalid",
@@ -213,7 +225,7 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
       chunks.push(value);
     }
   } finally {
-    reader.releaseLock();
+    releaseRequestBodyReader(reader, requestId);
   }
 
   if (total === 0) {
@@ -632,11 +644,12 @@ export async function sendApprovalEvent(
       type: "release-approval",
       payload: { decision: "approved", actorSubject: subject, revisionId: release.revision_id },
     });
-  } catch {
+  } catch (cause) {
     throw new ApiError(
       503,
       "approval_delivery_failed",
       "The approval was saved but Workflow delivery must be retried.",
+      { cause },
     );
   }
 }
