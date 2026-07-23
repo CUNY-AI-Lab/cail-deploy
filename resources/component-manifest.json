@@ -1,0 +1,176 @@
+{
+  "schemaRevision": "0.1.0",
+  "component": "deploy",
+  "ownedDirectories": ["/Users/stephenzweibel/Apps/kale-release-control-plane"],
+  "source": {
+    "base": "d95bbf2d822fcd8bc4a464aa52533c03c635c64e",
+    "head": "e332fcc4b2a1e0a38ef50404314de91be3533840",
+    "dirtyFiles": [
+      "resources/common-issuer-deploy-rotation-refresh.json",
+      "resources/common-issuer-deploy-rotation.json",
+      "resources/d1-readonly-baseline.json",
+      "resources/d1-stage-a-attempt.json",
+      "resources/d1-stage-ab-complete.json",
+      "resources/oauth-live-canary-attempt.json",
+      "resources/oauth-live-canary-retry.json",
+      "resources/oauth-live-canary-success.json",
+      "resources/oauth-retry-baseline.json",
+      "resources/oauth-provisional-manifest.json",
+      "scripts/isolated-e2e.ts",
+      "scripts/isolated-oauth-cleanup.ts",
+      "scripts/isolated-oauth-assertions.ts",
+      "scripts/isolated-oauth-e2e.ts",
+      "scripts/rotate-oauth-test-jwks.ts",
+      "test/isolated-oauth-cleanup.test.ts",
+      "test/isolated-oauth-assertions.test.ts",
+      "wrangler.integration.jsonc"
+    ]
+  },
+  "contracts": [
+    {
+      "path": "contract/artifact-v1.schema.json",
+      "sha256": "1dd1a43c448fe22f174e5df36c72671b0371a77af5bc7b1ed83e52d8dabca13f"
+    },
+    {
+      "path": "contract/release-v1.schema.json",
+      "sha256": "eb35c804e50786a6e7e338737f83f160ec446589e08d77fb611e025979b6eb54"
+    },
+    {
+      "path": "contract/prepared-worker-v1.schema.json",
+      "sha256": "5ae2c8a02e6ff28c9b9862627fad002a1ff4d75598f99e7d0018cd228a81a76f"
+    },
+    {
+      "path": "docs/CONTRACT.md",
+      "sha256": "eca31e8cac5be529911b4c6565a8801984dff74d8b4ddbe67d764c6bca498064"
+    },
+    {
+      "path": "contract/oauth-mcp-v1.json",
+      "sha256": "440c5239fc659a4190634ab05ddf2ea8ed7165869eaa91157acf4e40c79fd88c"
+    }
+  ],
+  "commands": {
+    "build": ["bun run build"],
+    "selfTest": [
+      "bun run check",
+      "bun -e 'import {validateResourceManifest} from \"/Users/stephenzweibel/Apps/kale-integration-acceptance/src/fixture-envelope.ts\"; const value=await Bun.file(\"resources/manifest.json\").json(); const errors=validateResourceManifest(value); if(errors.length){console.error(errors); process.exit(1)}'",
+      "bun -e 'import {validateComponentManifest} from \"/Users/stephenzweibel/Apps/kale-integration-acceptance/src/fixture-envelope.ts\"; const value=await Bun.file(\"resources/component-manifest.json\").json(); const errors=validateComponentManifest(value); if(errors.length){console.error(errors); process.exit(1)}'"
+    ],
+    "serve": ["https://ki-20260722223510-ecade68e-deploy.ailab-452.workers.dev"]
+  },
+  "fixtures": [
+    {
+      "path": "fixtures/worker-artifact.v1.json",
+      "sha256": "fb711fd92301a9ef5aae345cc3da06408e7d291b8e0cdff1d4434c216e459e82"
+    },
+    {
+      "path": "scripts/isolated-e2e.ts",
+      "sha256": "f2433d714d9a4e17001d4df4e5344c1508261c3c80629f1907a062ac0bf32959"
+    },
+    {
+      "path": "resources/manifest.json",
+      "sha256": "b68024eb552f898fdaa2fca888db1e2cba497bab8132a60f86d6c1ad6ae4ebe0"
+    },
+    {
+      "path": "scripts/check-oauth.ts",
+      "sha256": "335098dcc987a57dd65ce60f4bff2f7b59227fdcf92fc5485953cf78d0e326fc"
+    },
+    {
+      "path": "resources/oauth-provisional-manifest.json",
+      "sha256": "57cc359b96fd04a861c9db91c160d471fa1abe8b9b151dc0f6612af70d68387c"
+    },
+    {
+      "path": "resources/d1-readonly-baseline.json",
+      "sha256": "f5b583dd28ec9b2e1dc8a184b13f2a9405411b11b5352753d7a24962f58cb79b"
+    },
+    {
+      "path": "resources/d1-stage-a-attempt.json",
+      "sha256": "bcdd2a112fe6d4fe59994c81cdd89b635a156bfa9e613c95abfd8b9acb67eaea"
+    },
+    {
+      "path": "resources/d1-stage-ab-complete.json",
+      "sha256": "b235eccd05cd32f598ca0fc5c0d6879fbaf9819b85aceb8fe2b5e3d0173df48f"
+    },
+    {
+      "path": "resources/oauth-live-canary-attempt.json",
+      "sha256": "689c8b8e5931cb50c51ed4887cfc9680606a2fe3b140a9e80721d9f1c67af55c"
+    },
+    {
+      "path": "resources/oauth-retry-baseline.json",
+      "sha256": "e4b27a81a2dca891a0755f782f7ade8029ca8b1380a26120dbb4f3a9b3c005d9"
+    },
+    {
+      "path": "resources/oauth-live-canary-retry.json",
+      "sha256": "48ebd31e9b2ad50ae6834beb68a0583e9137a56df1939f967fc23fc2c14e535d"
+    },
+    {
+      "path": "scripts/isolated-oauth-e2e.ts",
+      "sha256": "2692b234e33455c4c8715eb503257fc998ac628bf3df9a831e670e706cc38f07"
+    },
+    {
+      "path": "scripts/isolated-oauth-cleanup.ts",
+      "sha256": "b0b0104a35469d57be39d1dbb37099f2d897f91fbf80cd813dd377b5c993095f"
+    },
+    {
+      "path": "scripts/rotate-oauth-test-jwks.ts",
+      "sha256": "1ead88489795dd5c0c6cce8f034be730e0add84da224ca9bce2f1aaf4f3775f7"
+    },
+    {
+      "path": "test/isolated-oauth-cleanup.test.ts",
+      "sha256": "faf6b60c50aaf83762c8f222f94f3d9a30e5d4cf1e2443a4687e52be2c57a3e3"
+    },
+    {
+      "path": "resources/oauth-live-canary-success.json",
+      "sha256": "2ad7540508a0cf25213cd48ac4e6d23eeeb791b27c206b71fbde523d4b25a773"
+    },
+    {
+      "path": "resources/common-issuer-deploy-rotation.json",
+      "sha256": "ae01cad8a4e03878eeb11e667d58a267f7acaafbf14557efb1a3d7556b10b0ba"
+    },
+    {
+      "path": "resources/common-issuer-deploy-rotation-refresh.json",
+      "sha256": "0b70263926364f72b3eb507e17a85fe70a0f16d5ad85403dafb8da3fdbed26c1"
+    },
+    {
+      "path": "/private/tmp/ki-20260722223510-ecade68e-workbench-issuer-refresh.k3LCgc/fresh-handoff-evidence.json",
+      "sha256": "10727ed030b66817c66e98c7b925aa72fdb6ba170cc348d57047c974e38bae00"
+    },
+    {
+      "path": "/Users/stephenzweibel/Apps/kale-integration-acceptance/fixtures/components/deploy/manifest.json",
+      "sha256": "2566ddb5c1af0d9df4316c39f4ec94ab98a024c947173d4894cad637af1592c0"
+    },
+    {
+      "path": "scripts/isolated-oauth-assertions.ts",
+      "sha256": "8c7aac988540b90c4d954a4e983f8380dc445d7840b5651a1dfb824449e61ce6"
+    },
+    {
+      "path": "test/isolated-oauth-assertions.test.ts",
+      "sha256": "89b7084b476a9fa485a84d8bbecc59b7049881d6f8f022189bb59c99f1a89a07"
+    }
+  ],
+  "resources": [
+    "ki-20260722223510-ecade68e-deploy",
+    "ki-20260722223510-ecade68e-deploy-workflow",
+    "ki-20260722223510-ecade68e-deploy-wfp",
+    "ki-20260722223510-ecade68e-deploy-wfp-script-68704fe50228",
+    "ki-20260722223510-ecade68e-deploy-r2",
+    "ki-20260722223510-ecade68e-deploy-d1",
+    "ki-20260722223510-ecade68e-deploy:CAIL_IDENTITY_JWKS",
+    "ki-20260722223510-ecade68e-deploy:CLOUDFLARE_API_TOKEN",
+    "ki-20260722223510-ecade68e-deploy-publisher",
+    "ki-20260722223510-ecade68e-deploy-oauth"
+  ],
+  "blockers": [],
+  "knownDrift": [
+    "Integration fixture revision 095b94c82c526382f28f531f2a76c80de4ffd281 and scope-A revision 9208c8663efe013d44ba422652ad360350bcbdec preserve the accepted evidence; this manifest-only reconciliation keeps source.head pinned to accepted executable source e332fcc4b2a1e0a38ef50404314de91be3533840.",
+    "Completed teardown of ki-20260722223510-ecade68e-workbench is a prerequisite to deleting the Deploy Worker; destructive authority remains separately held.",
+    "Every verifyDeletedCommand uses an exact-resource request with a 30-second deadline and accepts only HTTP 404 plus a structured Cloudflare success:false error envelope; authentication, transport, malformed-body, pagination, and provider failures cannot appear as absence.",
+    "Deleting the Worker removes its nested secret bindings but does not replace explicit deletion of the publisher token, OAuth KV, Workflow, WfP script and namespace, R2 bucket, or D1 database; R2 must be emptied before deletion and D1 remains last.",
+    "Integration 0306302a4ac4f6765c263ca83f4f44f8e258781d accepted Deploy source/runtime e332fcc4b2a1e0a38ef50404314de91be3533840, the ten-resource inventory, and OAuth MCP evidence SHA-256 2ad7540508a0cf25213cd48ac4e6d23eeeb791b27c206b71fbde523d4b25a773.",
+    "The last locally recorded active composite is identity-only rotation version 42, ID 4ebb0971-b96a-4574-953c-3a556f5ce0bb, created 2026-07-23T02:41:08.674886Z at unchanged accepted source e332fcc4b2a1e0a38ef50404314de91be3533840; this reconciliation made no provider call.",
+    "Workbench handoff evidence SHA-256 10727ed030b66817c66e98c7b925aa72fdb6ba170cc348d57047c974e38bae00 proves only the accepted same-subject 253-byte immutable revision upload and no failed-approval replay; it created no Workbench-originated release, Workflow, WfP publication, or rollback.",
+    "Release rel_c89f11cfed88418192d4a6a9b0d858e4, Workflow version 96ff3fe0-b094-4ceb-b6fc-27bd7e8b090c, WfP publication kp-ki-20260722223510-ecade68e-68704fe50228, and rollback release rel_63d94b684fad45c9abab4b0b9121506b are component-owned Deploy evidence and are not a continuation of the Workbench handoff.",
+    "Cloudflare Workflow binding approval delivery completed after about five minutes; no first-slice latency SLO requires a second delivery adapter.",
+    "@cloudflare/vitest-pool-workers 0.18.7 cannot load @cloudflare/worker-bundler 0.2.2 gojs WASM; the top-level gate uses Wrangler 4.113.0 local workerd with the real Worker Loader instead.",
+    "Rejected undeployed experiment c83ea4d9520fdb94c8c338d596145598048a9b29 is preserved on local branch rejected-workflow-rest-c83 and is not part of the accepted runtime."
+  ]
+}
