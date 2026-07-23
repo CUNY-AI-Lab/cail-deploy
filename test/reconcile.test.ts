@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { handleApiForPrincipal } from "../src/api";
+import { handleApiForPrincipal, reconciliationLeaseMs } from "../src/api";
 import type { Principal } from "../src/auth";
 import { canonicalJson, sha256Hex } from "../src/domain/digests";
 import type { Env } from "../src/env";
@@ -122,6 +122,29 @@ async function fixture(status: "publishing" | "reconciling") {
   return { db, env, preparedDigest };
 }
 
+async function seedActiveClaim(
+  db: SqliteD1,
+  preparedDigest: string,
+  createdAt: string,
+  activeRequestId = "44444444-4444-4444-8444-444444444444",
+): Promise<void> {
+  const requestDigest = await sha256Hex(
+    canonicalJson({
+      releaseId,
+      revisionId,
+      preparedKey,
+      preparedDigest,
+    }),
+  );
+  db.sqlite.run("INSERT INTO idempotency VALUES (?, ?, 'prepared-publication', ?, ?, ?)", [
+    projectId,
+    `reconcile:${releaseId}`,
+    requestDigest,
+    JSON.stringify({ state: "active", requestId: activeRequestId }),
+    createdAt,
+  ]);
+}
+
 function reconcileRequest(): Request {
   return new Request(
     `https://deploy.test/v1/projects/${projectId}/releases/${releaseId}/reconcile`,
@@ -134,6 +157,12 @@ afterEach(() => {
 });
 
 describe("release reconciliation authority", () => {
+  test("derives a conservative finite lease from the bounded publisher timeout", () => {
+    expect(reconciliationLeaseMs(undefined)).toBe(60_000);
+    expect(reconciliationLeaseMs("1000")).toBe(2_000);
+    expect(reconciliationLeaseMs("120000")).toBe(240_000);
+  });
+
   for (const status of ["publishing", "reconciling"] as const) {
     test(`recovers retained prepared bytes from ${status} and replays without republishing`, async () => {
       const { db, env } = await fixture(status);
@@ -200,6 +229,117 @@ describe("release reconciliation authority", () => {
     unblock();
     expect((await first).status).toBe(200);
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("takes over an aged active claim and completes from retained authority", async () => {
+    const { db, env, preparedDigest } = await fixture("publishing");
+    await seedActiveClaim(db, preparedDigest, "2000-01-01T00:00:00.000Z");
+    globalThis.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+
+    const response = await handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ releaseId, status: "live" });
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("excludes takeover while an active claim lease is fresh", async () => {
+    const { db, env, preparedDigest } = await fixture("reconciling");
+    await seedActiveClaim(db, preparedDigest, new Date().toISOString());
+    globalThis.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+
+    await expect(
+      handleApiForPrincipal(reconcileRequest(), env, principal, requestId),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "release_reconciliation_in_progress",
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("permits only one provider action during concurrent stale takeover", async () => {
+    const { db, env, preparedDigest } = await fixture("reconciling");
+    await seedActiveClaim(db, preparedDigest, "2000-01-01T00:00:00.000Z");
+    let unblock: (() => void) | undefined;
+    globalThis.fetch = mock(
+      async () =>
+        new Promise<Response>((resolve) => {
+          unblock = () => resolve(new Response(null, { status: 200 }));
+        }),
+    ) as typeof fetch;
+
+    const winner = handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
+    for (let attempt = 0; attempt < 100 && !unblock; attempt += 1) {
+      await Bun.sleep(1);
+    }
+    expect(unblock).toBeDefined();
+    await expect(
+      handleApiForPrincipal(
+        reconcileRequest(),
+        env,
+        principal,
+        "33333333-3333-4333-8333-333333333333",
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "release_reconciliation_in_progress",
+    });
+    unblock();
+    expect((await winner).status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("fences an expired holder that resumes after a successful takeover", async () => {
+    const { db, env } = await fixture("reconciling");
+    let resolveExpired: ((response: Response) => void) | undefined;
+    let calls = 0;
+    globalThis.fetch = mock(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise<Response>((resolve) => {
+          resolveExpired = resolve;
+        });
+      }
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+
+    const expired = handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
+    for (let attempt = 0; attempt < 100 && !resolveExpired; attempt += 1) {
+      await Bun.sleep(1);
+    }
+    expect(resolveExpired).toBeDefined();
+    db.sqlite.run(
+      "UPDATE idempotency SET created_at = '2000-01-01T00:00:00.000Z' WHERE project_id = ? AND operation = ?",
+      [projectId, `reconcile:${releaseId}`],
+    );
+    const takeoverRequestId = "33333333-3333-4333-8333-333333333333";
+    const takeover = await handleApiForPrincipal(
+      reconcileRequest(),
+      env,
+      principal,
+      takeoverRequestId,
+    );
+    expect(takeover.status).toBe(200);
+
+    resolveExpired(new Response(null, { status: 200 }));
+    await expect(expired).rejects.toMatchObject({
+      status: 409,
+      code: "release_reconciliation_raced",
+    });
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(
+      db.sqlite
+        .query("SELECT type, detail_json FROM release_events WHERE release_id = ?")
+        .all(releaseId),
+    ).toEqual([
+      {
+        type: "release.live",
+        detail_json: JSON.stringify({
+          publicationName: "kp-ki-20260722123456-abcdef12-bbbbbbbbbbbb",
+          reconciled: true,
+          requestId: takeoverRequestId,
+        }),
+      },
+    ]);
   });
 
   test("preserves publication failure cause and permits one later deterministic retry", async () => {

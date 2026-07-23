@@ -102,12 +102,35 @@ function parseReconciliationClaim(value: string): ReconciliationClaim {
 async function reconciliationRow(
   env: Env,
   release: ReleaseRow,
-): Promise<{ request_digest: string; response_json: string } | null> {
+  leaseMs: number,
+): Promise<{
+  request_digest: string;
+  response_json: string;
+  created_at: string;
+  lease_expired: number | null;
+} | null> {
   return env.DB.prepare(
-    "SELECT request_digest, response_json FROM idempotency WHERE project_id = ? AND operation = ? AND idempotency_key = ?",
+    `SELECT request_digest, response_json, created_at,
+       CASE
+         WHEN julianday(created_at) IS NULL THEN NULL
+         WHEN julianday(created_at) <= julianday('now') - (? / 86400000.0) THEN 1
+         ELSE 0
+       END AS lease_expired
+     FROM idempotency
+     WHERE project_id = ? AND operation = ? AND idempotency_key = ?`,
   )
-    .bind(release.project_id, reconciliationOperation(release.release_id), RECONCILIATION_KEY)
-    .first<{ request_digest: string; response_json: string }>();
+    .bind(
+      leaseMs,
+      release.project_id,
+      reconciliationOperation(release.release_id),
+      RECONCILIATION_KEY,
+    )
+    .first<{
+      request_digest: string;
+      response_json: string;
+      created_at: string;
+      lease_expired: number | null;
+    }>();
 }
 
 export async function acquireReconciliationAuthority(
@@ -115,14 +138,21 @@ export async function acquireReconciliationAuthority(
   release: ReleaseRow,
   requestId: string,
   requestDigest: string,
+  leaseMs: number,
 ): Promise<ReconciliationAuthority> {
-  const now = new Date().toISOString();
+  if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) {
+    throw new ApiError(
+      503,
+      "reconciliation_configuration_error",
+      "The reconciliation lease is not configured safely.",
+    );
+  }
   const activeResponse = JSON.stringify({ state: "active", requestId });
   const operation = reconciliationOperation(release.release_id);
   const inserted = await env.DB.prepare(
     `INSERT OR IGNORE INTO idempotency
        (project_id, operation, idempotency_key, request_digest, response_json, created_at)
-     SELECT ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
      WHERE EXISTS (
        SELECT 1 FROM releases
        WHERE release_id = ? AND project_id = ?
@@ -141,7 +171,6 @@ export async function acquireReconciliationAuthority(
       RECONCILIATION_KEY,
       requestDigest,
       activeResponse,
-      now,
       release.release_id,
       release.project_id,
       release.prepared_key,
@@ -152,7 +181,7 @@ export async function acquireReconciliationAuthority(
     return { state: "acquired", activeResponse };
   }
 
-  let row = await reconciliationRow(env, release);
+  let row = await reconciliationRow(env, release, leaseMs);
   if (!row) return { state: "blocked" };
   if (row.request_digest !== requestDigest) {
     throw new ApiError(
@@ -165,12 +194,24 @@ export async function acquireReconciliationAuthority(
   if (claim.state === "complete") {
     return { state: "complete", publicationName: claim.publicationName };
   }
-  if (claim.state === "active") return { state: "in_progress" };
+  if (row.lease_expired !== 0 && row.lease_expired !== 1) {
+    throw new ApiError(
+      500,
+      "reconciliation_record_invalid",
+      "The stored reconciliation authority has an invalid lease timestamp.",
+    );
+  }
+  if (claim.state === "active" && row.lease_expired === 0) {
+    return { state: "in_progress" };
+  }
+  const retryable = claim.state === "retryable";
 
   const retried = await env.DB.prepare(
-    `UPDATE idempotency SET response_json = ?, created_at = ?
+    `UPDATE idempotency
+     SET response_json = ?, created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
      WHERE project_id = ? AND operation = ? AND idempotency_key = ?
-       AND request_digest = ? AND response_json = ?
+       AND request_digest = ? AND response_json = ? AND created_at = ?
+       AND (? = 1 OR julianday(created_at) <= julianday('now') - (? / 86400000.0))
        AND EXISTS (
          SELECT 1 FROM releases
          WHERE release_id = ? AND project_id = ?
@@ -185,12 +226,14 @@ export async function acquireReconciliationAuthority(
   )
     .bind(
       activeResponse,
-      now,
       release.project_id,
       operation,
       RECONCILIATION_KEY,
       requestDigest,
       row.response_json,
+      row.created_at,
+      retryable ? 1 : 0,
+      leaseMs,
       release.release_id,
       release.project_id,
       release.prepared_key,
@@ -201,7 +244,7 @@ export async function acquireReconciliationAuthority(
     return { state: "acquired", activeResponse };
   }
 
-  row = await reconciliationRow(env, release);
+  row = await reconciliationRow(env, release, leaseMs);
   if (!row) return { state: "blocked" };
   if (row.request_digest !== requestDigest) {
     throw new ApiError(
@@ -214,7 +257,15 @@ export async function acquireReconciliationAuthority(
   if (claim.state === "complete") {
     return { state: "complete", publicationName: claim.publicationName };
   }
-  return claim.state === "active" ? { state: "in_progress" } : { state: "blocked" };
+  if (claim.state !== "active") return { state: "blocked" };
+  if (row.lease_expired !== 0 && row.lease_expired !== 1) {
+    throw new ApiError(
+      500,
+      "reconciliation_record_invalid",
+      "The stored reconciliation authority has an invalid lease timestamp.",
+    );
+  }
+  return row.lease_expired === 0 ? { state: "in_progress" } : { state: "blocked" };
 }
 
 export async function releaseReconciliationAuthority(
@@ -255,6 +306,11 @@ export async function completeReconciliation(
        WHERE release_id = ? AND project_id = ?
          AND status IN ('publishing', 'reconciling')
          AND prepared_key = ? AND prepared_digest = ?
+         AND EXISTS (
+           SELECT 1 FROM idempotency
+           WHERE project_id = ? AND operation = ? AND idempotency_key = ?
+             AND request_digest = ? AND response_json = ?
+         )
          AND NOT EXISTS (
            SELECT 1 FROM release_events
            WHERE release_id = releases.release_id
@@ -267,6 +323,11 @@ export async function completeReconciliation(
       release.project_id,
       release.prepared_key,
       release.prepared_digest,
+      release.project_id,
+      reconciliationOperation(release.release_id),
+      RECONCILIATION_KEY,
+      requestDigest,
+      activeResponse,
     ),
     env.DB.prepare(
       `INSERT OR IGNORE INTO release_events

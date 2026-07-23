@@ -59,7 +59,7 @@ export function emitReleaseAdmission(
       ? { type: "user" as const, subject: logSubject }
       : { type: "service" as const },
     http_method: "POST" as const,
-    route: "/v1/projects/:projectId/releases",
+    route: "/v1/projects/{projectId}/releases",
   });
 }
 
@@ -81,7 +81,7 @@ export function emitReleaseTerminal(
       ? { type: "user" as const, subject: logSubject }
       : { type: "service" as const },
     http_method: "POST" as const,
-    route: "/v1/projects/:projectId/releases",
+    route: "/v1/projects/{projectId}/releases",
     duration_ms: Math.max(0, Date.now() - Date.parse(admittedAt)),
   };
   if (outcome === "ok" && reason === "completed") {

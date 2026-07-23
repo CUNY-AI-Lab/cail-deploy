@@ -1,4 +1,4 @@
-import { publishWorker } from "./adapters/cloudflare/wfp";
+import { publicationTimeoutMs, publishWorker } from "./adapters/cloudflare/wfp";
 import { authenticate } from "./auth";
 import type { Principal } from "./auth";
 import {
@@ -43,6 +43,7 @@ export const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_PREVIEW_TIMEOUT_MS = 5_000;
 const MIN_PREVIEW_TIMEOUT_MS = 100;
 const MAX_PREVIEW_TIMEOUT_MS = 30_000;
+const RECONCILIATION_LEASE_MULTIPLIER = 2;
 export const RELEASE_INSERT_SQL = `INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, rollback_of_release_id, operational_subject, request_id, admitted_at, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`;
 
@@ -60,6 +61,10 @@ export function previewTimeoutMs(raw: string | undefined): number {
     );
   }
   return value;
+}
+
+export function reconciliationLeaseMs(raw: string | undefined): number {
+  return publicationTimeoutMs(raw) * RECONCILIATION_LEASE_MULTIPLIER;
 }
 
 export async function ensureWorkflowInstance(
@@ -662,7 +667,13 @@ async function reconcileRelease(
   );
   let authority;
   try {
-    authority = await acquireReconciliationAuthority(env, release, requestId, requestDigest);
+    authority = await acquireReconciliationAuthority(
+      env,
+      release,
+      requestId,
+      requestDigest,
+      reconciliationLeaseMs(env.WFP_PUBLISH_TIMEOUT_MS),
+    );
   } catch (cause) {
     if (apiErrorSnapshot(cause)) throw cause;
     throw new ApiError(
