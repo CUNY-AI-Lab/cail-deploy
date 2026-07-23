@@ -36,7 +36,7 @@ export const artifactSchema = z
   })
   .strict()
   .refine(
-    (artifact) => artifact.entrypoint in artifact.files,
+    (artifact) => Object.hasOwn(artifact.files, artifact.entrypoint),
     "Entrypoint must be present in files.",
   );
 

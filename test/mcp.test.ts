@@ -333,6 +333,36 @@ describe("MCP tool argument boundary", () => {
     }
   });
 
+  test("preserves the MCP size error when cancellation, release, and diagnostics throw", async () => {
+    const request = {
+      headers: new Headers({ "Content-Length": String(MAX_MCP_BODY_BYTES + 1) }),
+      body: {
+        getReader: () => ({
+          cancel: () => {
+            throw new Error("PRIVATE_MCP_SYNCHRONOUS_CANCEL_FAILURE");
+          },
+          releaseLock: () => {
+            throw new Error("PRIVATE_MCP_RELEASE_FAILURE");
+          },
+        }),
+      },
+    } as unknown as Request;
+    const originalConsoleError = console.error;
+    console.error = () => {
+      throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
+    };
+    try {
+      await expect(
+        handleMcpWithPrincipal(request, {} as Env, requestId, principal),
+      ).rejects.toMatchObject({
+        status: 413,
+        code: "mcp_request_too_large",
+      });
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
   test("rejects chunked oversized outer JSON without decoding or API access", async () => {
     let cancelled = false;
     let envReads = 0;
@@ -379,6 +409,34 @@ describe("MCP tool argument boundary", () => {
     } finally {
       if (textDecoderDescriptor)
         Object.defineProperty(globalThis, "TextDecoder", textDecoderDescriptor);
+    }
+  });
+
+  test("preserves a primary MCP read failure when release and diagnostics also fail", async () => {
+    const primary = new Error("PRIMARY_MCP_READ_FAILURE");
+    const request = {
+      headers: new Headers(),
+      body: {
+        getReader: () => ({
+          read: async () => {
+            throw primary;
+          },
+          releaseLock: () => {
+            throw new Error("PRIVATE_MCP_RELEASE_FAILURE");
+          },
+        }),
+      },
+    } as unknown as Request;
+    const originalConsoleError = console.error;
+    console.error = () => {
+      throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
+    };
+    try {
+      await expect(handleMcpWithPrincipal(request, {} as Env, requestId, principal)).rejects.toBe(
+        primary,
+      );
+    } finally {
+      console.error = originalConsoleError;
     }
   });
 });

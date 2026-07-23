@@ -38,6 +38,282 @@ export interface ReleaseRow {
   updated_at: string;
 }
 
+const RECONCILIATION_KEY = "prepared-publication";
+
+type ReconciliationClaim =
+  | { state: "active"; requestId: string }
+  | { state: "complete"; publicationName: string }
+  | { state: "retryable" };
+
+export type ReconciliationAuthority =
+  | { state: "acquired"; activeResponse: string }
+  | { state: "blocked" }
+  | { state: "complete"; publicationName: string }
+  | { state: "in_progress" };
+
+function reconciliationOperation(releaseId: string): string {
+  return `reconcile:${releaseId}`;
+}
+
+function parseReconciliationClaim(value: string): ReconciliationClaim {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (cause) {
+    throw new ApiError(
+      500,
+      "reconciliation_record_invalid",
+      "The stored reconciliation authority is invalid.",
+      { cause },
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new ApiError(
+      500,
+      "reconciliation_record_invalid",
+      "The stored reconciliation authority is invalid.",
+    );
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    record.state === "active" &&
+    typeof record.requestId === "string" &&
+    Object.keys(record).length === 2
+  ) {
+    return { state: "active", requestId: record.requestId };
+  }
+  if (
+    record.state === "complete" &&
+    typeof record.publicationName === "string" &&
+    Object.keys(record).length === 2
+  ) {
+    return { state: "complete", publicationName: record.publicationName };
+  }
+  if (record.state === "retryable" && Object.keys(record).length === 1) {
+    return { state: "retryable" };
+  }
+  throw new ApiError(
+    500,
+    "reconciliation_record_invalid",
+    "The stored reconciliation authority is invalid.",
+  );
+}
+
+async function reconciliationRow(
+  env: Env,
+  release: ReleaseRow,
+): Promise<{ request_digest: string; response_json: string } | null> {
+  return env.DB.prepare(
+    "SELECT request_digest, response_json FROM idempotency WHERE project_id = ? AND operation = ? AND idempotency_key = ?",
+  )
+    .bind(release.project_id, reconciliationOperation(release.release_id), RECONCILIATION_KEY)
+    .first<{ request_digest: string; response_json: string }>();
+}
+
+export async function acquireReconciliationAuthority(
+  env: Env,
+  release: ReleaseRow,
+  requestId: string,
+  requestDigest: string,
+): Promise<ReconciliationAuthority> {
+  const now = new Date().toISOString();
+  const activeResponse = JSON.stringify({ state: "active", requestId });
+  const operation = reconciliationOperation(release.release_id);
+  const inserted = await env.DB.prepare(
+    `INSERT OR IGNORE INTO idempotency
+       (project_id, operation, idempotency_key, request_digest, response_json, created_at)
+     SELECT ?, ?, ?, ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM releases
+       WHERE release_id = ? AND project_id = ?
+         AND status IN ('publishing', 'reconciling')
+         AND prepared_key = ? AND prepared_digest = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM release_events
+           WHERE release_id = releases.release_id
+             AND type IN ('release.live', 'release.failed', 'release.rejected')
+         )
+     )`,
+  )
+    .bind(
+      release.project_id,
+      operation,
+      RECONCILIATION_KEY,
+      requestDigest,
+      activeResponse,
+      now,
+      release.release_id,
+      release.project_id,
+      release.prepared_key,
+      release.prepared_digest,
+    )
+    .run();
+  if ((inserted.meta.changes ?? 0) === 1) {
+    return { state: "acquired", activeResponse };
+  }
+
+  let row = await reconciliationRow(env, release);
+  if (!row) return { state: "blocked" };
+  if (row.request_digest !== requestDigest) {
+    throw new ApiError(
+      500,
+      "reconciliation_record_invalid",
+      "The stored reconciliation authority does not match the retained artifact.",
+    );
+  }
+  let claim = parseReconciliationClaim(row.response_json);
+  if (claim.state === "complete") {
+    return { state: "complete", publicationName: claim.publicationName };
+  }
+  if (claim.state === "active") return { state: "in_progress" };
+
+  const retried = await env.DB.prepare(
+    `UPDATE idempotency SET response_json = ?, created_at = ?
+     WHERE project_id = ? AND operation = ? AND idempotency_key = ?
+       AND request_digest = ? AND response_json = ?
+       AND EXISTS (
+         SELECT 1 FROM releases
+         WHERE release_id = ? AND project_id = ?
+           AND status IN ('publishing', 'reconciling')
+           AND prepared_key = ? AND prepared_digest = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM release_events
+             WHERE release_id = releases.release_id
+               AND type IN ('release.live', 'release.failed', 'release.rejected')
+           )
+       )`,
+  )
+    .bind(
+      activeResponse,
+      now,
+      release.project_id,
+      operation,
+      RECONCILIATION_KEY,
+      requestDigest,
+      row.response_json,
+      release.release_id,
+      release.project_id,
+      release.prepared_key,
+      release.prepared_digest,
+    )
+    .run();
+  if ((retried.meta.changes ?? 0) === 1) {
+    return { state: "acquired", activeResponse };
+  }
+
+  row = await reconciliationRow(env, release);
+  if (!row) return { state: "blocked" };
+  if (row.request_digest !== requestDigest) {
+    throw new ApiError(
+      500,
+      "reconciliation_record_invalid",
+      "The stored reconciliation authority does not match the retained artifact.",
+    );
+  }
+  claim = parseReconciliationClaim(row.response_json);
+  if (claim.state === "complete") {
+    return { state: "complete", publicationName: claim.publicationName };
+  }
+  return claim.state === "active" ? { state: "in_progress" } : { state: "blocked" };
+}
+
+export async function releaseReconciliationAuthority(
+  env: Env,
+  release: ReleaseRow,
+  requestDigest: string,
+  activeResponse: string,
+): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE idempotency SET response_json = ?
+     WHERE project_id = ? AND operation = ? AND idempotency_key = ?
+       AND request_digest = ? AND response_json = ?`,
+  )
+    .bind(
+      JSON.stringify({ state: "retryable" }),
+      release.project_id,
+      reconciliationOperation(release.release_id),
+      RECONCILIATION_KEY,
+      requestDigest,
+      activeResponse,
+    )
+    .run();
+}
+
+export async function completeReconciliation(
+  env: Env,
+  release: ReleaseRow,
+  publicationName: string,
+  requestDigest: string,
+  activeResponse: string,
+  requestId: string,
+): Promise<boolean> {
+  const now = new Date().toISOString();
+  const completedResponse = JSON.stringify({ state: "complete", publicationName });
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE releases SET publication_name = ?, updated_at = ?
+       WHERE release_id = ? AND project_id = ?
+         AND status IN ('publishing', 'reconciling')
+         AND prepared_key = ? AND prepared_digest = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM release_events
+           WHERE release_id = releases.release_id
+             AND type IN ('release.live', 'release.failed', 'release.rejected')
+         )`,
+    ).bind(
+      publicationName,
+      now,
+      release.release_id,
+      release.project_id,
+      release.prepared_key,
+      release.prepared_digest,
+    ),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO release_events
+         (release_id, sequence, type, occurred_at, detail_json)
+       SELECT ?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1),
+         'release.live', ?, ?
+       WHERE changes() = 1`,
+    ).bind(
+      release.release_id,
+      release.release_id,
+      now,
+      JSON.stringify({ publicationName, reconciled: true, requestId }),
+    ),
+    env.DB.prepare(
+      `UPDATE releases SET status = 'live', updated_at = ?
+       WHERE release_id = ? AND publication_name = ?
+         AND EXISTS (
+           SELECT 1 FROM release_events
+           WHERE release_id = ? AND type = 'release.live'
+         )`,
+    ).bind(now, release.release_id, publicationName, release.release_id),
+    env.DB.prepare(
+      `UPDATE idempotency SET response_json = ?
+       WHERE project_id = ? AND operation = ? AND idempotency_key = ?
+         AND request_digest = ? AND response_json = ?
+         AND EXISTS (
+           SELECT 1 FROM releases
+           WHERE release_id = ? AND status = 'live' AND publication_name = ?
+         )`,
+    ).bind(
+      completedResponse,
+      release.project_id,
+      reconciliationOperation(release.release_id),
+      RECONCILIATION_KEY,
+      requestDigest,
+      activeResponse,
+      release.release_id,
+      publicationName,
+    ),
+  ]);
+  return (
+    (results[0]?.meta.changes ?? 0) === 1 &&
+    (results[1]?.meta.changes ?? 0) === 1 &&
+    (results[3]?.meta.changes ?? 0) === 1
+  );
+}
+
 export async function requireOwnedProject(
   env: Env,
   projectId: string,

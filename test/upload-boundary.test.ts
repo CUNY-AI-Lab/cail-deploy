@@ -63,6 +63,34 @@ describe("revision upload body boundary", () => {
     expect(cancelled).toBe(true);
   });
 
+  test("preserves the size error when cancellation, release, and diagnostics throw", async () => {
+    const request = {
+      headers: new Headers({ "Content-Length": String(maxArtifactBytes + 1) }),
+      body: {
+        getReader: () => ({
+          cancel: () => {
+            throw new Error("PRIVATE_SYNCHRONOUS_CANCEL_FAILURE");
+          },
+          releaseLock: () => {
+            throw new Error("PRIVATE_RELEASE_FAILURE");
+          },
+        }),
+      },
+    } as unknown as Request;
+    const originalConsoleError = console.error;
+    console.error = () => {
+      throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
+    };
+    try {
+      await expect(readArtifactBody(request, requestId)).rejects.toMatchObject({
+        status: 413,
+        code: "artifact_size_invalid",
+      });
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
   test("cancels a chunked body at the first byte beyond the limit", async () => {
     let cancelled = false;
     let pulls = 0;
@@ -119,6 +147,32 @@ describe("revision upload body boundary", () => {
         requestId,
       });
       expect(JSON.stringify(diagnostics)).not.toContain("private cancel failure");
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
+  test("preserves a primary read failure when release and diagnostics also fail", async () => {
+    const primary = new Error("PRIMARY_ARTIFACT_READ_FAILURE");
+    const request = {
+      headers: new Headers(),
+      body: {
+        getReader: () => ({
+          read: async () => {
+            throw primary;
+          },
+          releaseLock: () => {
+            throw new Error("PRIVATE_RELEASE_FAILURE");
+          },
+        }),
+      },
+    } as unknown as Request;
+    const originalConsoleError = console.error;
+    console.error = () => {
+      throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
+    };
+    try {
+      await expect(readArtifactBody(request, requestId)).rejects.toBe(primary);
     } finally {
       console.error = originalConsoleError;
     }

@@ -1,3 +1,5 @@
+import { emitDeployDiagnostic } from "./diagnostics";
+
 const WORKFLOW_FINALIZATION_FAILURE = Symbol("workflow-terminal-finalization-failure");
 
 type WorkflowFinalizationAggregate = AggregateError & {
@@ -5,29 +7,11 @@ type WorkflowFinalizationAggregate = AggregateError & {
 };
 
 function emitWorkflowFinalizationDiagnostic(releaseId: string, requestId: string): void {
-  try {
-    console.error({
-      event: "deploy.workflow.terminal_finalization_failed",
-      error: "terminal_finalization_failed",
-      releaseId,
-      requestId,
-    });
-  } catch {
-    // Diagnostics are observational and must never replace the workflow failure.
-  }
+  emitDeployDiagnostic("workflow_terminal_finalization_failed", { releaseId, requestId });
 }
 
 function emitUnattachedDiagnostic(releaseId: string, requestId: string): void {
-  try {
-    console.error({
-      event: "deploy.workflow.finalization_diagnostic_unattached",
-      error: "finalization_diagnostic_unattached",
-      releaseId,
-      requestId,
-    });
-  } catch {
-    // Diagnostics are observational and must never replace the workflow failure.
-  }
+  emitDeployDiagnostic("workflow_finalization_diagnostic_unattached", { releaseId, requestId });
 }
 
 function retainWorkflowFinalizationFailure(

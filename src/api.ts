@@ -17,7 +17,8 @@ import {
   parseContentDigest,
   sha256Hex,
 } from "./domain/digests";
-import { ApiError } from "./domain/errors";
+import { ApiError, apiErrorSnapshot } from "./domain/errors";
+import { emitDeployDiagnostic, observeDetachedCleanup } from "./diagnostics";
 import type { Env } from "./env";
 import type { ReleaseWorkflowParams } from "./env";
 import {
@@ -26,9 +27,11 @@ import {
   operationalLogSubject,
 } from "./operational-events";
 import {
-  appendTerminalStatus,
+  acquireReconciliationAuthority,
+  completeReconciliation,
   getRevision,
   idempotentResponse,
+  releaseReconciliationAuthority,
   requireOwnedProject,
   requireRelease,
   type ReleaseRow,
@@ -124,24 +127,11 @@ function parsedBody<T>(result: { success: true; data: T } | { success: false }):
   return result.data;
 }
 
-function logRequestBodyDiagnostic(
-  event: "body_cancel_failed" | "body_release_failed",
-  requestId: string,
-): void {
-  console.error({
-    event: `deploy.request.${event}`,
-    error: event,
-    requestId,
-  });
-}
-
 function cancelRequestBody(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   requestId: string,
 ): void {
-  void reader.cancel().catch(() => {
-    logRequestBodyDiagnostic("body_cancel_failed", requestId);
-  });
+  observeDetachedCleanup(() => reader.cancel(), "request_body_cancel_failed", { requestId });
 }
 
 function releaseRequestBodyReader(
@@ -151,7 +141,7 @@ function releaseRequestBodyReader(
   try {
     reader.releaseLock();
   } catch {
-    logRequestBodyDiagnostic("body_release_failed", requestId);
+    emitDeployDiagnostic("request_body_release_failed", { requestId });
   }
 }
 
@@ -635,10 +625,12 @@ async function reconcileRelease(
   subject: string,
   projectId: string,
   releaseId: string,
+  requestId: string,
 ): Promise<Response> {
   await requireOwnedProject(env, projectId, subject);
   const release = await requireRelease(env, projectId, releaseId);
-  if (release.status !== "reconciling" || !release.prepared_key || !release.prepared_digest) {
+  const recoverable = ["publishing", "reconciling"].includes(release.status);
+  if (!release.prepared_key || !release.prepared_digest) {
     throw new ApiError(
       409,
       "release_not_reconcilable",
@@ -660,20 +652,84 @@ async function reconcileRelease(
       "The retained prepared artifact failed verification.",
     );
   }
-  const name = await publishWorker(
-    env,
-    projectId,
-    release.revision_id,
-    JSON.parse(json) as PreparedEnvelope,
+  const requestDigest = await sha256Hex(
+    canonicalJson({
+      releaseId,
+      revisionId: release.revision_id,
+      preparedKey: release.prepared_key,
+      preparedDigest: release.prepared_digest,
+    }),
   );
-  await env.DB.prepare("UPDATE releases SET publication_name = ? WHERE release_id = ?")
-    .bind(name, releaseId)
-    .run();
-  const terminal = await appendTerminalStatus(env, releaseId, "live", "release.live", {
-    publicationName: name,
-    reconciled: true,
-  });
-  if (terminal) {
+  let authority;
+  try {
+    authority = await acquireReconciliationAuthority(env, release, requestId, requestDigest);
+  } catch (cause) {
+    if (apiErrorSnapshot(cause)) throw cause;
+    throw new ApiError(
+      503,
+      "reconciliation_authority_unavailable",
+      "Reconciliation authority could not be established.",
+      { cause },
+    );
+  }
+  if (authority.state === "complete") {
+    const current = await requireRelease(env, projectId, releaseId);
+    if (current.status !== "live" || current.publication_name !== authority.publicationName) {
+      throw new ApiError(
+        409,
+        "release_not_reconcilable",
+        "The release has no ambiguous prepared publication to reconcile.",
+      );
+    }
+    return Response.json(releaseResponse(current));
+  }
+  if (!recoverable || authority.state === "blocked") {
+    throw new ApiError(
+      409,
+      "release_not_reconcilable",
+      "The release has no ambiguous prepared publication to reconcile.",
+    );
+  }
+  if (authority.state === "in_progress") {
+    throw new ApiError(
+      409,
+      "release_reconciliation_in_progress",
+      "The release is already being reconciled.",
+    );
+  }
+
+  try {
+    const name = await publishWorker(
+      env,
+      projectId,
+      release.revision_id,
+      JSON.parse(json) as PreparedEnvelope,
+    );
+    let completed: boolean;
+    try {
+      completed = await completeReconciliation(
+        env,
+        release,
+        name,
+        requestDigest,
+        authority.activeResponse,
+        requestId,
+      );
+    } catch (cause) {
+      throw new ApiError(
+        503,
+        "reconciliation_persist_failed",
+        "The reconciled publication could not be persisted.",
+        { cause },
+      );
+    }
+    if (!completed) {
+      throw new ApiError(
+        409,
+        "release_reconciliation_raced",
+        "The release changed before reconciliation could complete.",
+      );
+    }
     emitReleaseTerminal(
       env,
       releaseId,
@@ -683,11 +739,23 @@ async function reconcileRelease(
       "ok",
       "completed",
     );
+    const current = await requireRelease(env, projectId, releaseId);
+    if (current.status !== "live" || current.publication_name !== name) {
+      throw new ApiError(
+        409,
+        "release_reconciliation_raced",
+        "The release changed before reconciliation could complete.",
+      );
+    }
+    return Response.json(releaseResponse(current));
+  } catch (primary) {
+    try {
+      await releaseReconciliationAuthority(env, release, requestDigest, authority.activeResponse);
+    } catch {
+      emitDeployDiagnostic("reconcile_claim_release_failed", { releaseId, requestId });
+    }
+    throw primary;
   }
-  return Response.json({
-    ...releaseResponse(await requireRelease(env, projectId, releaseId)),
-    status: "live",
-  });
 }
 
 export async function handleApi(
@@ -751,7 +819,7 @@ export async function handleApiForPrincipal(
         requestId,
         principal.operationalSubject,
       );
-    return reconcileRelease(env, principal.subject, actionMatch[1], actionMatch[2]);
+    return reconcileRelease(env, principal.subject, actionMatch[1], actionMatch[2], requestId);
   }
   if (PROJECT_PATTERN.test(url.pathname) || RELEASE_PATTERN.test(url.pathname)) {
     throw new ApiError(404, "route_not_found", "The route was not found.");

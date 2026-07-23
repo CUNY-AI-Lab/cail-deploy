@@ -32,15 +32,21 @@ try {
         moduleCount?: number;
         workflowId?: string;
         workflowStatus?: string;
+        preparedResponse?: string;
+        inheritedEntrypointRejected?: boolean;
       };
       if (
         !result.mainModule ||
         !result.moduleCount ||
         result.workflowId !== "workflow-admission-workerd-gate-v1" ||
         !result.workflowStatus ||
-        result.workflowStatus === "unknown"
+        result.workflowStatus === "unknown" ||
+        result.preparedResponse !== "declared-alternate-entrypoint" ||
+        result.inheritedEntrypointRejected !== true
       ) {
-        throw new Error("workerd did not return prepared modules and one deterministic Workflow.");
+        throw new Error(
+          "workerd did not honor the declared entrypoint, reject an inherited entrypoint, and return one deterministic Workflow.",
+        );
       }
       console.log(
         `Workerd gates passed: ${result.mainModule}, ${result.moduleCount} module(s), Workflow ${result.workflowId} ${result.workflowStatus}`,

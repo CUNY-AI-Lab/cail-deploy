@@ -5,7 +5,7 @@ import { artifactSchema } from "../../src/domain/contracts";
 import type { ReleaseWorkflowParams, TestWorkflowBinding, WorkerLoaderLike } from "../../src/env";
 
 const artifactBytes =
-  '{"schemaVersion":"kale.artifact.v1","runtime":"worker","entrypoint":"src/index.ts","files":{"src/index.ts":"export default { fetch() { return new Response(\\"kale-fixture-v1\\") } }"},"compatibility":{"date":"2026-07-22","flags":[]},"requestedBindings":[]}\n';
+  '{"schemaVersion":"kale.artifact.v1","runtime":"worker","entrypoint":"src/alternate.ts","files":{"src/index.ts":"export default { fetch() { return new Response(\\"wrong-default-entrypoint\\") } }","src/alternate.ts":"export default { fetch() { return new Response(\\"declared-alternate-entrypoint\\") } }"},"compatibility":{"date":"2026-07-22","flags":[]},"requestedBindings":[]}\n';
 
 const workflowId = "workflow-admission-workerd-gate-v1";
 const workflowParams: ReleaseWorkflowParams = {
@@ -29,7 +29,15 @@ export default {
     },
   ): Promise<Response> {
     const artifact = artifactSchema.parse(JSON.parse(artifactBytes));
+    const inheritedEntrypointRejected = !artifactSchema.safeParse({
+      ...artifact,
+      entrypoint: "toString",
+      files: { "src/index.ts": artifact.files["src/index.ts"] },
+    }).success;
     const prepared = await prepareAndSmokeWorker(artifact, env.LOADER);
+    const preparedResponse = await env.LOADER.load({ ...prepared, globalOutbound: null })
+      .getEntrypoint()
+      .fetch(new Request("https://dynamic-worker.invalid/"));
     const workflowEnv = {
       RELEASE_WORKFLOW: env.RELEASE_WORKFLOW as unknown as TestWorkflowBinding,
     };
@@ -42,6 +50,8 @@ export default {
       moduleCount: Object.keys(prepared.modules).length,
       workflowId: instance.id,
       workflowStatus: workflowStatus.status,
+      preparedResponse: await preparedResponse.text(),
+      inheritedEntrypointRejected,
     });
   },
 };

@@ -13,7 +13,10 @@ export async function prepareAndSmokeWorker(
   artifact: Artifact,
   loader: WorkerLoaderLike,
 ): Promise<PreparedWorker> {
-  const bundled = await createWorker({ files: artifact.files });
+  const bundled = await createWorker({
+    files: artifact.files,
+    entryPoint: artifact.entrypoint,
+  });
   const modules = Object.fromEntries(
     Object.entries(bundled.modules).map(([path, source]) => {
       if (typeof source === "string") return [path, source];

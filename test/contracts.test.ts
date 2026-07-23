@@ -32,6 +32,13 @@ describe("immutable artifact contract", () => {
         .success,
     ).toBe(false);
     expect(artifactSchema.safeParse({ ...base, entrypoint: "missing.ts" }).success).toBe(false);
+    expect(
+      artifactSchema.safeParse({
+        ...base,
+        entrypoint: "toString",
+        files: { "src/index.ts": "export default {}" },
+      }).success,
+    ).toBe(false);
   });
 
   test("release progress freezes prepared before approval", () => {

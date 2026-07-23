@@ -10,6 +10,7 @@ import {
 } from "./domain/contracts";
 import { parseContentDigest } from "./domain/digests";
 import { ApiError, apiErrorSnapshot, errorResponse } from "./domain/errors";
+import { emitDeployDiagnostic, observeDetachedCleanup } from "./diagnostics";
 import type { Env } from "./env";
 
 const idempotencyKeySchema = z
@@ -112,21 +113,8 @@ function decodeArtifactBase64(value: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-function emitMcpBodyDiagnostic(
-  event: "body_cancel_failed" | "body_release_failed",
-  requestId: string,
-): void {
-  console.error({
-    event: `deploy.mcp.request.${event}`,
-    error: event,
-    requestId,
-  });
-}
-
 function cancelMcpBody(reader: ReadableStreamDefaultReader<Uint8Array>, requestId: string): void {
-  void reader.cancel().catch(() => {
-    emitMcpBodyDiagnostic("body_cancel_failed", requestId);
-  });
+  observeDetachedCleanup(() => reader.cancel(), "mcp_body_cancel_failed", { requestId });
 }
 
 function releaseMcpBodyReader(
@@ -136,7 +124,7 @@ function releaseMcpBodyReader(
   try {
     reader.releaseLock();
   } catch {
-    emitMcpBodyDiagnostic("body_release_failed", requestId);
+    emitDeployDiagnostic("mcp_body_release_failed", { requestId });
   }
 }
 
