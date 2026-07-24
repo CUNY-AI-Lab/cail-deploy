@@ -1,0 +1,46 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "kale-release-control-plane-release-workerd-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "vars": {
+    "AUTH_MODE": "cail-jwt",
+    "SERVICE_AUDIENCE": "cail:deploy",
+    "PUBLIC_BASE_URL": "http://127.0.0.1:8787",
+    "CAIL_IDENTITY_ISSUER": "https://identity.release-workerd-test.invalid",
+    "CAIL_IDENTITY_JWKS": "{\"keys\":[]}",
+    "RUN_ID": "release-workerd-test",
+    "WFP_ACCOUNT_ID": "not-used",
+    "WFP_NAMESPACE": "not-used"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kale-release-control-plane-release-workerd-test",
+      "database_id": "00000000-0000-0000-0000-000000000002",
+      "migrations_dir": "schema"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "kale-release-control-plane-release-workerd-test"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "00000000000000000000000000000002"
+    }
+  ],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "workflows": [
+    {
+      "name": "kale-release-control-plane-release-workerd-test",
+      "binding": "RELEASE_WORKFLOW",
+      "class_name": "ReleaseWorkflow"
+    }
+  ]
+}

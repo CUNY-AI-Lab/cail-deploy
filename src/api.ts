@@ -440,7 +440,7 @@ async function startRelease(
       approval,
       releaseId,
       rollbackOfReleaseId,
-      logSubject,
+      logSubject ?? null,
       requestId,
       now,
       now,
