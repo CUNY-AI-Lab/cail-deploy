@@ -1,7 +1,7 @@
 {
   "schemaRevision": "0.1.0",
   "component": "deploy",
-  "ownedDirectories": ["/Users/stephenzweibel/Apps/kale-release-control-plane"],
+  "ownedDirectories": ["/Users/stephenzweibel/Apps/cail-deploy"],
   "source": {
     "base": "d95bbf2d822fcd8bc4a464aa52533c03c635c64e",
     "head": "e332fcc4b2a1e0a38ef50404314de91be3533840",
@@ -52,8 +52,8 @@
     "build": ["bun run build"],
     "selfTest": [
       "bun run check",
-      "bun -e 'import {validateResourceManifest} from \"/Users/stephenzweibel/Apps/kale-integration-acceptance/src/fixture-envelope.ts\"; const value=await Bun.file(\"resources/manifest.json\").json(); const errors=validateResourceManifest(value); if(errors.length){console.error(errors); process.exit(1)}'",
-      "bun -e 'import {validateComponentManifest} from \"/Users/stephenzweibel/Apps/kale-integration-acceptance/src/fixture-envelope.ts\"; const value=await Bun.file(\"resources/component-manifest.json\").json(); const errors=validateComponentManifest(value); if(errors.length){console.error(errors); process.exit(1)}'"
+      "bun -e 'import {validateResourceManifest} from \"/Users/stephenzweibel/Apps/kale-integration/src/fixture-envelope.ts\"; const value=await Bun.file(\"resources/manifest.json\").json(); const errors=validateResourceManifest(value); if(errors.length){console.error(errors); process.exit(1)}'",
+      "bun -e 'import {validateComponentManifest} from \"/Users/stephenzweibel/Apps/kale-integration/src/fixture-envelope.ts\"; const value=await Bun.file(\"resources/component-manifest.json\").json(); const errors=validateComponentManifest(value); if(errors.length){console.error(errors); process.exit(1)}'"
     ],
     "serve": []
   },
@@ -139,7 +139,7 @@
       "sha256": "10727ed030b66817c66e98c7b925aa72fdb6ba170cc348d57047c974e38bae00"
     },
     {
-      "path": "/Users/stephenzweibel/Apps/kale-integration-acceptance/fixtures/components/deploy/manifest.json",
+      "path": "/Users/stephenzweibel/Apps/kale-integration/fixtures/components/deploy/manifest.json",
       "sha256": "2566ddb5c1af0d9df4316c39f4ec94ab98a024c947173d4894cad637af1592c0"
     },
     {

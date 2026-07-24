@@ -2,7 +2,7 @@
   "schemaVersion": "kale.cloudflare-compatibility-receipt.v1",
   "acceptedAt": "2026-07-22",
   "candidateBom": {
-    "repository": "/Users/stephenzweibel/Apps/kale-integration-acceptance",
+    "repository": "/Users/stephenzweibel/Apps/kale-integration",
     "revision": "b722a436702ff1e821754e3c185ea017fe73d2f4",
     "status": "candidate"
   },
