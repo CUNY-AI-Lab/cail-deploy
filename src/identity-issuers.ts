@@ -54,22 +54,34 @@ function isExactIssuer(value: string): boolean {
   } catch {
     return false;
   }
-  // An issuer is compared byte-for-byte, so anything that could carry a second
-  // meaning or a second spelling is refused rather than normalized.
+  // Exactly the primitive's own rule: `parsed.href === value`. An earlier
+  // version invented a stricter one — it stripped a root slash and refused any
+  // trailing slash — and was wrong in both directions. It rejected
+  // `https://issuer.example/tenant/`, which OpenID Connect Discovery permits and
+  // the primitive accepts, and it accepted `https://issuer.example`, which the
+  // primitive rejects as issuer_unsupported. A gate that disagrees with the
+  // thing it guards either strands a valid deployment or passes a configuration
+  // that cannot load.
   return (
     parsed.protocol === "https:" &&
     parsed.username === "" &&
     parsed.password === "" &&
     parsed.search === "" &&
     parsed.hash === "" &&
-    !value.endsWith("/") &&
-    value === parsed.href.replace(/\/$/, "")
+    parsed.href === value
   );
 }
 
 export function trustedIdentityIssuers(env: IdentityIssuerEnv): readonly string[] {
-  const declared = env.CAIL_TRUSTED_IDENTITY_ISSUERS?.trim();
-  if (declared === undefined || declared === "") return DEFAULT_TRUSTED_ISSUERS;
+  const raw = env.CAIL_TRUSTED_IDENTITY_ISSUERS;
+  // Absent means "not configured": take the canonical defaults. Present but
+  // empty is a different statement and must not be read as absent — a template
+  // that renders a missing value as "" would otherwise silently restore trust in
+  // production issuers, and an operator clearing the variable to withdraw trust
+  // would get the opposite of what they asked for.
+  if (raw === undefined) return DEFAULT_TRUSTED_ISSUERS;
+  const declared = raw.trim();
+  if (declared === "") return [];
 
   const entries = declared.split(",").map((entry) => entry.trim());
   if (entries.some((entry) => !isExactIssuer(entry))) return [];

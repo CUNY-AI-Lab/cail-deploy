@@ -16,7 +16,6 @@ const JWKS = JSON.stringify({ keys: [] });
 describe("trustedIdentityIssuers", () => {
   test("locks a deployment to the canonical issuers when nothing is declared", () => {
     expect(trustedIdentityIssuers({})).toEqual(DEFAULTS);
-    expect(trustedIdentityIssuers({ CAIL_TRUSTED_IDENTITY_ISSUERS: "   " })).toEqual(DEFAULTS);
   });
 
   // The point of the environment-scoped list: a practice deployment trusts its
@@ -47,7 +46,6 @@ describe("trustedIdentityIssuers", () => {
       "https://user:pass@run.identity.invalid/cail-sso",
       "https://run.identity.invalid/cail-sso?tenant=other",
       "https://run.identity.invalid/cail-sso#fragment",
-      "https://run.identity.invalid/cail-sso/",
       "not-a-url",
       `${RUN_ISSUER},`,
       `${RUN_ISSUER},not-a-url`,
@@ -55,6 +53,31 @@ describe("trustedIdentityIssuers", () => {
     for (const value of malformed) {
       expect(trustedIdentityIssuers({ CAIL_TRUSTED_IDENTITY_ISSUERS: value })).toEqual([]);
     }
+  });
+
+  test("withdraws all trust when the declaration is present but empty", () => {
+    // Absence and emptiness are different statements. A template that renders a
+    // missing value as "" must not silently restore the production issuers, and
+    // an operator clearing the variable is withdrawing trust, not defaulting.
+    for (const value of ["", "   "]) {
+      expect(trustedIdentityIssuers({ CAIL_TRUSTED_IDENTITY_ISSUERS: value })).toEqual([]);
+    }
+  });
+
+  test("accepts exactly what the verifier primitive accepts", () => {
+    // The primitive's rule is `parsed.href === value`. Inventing a stricter one
+    // rejected a path-bearing issuer OIDC permits, and accepted an origin the
+    // primitive refuses — a gate disagreeing with the thing it guards.
+    expect(
+      trustedIdentityIssuers({
+        CAIL_TRUSTED_IDENTITY_ISSUERS: "https://issuer.example/tenant/",
+      }),
+    ).toEqual(["https://issuer.example/tenant/"]);
+    expect(
+      trustedIdentityIssuers({
+        CAIL_TRUSTED_IDENTITY_ISSUERS: "https://issuer.example",
+      }),
+    ).toEqual([]);
   });
 
   test("fails closed on a repeated issuer", () => {
