@@ -9,7 +9,10 @@ import type { Env } from "../src/env";
 import { workerHandler } from "../src/handler";
 import { operationalLogSubject } from "../src/operational-events";
 
-const audience = "https://deploy.integration.invalid";
+// The real fleet audience. It is pinned in code, so a placeholder here would
+// be refused at config load and every case below would read 503 instead of
+// exercising token validation.
+const audience = "cail:deploy";
 
 function env(overrides: Partial<Env>): Env {
   return { AUTH_MODE: "cail-jwt", SERVICE_AUDIENCE: audience, ...overrides } as Env;

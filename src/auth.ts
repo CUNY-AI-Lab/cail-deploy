@@ -21,6 +21,25 @@ function isUsableKeySet(jwks: JSONWebKeySet): boolean {
   return new Set(kids).size === kids.length;
 }
 
+/** This service's own audience, named by tokens presented at its ingress. */
+export const SERVICE_AUDIENCE = "cail:deploy";
+
+/**
+ * Whether identity verification is usable right now. Used by the readiness probe
+ * so it reports the same health this boundary enforces, instead of ok
+ * unconditionally — which left a broken service in rotation while every
+ * authenticated request failed.
+ */
+export function identityReady(env: Env): boolean {
+  if (env.AUTH_MODE !== "cail-jwt") return true;
+  const config = parseIdentityConfig({
+    jwks: env.CAIL_IDENTITY_JWKS,
+    issuer: env.CAIL_IDENTITY_ISSUER,
+    supportedIssuers: [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER],
+  });
+  return config.ok && isUsableKeySet(config.jwks) && env.SERVICE_AUDIENCE === SERVICE_AUDIENCE;
+}
+
 export interface Principal {
   subject: string;
   operationalSubject?: string;
@@ -56,12 +75,14 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
         "CAIL identity verification is not configured.",
       );
     }
-    // This primitive treats an empty or duplicate-`kid` key set, and a missing
-    // audience, as token concerns — so every user saw 401 invalid_credential
-    // during a bad JWKS rotation while the other services correctly reported
-    // 503. These are operator errors: a caller cannot fix them and must not be
-    // told its credential is bad.
-    if (!isUsableKeySet(config.jwks) || !env.SERVICE_AUDIENCE) {
+    // Two operator errors, both reported as unavailable rather than as a bad
+    // credential. This primitive treats an empty or duplicate-`kid` key set as a
+    // token concern, so every user saw 401 invalid_credential during a bad JWKS
+    // rotation while peer services correctly reported 503. And the audience is
+    // pinned in code rather than merely read from configuration: the four fleet
+    // audiences sit adjacently in deployment config, so a value mis-set to a
+    // peer's would otherwise silently accept that peer's tokens here.
+    if (!isUsableKeySet(config.jwks) || env.SERVICE_AUDIENCE !== SERVICE_AUDIENCE) {
       throw new ApiError(
         503,
         "identity_not_configured",
