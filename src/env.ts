@@ -71,6 +71,8 @@ export interface Env {
   TEST_PRINCIPALS_JSON?: string;
   CAIL_IDENTITY_JWKS?: string;
   CAIL_IDENTITY_ISSUER?: string;
+  /** Comma-separated trusted issuers; absent means the canonical CAIL pair. */
+  CAIL_TRUSTED_IDENTITY_ISSUERS?: string;
   SERVICE_AUDIENCE: string;
   PUBLIC_BASE_URL: string;
   SERVICE_RELEASE?: string;

@@ -1,9 +1,5 @@
-import {
-  CAIL_CANONICAL_ISSUER,
-  CAIL_STAGING_ISSUER,
-  parseIdentityConfig,
-  verifyIdentityJwt,
-} from "@cuny-ai-lab/cail-identity";
+import { parseIdentityConfig, verifyIdentityJwt } from "@cuny-ai-lab/cail-identity";
+import { trustedIdentityIssuers } from "./identity-issuers";
 import type { JSONWebKeySet } from "jose";
 import { SUBJECT_PATTERN } from "./domain/contracts";
 import { ApiError } from "./domain/errors";
@@ -35,7 +31,7 @@ export function identityReady(env: Env): boolean {
   const config = parseIdentityConfig({
     jwks: env.CAIL_IDENTITY_JWKS,
     issuer: env.CAIL_IDENTITY_ISSUER,
-    supportedIssuers: [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER],
+    supportedIssuers: trustedIdentityIssuers(env),
   });
   return config.ok && isUsableKeySet(config.jwks) && env.SERVICE_AUDIENCE === SERVICE_AUDIENCE;
 }
@@ -63,10 +59,9 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
     const config = parseIdentityConfig({
       jwks: env.CAIL_IDENTITY_JWKS,
       issuer: env.CAIL_IDENTITY_ISSUER,
-      // An exact allowlist independent of the configured issuer. Without it the
-      // issuer check is a tautology and a misconfigured or compromised
-      // issuer/JWKS pair would be loaded and its tokens trusted.
-      supportedIssuers: [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER],
+      // See identity-issuers.ts: the trusted set is this environment's declared
+      // allowlist, defaulting to the canonical CAIL issuers.
+      supportedIssuers: trustedIdentityIssuers(env),
     });
     if (!config.ok) {
       throw new ApiError(
