@@ -9,9 +9,61 @@ import type { Env } from "../src/env";
 import type { ReleaseRow } from "../src/storage";
 
 const originalFetch = globalThis.fetch;
+const originalConsoleError = console.error;
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  console.error = originalConsoleError;
 });
+
+const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const revisionId = `rev_sha256_${"b".repeat(64)}`;
+const expectedPublicationName = "kp-ki-20260722123456-abcdef12-aaaaaaaaaaaa";
+const prepared = {
+  mainModule: "index.js",
+  modules: { "index.js": "export default {}" },
+  compatibilityDate: "2026-07-22",
+  compatibilityFlags: [],
+};
+
+async function publishWithResponse(response: Response, timeout = "1000"): Promise<string> {
+  return publishWorker(
+    {
+      CLOUDFLARE_API_TOKEN: "test-only",
+      WFP_ACCOUNT_ID: "account",
+      WFP_NAMESPACE: "namespace",
+      WFP_PUBLISH_TIMEOUT_MS: timeout,
+      RUN_ID: "ki-20260722123456-abcdef12",
+      WFP_API: { fetch: async () => response },
+    } as unknown as Env,
+    projectId,
+    revisionId,
+    prepared,
+  );
+}
+
+function providerEnvelope(result: Record<string, unknown>, id = true): Record<string, unknown> {
+  return {
+    errors: [],
+    messages: [],
+    success: true,
+    result: {
+      startup_time_ms: 1,
+      ...result,
+      ...(id ? { id: expectedPublicationName } : {}),
+    },
+  };
+}
+
+function responseWithReader(
+  status: number,
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Response {
+  const response = new Response(null, { status });
+  Object.defineProperty(response, "body", {
+    value: { getReader: () => reader },
+  });
+  return response;
+}
 
 describe("Cloudflare volatile boundaries", () => {
   test("WfP publication timeout configuration is bounded", () => {
@@ -53,14 +105,9 @@ describe("Cloudflare volatile boundaries", () => {
           WFP_PUBLISH_TIMEOUT_MS: "1000",
           RUN_ID: "ki-20260722123456-abcdef12",
         } as Env,
-        "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        `rev_sha256_${"b".repeat(64)}`,
-        {
-          mainModule: "index.js",
-          modules: { "index.js": "export default {}" },
-          compatibilityDate: "2026-07-22",
-          compatibilityFlags: [],
-        },
+        projectId,
+        revisionId,
+        prepared,
       );
     } catch (error) {
       captured = error;
@@ -80,10 +127,9 @@ describe("Cloudflare volatile boundaries", () => {
     const WFP_API = {
       fetch: mock(async (request: Request) => {
         captured = request;
-        return Response.json({ success: true, result: { id: "publication" } });
+        return Response.json(providerEnvelope({ etag: "publication" }));
       }),
     };
-    const revisionId = `rev_sha256_${"b".repeat(64)}`;
     const result = await publishWorker(
       {
         CLOUDFLARE_API_TOKEN: "test-only",
@@ -92,7 +138,7 @@ describe("Cloudflare volatile boundaries", () => {
         RUN_ID: "ki-20260722123456-abcdef12",
         WFP_API,
       } as unknown as Env,
-      "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      projectId,
       revisionId,
       {
         mainModule: "index.js",
@@ -128,6 +174,153 @@ describe("Cloudflare volatile boundaries", () => {
     });
     expect([...form!.keys()].sort()).toEqual(["index.js", "metadata", "support.js"]);
     expect(globalThis.fetch).toBe(originalFetch);
+  });
+
+  test("only a complete successful Cloudflare v4 envelope authorizes publication", async () => {
+    await expect(
+      publishWithResponse(Response.json(providerEnvelope({ etag: "with-id" }))),
+    ).resolves.toBe(expectedPublicationName);
+    await expect(
+      publishWithResponse(Response.json(providerEnvelope({ etag: "without-id" }, false))),
+    ).resolves.toBe(expectedPublicationName);
+
+    const invalidEnvelopes: unknown[] = [
+      { errors: [], messages: [], success: false, result: { startup_time_ms: 1 } },
+      { errors: [], messages: [], success: true, result: null },
+      { errors: [], messages: [], success: true, result: {} },
+      { errors: [], messages: [], success: true, result: { startup_time_ms: Number.NaN } },
+      {
+        errors: [],
+        messages: [],
+        success: true,
+        result: { startup_time_ms: 1, id: "another-script" },
+      },
+      { success: true, result: { startup_time_ms: 1 } },
+    ];
+    for (const envelope of invalidEnvelopes) {
+      await expect(publishWithResponse(Response.json(envelope))).rejects.toMatchObject({
+        status: 502,
+        code: "publication_ambiguous",
+        message: "Workers for Platforms returned an indeterminate publication result.",
+      });
+    }
+    await expect(
+      publishWithResponse(new Response("{", { headers: { "Content-Type": "application/json" } })),
+    ).rejects.toMatchObject({ code: "publication_ambiguous" });
+  });
+
+  test("oversized and stalled successful bodies are cancelled, unlocked, and remain ambiguous", async () => {
+    let oversizedCancels = 0;
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+      },
+      cancel() {
+        oversizedCancels += 1;
+      },
+    });
+    const oversizedResponse = new Response(oversized, { status: 200 });
+    await expect(publishWithResponse(oversizedResponse)).rejects.toMatchObject({
+      code: "publication_ambiguous",
+    });
+    expect(oversizedCancels).toBe(1);
+    expect(oversizedResponse.body?.locked).toBe(false);
+
+    let stalledCancels = 0;
+    const stalled = new ReadableStream<Uint8Array>({
+      cancel() {
+        stalledCancels += 1;
+        return new Promise<void>(() => undefined);
+      },
+    });
+    const stalledResponse = new Response(stalled, { status: 200 });
+    const startedAt = performance.now();
+    await expect(publishWithResponse(stalledResponse)).rejects.toMatchObject({
+      code: "publication_ambiguous",
+    });
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
+    expect(stalledCancels).toBe(1);
+    expect(stalledResponse.body?.locked).toBe(false);
+  });
+
+  test("non-2xx response cleanup is nonblocking and cannot replace provider classification", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      for (const cancel of [
+        () => Promise.resolve(),
+        () => Promise.reject(new Error("PRIVATE_CANCEL_REJECTION")),
+        () => new Promise<void>(() => undefined),
+        () => {
+          throw new Error("PRIVATE_CANCEL_THROW");
+        },
+      ]) {
+        let cancels = 0;
+        let releases = 0;
+        console.error = () => {
+          throw new Error("PRIVATE_DIAGNOSTIC_FAILURE");
+        };
+        const reader = {
+          cancel: () => {
+            cancels += 1;
+            return cancel();
+          },
+          releaseLock: () => {
+            releases += 1;
+            throw new Error("PRIVATE_RELEASE_FAILURE");
+          },
+        } as unknown as ReadableStreamDefaultReader<Uint8Array>;
+        const startedAt = performance.now();
+        await expect(publishWithResponse(responseWithReader(503, reader))).rejects.toMatchObject({
+          code: "publication_ambiguous",
+          message: "Workers for Platforms did not accept the prepared publication.",
+        });
+        expect(performance.now() - startedAt).toBeLessThan(100);
+        expect(cancels).toBe(1);
+        expect(releases).toBe(1);
+      }
+      await Bun.sleep(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("read failure remains the exact private cause when cleanup and diagnostics fail", async () => {
+    const primary = new Error("PRIVATE_READ_FAILURE");
+    let cancels = 0;
+    let releases = 0;
+    console.error = () => {
+      throw new Error("PRIVATE_DIAGNOSTIC_FAILURE");
+    };
+    const reader = {
+      read: () => Promise.reject(primary),
+      cancel: () => {
+        cancels += 1;
+        return Promise.reject(new Error("PRIVATE_CANCEL_FAILURE"));
+      },
+      releaseLock: () => {
+        releases += 1;
+        throw new Error("PRIVATE_RELEASE_FAILURE");
+      },
+    } as unknown as ReadableStreamDefaultReader<Uint8Array>;
+    let captured: unknown;
+    try {
+      await publishWithResponse(responseWithReader(200, reader));
+    } catch (error) {
+      captured = error;
+    }
+    await Bun.sleep(0);
+    expect(captured).toMatchObject({
+      code: "publication_ambiguous",
+      message: "Workers for Platforms returned an indeterminate publication result.",
+    });
+    expect((captured as Error).cause).toBe(primary);
+    expect(cancels).toBe(1);
+    expect(releases).toBe(1);
   });
 
   test("WfP names are run-scoped and 4xx is deterministic rejection", async () => {

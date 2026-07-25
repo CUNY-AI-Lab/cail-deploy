@@ -13,6 +13,18 @@ const requestId = "11111111-1111-4111-8111-111111111111";
 const preparedKey = `prepared/${projectId}/${releaseId}/worker.json`;
 const originalFetch = globalThis.fetch;
 
+function successfulProviderResponse(): Response {
+  return Response.json({
+    errors: [],
+    messages: [],
+    success: true,
+    result: {
+      id: "kp-ki-20260722123456-abcdef12-bbbbbbbbbbbb",
+      startup_time_ms: 1,
+    },
+  });
+}
+
 const principal: Principal = {
   subject,
   authentication: "cail-identity-jwt",
@@ -166,7 +178,7 @@ describe("release reconciliation authority", () => {
   for (const status of ["publishing", "reconciling"] as const) {
     test(`recovers retained prepared bytes from ${status} and replays without republishing`, async () => {
       const { db, env } = await fixture(status);
-      globalThis.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+      globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
       const first = await handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
       expect(first.status).toBe(200);
@@ -206,7 +218,7 @@ describe("release reconciliation authority", () => {
     globalThis.fetch = mock(
       async () =>
         new Promise<Response>((resolve) => {
-          unblock = () => resolve(new Response(null, { status: 200 }));
+          unblock = () => resolve(successfulProviderResponse());
         }),
     ) as typeof fetch;
 
@@ -234,7 +246,7 @@ describe("release reconciliation authority", () => {
   test("takes over an aged active claim and completes from retained authority", async () => {
     const { db, env, preparedDigest } = await fixture("publishing");
     await seedActiveClaim(db, preparedDigest, "2000-01-01T00:00:00.000Z");
-    globalThis.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+    globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
     const response = await handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
     expect(response.status).toBe(200);
@@ -245,7 +257,7 @@ describe("release reconciliation authority", () => {
   test("excludes takeover while an active claim lease is fresh", async () => {
     const { db, env, preparedDigest } = await fixture("reconciling");
     await seedActiveClaim(db, preparedDigest, new Date().toISOString());
-    globalThis.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+    globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
     await expect(
       handleApiForPrincipal(reconcileRequest(), env, principal, requestId),
@@ -263,7 +275,7 @@ describe("release reconciliation authority", () => {
     globalThis.fetch = mock(
       async () =>
         new Promise<Response>((resolve) => {
-          unblock = () => resolve(new Response(null, { status: 200 }));
+          unblock = () => resolve(successfulProviderResponse());
         }),
     ) as typeof fetch;
 
@@ -299,7 +311,7 @@ describe("release reconciliation authority", () => {
           resolveExpired = resolve;
         });
       }
-      return new Response(null, { status: 200 });
+      return successfulProviderResponse();
     }) as typeof fetch;
 
     const expired = handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
@@ -320,7 +332,7 @@ describe("release reconciliation authority", () => {
     );
     expect(takeover.status).toBe(200);
 
-    resolveExpired(new Response(null, { status: 200 }));
+    resolveExpired(successfulProviderResponse());
     await expect(expired).rejects.toMatchObject({
       status: 409,
       code: "release_reconciliation_raced",
@@ -371,7 +383,7 @@ describe("release reconciliation authority", () => {
       .query("SELECT response_json, created_at FROM idempotency WHERE project_id = ?")
       .get(projectId) as { response_json: string; created_at: string };
 
-    resolvers[0]?.(new Response(null, { status: 200 }));
+    resolvers[0]?.(successfulProviderResponse());
     await expect(stale).rejects.toMatchObject({
       status: 409,
       code: "release_reconciliation_raced",
@@ -392,7 +404,7 @@ describe("release reconciliation authority", () => {
         .get(releaseId),
     ).toEqual({ count: 0 });
 
-    resolvers[1]?.(new Response(null, { status: 200 }));
+    resolvers[1]?.(successfulProviderResponse());
     expect((await current).status).toBe(200);
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   });
@@ -437,7 +449,7 @@ describe("release reconciliation authority", () => {
         .get(projectId),
     ).toEqual(renewed);
 
-    resolvers[1]?.(new Response(null, { status: 200 }));
+    resolvers[1]?.(successfulProviderResponse());
     expect((await current).status).toBe(200);
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   });
@@ -460,7 +472,7 @@ describe("release reconciliation authority", () => {
       cause: providerFailure,
     });
 
-    globalThis.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+    globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
     const retry = await handleApiForPrincipal(
       reconcileRequest(),
       env,
@@ -531,7 +543,7 @@ describe("release reconciliation authority", () => {
         now,
         releaseId,
       ]);
-      return new Response(null, { status: 200 });
+      return successfulProviderResponse();
     }) as typeof fetch;
 
     await expect(
@@ -553,7 +565,7 @@ describe("release reconciliation authority", () => {
   test("rejects incompatible and terminal states before provider action", async () => {
     const { db, env } = await fixture("publishing");
     db.sqlite.run("UPDATE releases SET status = 'live' WHERE release_id = ?", [releaseId]);
-    globalThis.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+    globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
     await expect(
       handleApiForPrincipal(reconcileRequest(), env, principal, requestId),
@@ -570,7 +582,7 @@ describe("release reconciliation authority", () => {
       subject: `cail-${"f".repeat(32)}`,
       authentication: "cail-identity-jwt",
     };
-    globalThis.fetch = mock(async () => new Response(null, { status: 200 })) as typeof fetch;
+    globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
     await expect(
       handleApiForPrincipal(reconcileRequest(), env, other, requestId),

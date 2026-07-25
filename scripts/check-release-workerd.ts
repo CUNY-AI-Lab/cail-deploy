@@ -102,6 +102,32 @@ async function waitForRelease(
   );
 }
 
+async function createAutomaticRelease(
+  baseUrl: string,
+  projectId: string,
+  revisionId: string,
+  jwt: string,
+  idempotencyKey: string,
+): Promise<string> {
+  const response = await fetch(`${baseUrl}/v1/projects/${projectId}/releases`, {
+    method: "POST",
+    headers: {
+      ...identityHeaders(jwt),
+      "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
+    },
+    body: JSON.stringify({
+      revisionId,
+      target: "preview",
+      approval: "automatic",
+    }),
+  });
+  assert(response.status === 202, `automatic release returned ${response.status}`);
+  const release = (await response.json()) as { releaseId?: string };
+  assert(typeof release.releaseId === "string", "automatic release response omitted its id");
+  return release.releaseId;
+}
+
 const cwd = new URL("..", import.meta.url).pathname.replace(/\/$/u, "");
 const persistTo = await mkdtemp(join(tmpdir(), "kale-release-workerd-"));
 const providerPersistTo = await mkdtemp(join(tmpdir(), "kale-wfp-api-workerd-"));
@@ -171,7 +197,21 @@ const resetProvider = await fetch(`${providerBaseUrl}/__control/reset`, {
     ...providerControl,
     "Content-Type": "application/json",
   },
-  body: JSON.stringify({ ambiguousCalls: [1] }),
+  body: JSON.stringify({
+    responseModes: [
+      "http-503",
+      "valid",
+      "valid",
+      "valid",
+      "success-false",
+      "malformed-json",
+      "invalid-utf8",
+      "oversized",
+      "stalled",
+      "identity-mismatch",
+      "valid-without-id",
+    ],
+  }),
 });
 assert(resetProvider.status === 200, "WfP provider contract reset failed");
 
@@ -222,6 +262,8 @@ const worker = Bun.spawn(
     "WFP_NAMESPACE:integration-namespace",
     "--var",
     "CLOUDFLARE_API_TOKEN:local-contract-token",
+    "--var",
+    "WFP_PUBLISH_TIMEOUT_MS:1000",
   ],
   { cwd, stdout: "pipe", stderr: "pipe" },
 );
@@ -242,7 +284,13 @@ let evidence:
         call: number;
         revisionId: string;
         moduleSha256: Record<string, string>;
+        responseMode: string;
         responseStatus: number;
+      }>;
+      responseBoundaryReleases: Array<{
+        mode: string;
+        releaseId: string;
+        status: string;
       }>;
     }
   | undefined;
@@ -585,6 +633,47 @@ try {
   );
   await waitForRelease(baseUrl, project.projectId, rollbackRelease.releaseId, ownerJwt, "live");
 
+  const responseBoundaryReleases: Array<{
+    mode: string;
+    releaseId: string;
+    status: string;
+  }> = [];
+  for (const mode of [
+    "success-false",
+    "malformed-json",
+    "invalid-utf8",
+    "oversized",
+    "stalled",
+    "identity-mismatch",
+  ]) {
+    const boundaryReleaseId = await createAutomaticRelease(
+      baseUrl,
+      project.projectId,
+      revision.revisionId,
+      ownerJwt,
+      `release-workerd-provider-${mode}`,
+    );
+    await waitForRelease(baseUrl, project.projectId, boundaryReleaseId, ownerJwt, "reconciling");
+    responseBoundaryReleases.push({
+      mode,
+      releaseId: boundaryReleaseId,
+      status: "reconciling",
+    });
+  }
+  const noIdentityReleaseId = await createAutomaticRelease(
+    baseUrl,
+    project.projectId,
+    revision.revisionId,
+    ownerJwt,
+    "release-workerd-provider-valid-without-id",
+  );
+  await waitForRelease(baseUrl, project.projectId, noIdentityReleaseId, ownerJwt, "live");
+  responseBoundaryReleases.push({
+    mode: "valid-without-id",
+    releaseId: noIdentityReleaseId,
+    status: "live",
+  });
+
   const providerResponse = await fetch(`${providerBaseUrl}/__control/state`, {
     headers: providerControl,
   });
@@ -599,12 +688,13 @@ try {
       revisionId: string;
       moduleNames: string[];
       moduleSha256: Record<string, string>;
+      responseMode: string;
       responseStatus: number;
     }>;
   };
   const providerCalls = providerState.observations ?? [];
   assert(
-    providerCalls.length === 4 &&
+    providerCalls.length === 11 &&
       providerCalls.every(
         (call) =>
           call.accountId === "integration-account" &&
@@ -612,11 +702,17 @@ try {
           call.authorizationAccepted &&
           call.moduleNames.includes(call.mainModule),
       ),
-    "provider contract did not receive four exact authorized multipart publications",
+    "provider contract did not receive eleven exact authorized multipart publications",
   );
   assert(
-    providerCalls.map((call) => call.responseStatus).join(",") === "503,200,200,200" &&
-      providerCalls.map((call) => call.revisionId).join(",") ===
+    providerCalls
+      .slice(0, 4)
+      .map((call) => call.responseStatus)
+      .join(",") === "503,200,200,200" &&
+      providerCalls
+        .slice(0, 4)
+        .map((call) => call.revisionId)
+        .join(",") ===
         [
           revision.revisionId,
           revision.revisionId,
@@ -624,6 +720,16 @@ try {
           revision.revisionId,
         ].join(","),
     "provider publication sequence did not preserve ambiguous reconciliation, v2, and rollback bytes",
+  );
+  assert(
+    providerCalls
+      .slice(4)
+      .map((call) => call.responseMode)
+      .join(",") ===
+      "success-false,malformed-json,invalid-utf8,oversized,stalled,identity-mismatch,valid-without-id" &&
+      responseBoundaryReleases.map(({ mode, status }) => `${mode}:${status}`).join(",") ===
+        "success-false:reconciling,malformed-json:reconciling,invalid-utf8:reconciling,oversized:reconciling,stalled:reconciling,identity-mismatch:reconciling,valid-without-id:live",
+    "provider response boundaries produced a false live release or rejected an allowed omitted id",
   );
   assert(
     JSON.stringify(providerCalls[0]?.moduleSha256) ===
@@ -640,17 +746,19 @@ try {
     revisions: number;
     releases: number;
     liveReleases: number;
+    reconcilingReleases: number;
   }>(
     cwd,
     persistTo,
-    "SELECT (SELECT COUNT(*) FROM projects) AS projects, (SELECT COUNT(*) FROM revisions) AS revisions, (SELECT COUNT(*) FROM releases) AS releases, (SELECT COUNT(*) FROM releases WHERE status = 'live') AS liveReleases",
+    "SELECT (SELECT COUNT(*) FROM projects) AS projects, (SELECT COUNT(*) FROM revisions) AS revisions, (SELECT COUNT(*) FROM releases) AS releases, (SELECT COUNT(*) FROM releases WHERE status = 'live') AS liveReleases, (SELECT COUNT(*) FROM releases WHERE status = 'reconciling') AS reconcilingReleases",
   );
   assert(
     finalCounts[0]?.projects === 1 &&
       finalCounts[0].revisions === 2 &&
-      finalCounts[0].releases === 3 &&
-      finalCounts[0].liveReleases === 3,
-    "full lifecycle durable counts did not match two revisions and rollback",
+      finalCounts[0].releases === 10 &&
+      finalCounts[0].liveReleases === 4 &&
+      finalCounts[0].reconcilingReleases === 6,
+    "full lifecycle durable counts admitted a false live provider response",
   );
 
   evidence = {
@@ -662,12 +770,16 @@ try {
     rollbackReleaseId: rollbackRelease.releaseId,
     eventTypes,
     artifactDigest,
-    providerCalls: providerCalls.map(({ call, revisionId, moduleSha256, responseStatus }) => ({
-      call,
-      revisionId,
-      moduleSha256,
-      responseStatus,
-    })),
+    providerCalls: providerCalls.map(
+      ({ call, revisionId, moduleSha256, responseMode, responseStatus }) => ({
+        call,
+        revisionId,
+        moduleSha256,
+        responseMode,
+        responseStatus,
+      }),
+    ),
+    responseBoundaryReleases,
   };
 } catch (error) {
   primaryError = error;

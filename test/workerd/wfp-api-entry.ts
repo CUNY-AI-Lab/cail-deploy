@@ -2,10 +2,21 @@ interface Env {
   STATE: KVNamespace;
 }
 
+type ResponseMode =
+  | "http-503"
+  | "identity-mismatch"
+  | "invalid-utf8"
+  | "malformed-json"
+  | "oversized"
+  | "stalled"
+  | "success-false"
+  | "valid"
+  | "valid-without-id";
+
 interface ControlState {
-  ambiguousCalls: number[];
   errors: string[];
   observations: PublicationObservation[];
+  responseModes: ResponseMode[];
 }
 
 interface PublicationObservation {
@@ -18,6 +29,7 @@ interface PublicationObservation {
   revisionId: string;
   moduleNames: string[];
   moduleSha256: Record<string, string>;
+  responseMode: ResponseMode;
   responseStatus: number;
 }
 
@@ -34,9 +46,9 @@ function json(value: unknown, status = 200): Response {
 async function state(env: Env): Promise<ControlState> {
   return (
     (await env.STATE.get<ControlState>(STATE_KEY, "json")) ?? {
-      ambiguousCalls: [],
       errors: [],
       observations: [],
+      responseModes: [],
     }
   );
 }
@@ -60,17 +72,31 @@ async function control(request: Request, env: Env): Promise<Response> {
   }
   const url = new URL(request.url);
   if (request.method === "POST" && url.pathname === "/__control/reset") {
-    const input = (await request.json()) as { ambiguousCalls?: unknown };
+    const input = (await request.json()) as { responseModes?: unknown };
+    const acceptedModes = new Set<ResponseMode>([
+      "http-503",
+      "identity-mismatch",
+      "invalid-utf8",
+      "malformed-json",
+      "oversized",
+      "stalled",
+      "success-false",
+      "valid",
+      "valid-without-id",
+    ]);
     if (
-      !Array.isArray(input.ambiguousCalls) ||
-      !input.ambiguousCalls.every((value) => Number.isSafeInteger(value) && value > 0)
+      !Array.isArray(input.responseModes) ||
+      !input.responseModes.every(
+        (value): value is ResponseMode =>
+          typeof value === "string" && acceptedModes.has(value as ResponseMode),
+      )
     ) {
       return json({ error: "invalid_control" }, 400);
     }
     const next: ControlState = {
-      ambiguousCalls: [...new Set(input.ambiguousCalls as number[])],
       errors: [],
       observations: [],
+      responseModes: input.responseModes,
     };
     await env.STATE.put(STATE_KEY, JSON.stringify(next));
     return json(next);
@@ -170,8 +196,8 @@ async function publish(request: Request, env: Env): Promise<Response> {
       modules.map(async ([name, value]) => [name, await sha256(await (value as File).text())]),
     ),
   );
-  const ambiguous = current.ambiguousCalls.includes(call);
-  const responseStatus = ambiguous ? 503 : 200;
+  const responseMode = current.responseModes[call - 1] ?? "valid";
+  const responseStatus = responseMode === "http-503" ? 503 : 200;
   const observation: PublicationObservation = {
     call,
     accountId: match[1],
@@ -182,11 +208,12 @@ async function publish(request: Request, env: Env): Promise<Response> {
     revisionId: revisionBinding.text,
     moduleNames: modules.map(([name]) => name),
     moduleSha256,
+    responseMode,
     responseStatus,
   };
   current.observations.push(observation);
   await env.STATE.put(STATE_KEY, JSON.stringify(current));
-  if (ambiguous) {
+  if (responseMode === "http-503") {
     return json(
       providerEnvelope(false, null, [
         { code: 10049, message: "simulated ambiguous provider result" },
@@ -194,10 +221,48 @@ async function publish(request: Request, env: Env): Promise<Response> {
       responseStatus,
     );
   }
+  if (responseMode === "success-false") {
+    return json(
+      providerEnvelope(false, null, [{ code: 10049, message: "simulated false result" }]),
+    );
+  }
+  if (responseMode === "malformed-json") {
+    return new Response("{", {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (responseMode === "invalid-utf8") {
+    return new Response(new Uint8Array([0xc3, 0x28]), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (responseMode === "oversized") {
+    return json({
+      ...providerEnvelope(true, {
+        id: match[3],
+        startup_time_ms: 1,
+      }),
+      padding: "x".repeat(1024 * 1024),
+    });
+  }
+  if (responseMode === "stalled") {
+    return new Response(new ReadableStream<Uint8Array>(), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (responseMode === "identity-mismatch") {
+    return json(
+      providerEnvelope(true, {
+        id: "wrong-script-name",
+        startup_time_ms: 1,
+      }),
+    );
+  }
   return json(
     providerEnvelope(true, {
-      id: match[3],
       etag: `local-${call}`,
+      startup_time_ms: 1,
+      ...(responseMode === "valid-without-id" ? {} : { id: match[3] }),
     }),
   );
 }

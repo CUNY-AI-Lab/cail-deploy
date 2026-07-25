@@ -4,6 +4,8 @@ export type DeployDiagnostic =
   | "reconcile_claim_release_failed"
   | "request_body_cancel_failed"
   | "request_body_release_failed"
+  | "wfp_response_body_cancel_failed"
+  | "wfp_response_body_release_failed"
   | "workflow_finalization_diagnostic_unattached"
   | "workflow_terminal_finalization_failed";
 
@@ -28,6 +30,14 @@ const diagnosticVocabulary: Record<DeployDiagnostic, { event: string; error: str
     event: "deploy.request.body_release_failed",
     error: "body_release_failed",
   },
+  wfp_response_body_cancel_failed: {
+    event: "deploy.wfp.response.body_cancel_failed",
+    error: "body_cancel_failed",
+  },
+  wfp_response_body_release_failed: {
+    event: "deploy.wfp.response.body_release_failed",
+    error: "body_release_failed",
+  },
   workflow_finalization_diagnostic_unattached: {
     event: "deploy.workflow.finalization_diagnostic_unattached",
     error: "finalization_diagnostic_unattached",
@@ -38,10 +48,14 @@ const diagnosticVocabulary: Record<DeployDiagnostic, { event: string; error: str
   },
 };
 
-export interface DiagnosticContext {
-  requestId: string;
-  releaseId?: string;
-}
+export type DiagnosticContext =
+  | {
+      requestId: string;
+      releaseId?: string;
+    }
+  | {
+      boundary: "wfp_response";
+    };
 
 export function emitDeployDiagnostic(kind: DeployDiagnostic, context: DiagnosticContext): void {
   const vocabulary = diagnosticVocabulary[kind];
@@ -49,8 +63,8 @@ export function emitDeployDiagnostic(kind: DeployDiagnostic, context: Diagnostic
     console.error({
       event: vocabulary.event,
       error: vocabulary.error,
-      requestId: context.requestId,
-      ...(context.releaseId ? { releaseId: context.releaseId } : {}),
+      ...("requestId" in context ? { requestId: context.requestId } : {}),
+      ...("releaseId" in context && context.releaseId ? { releaseId: context.releaseId } : {}),
     });
   } catch {
     // Diagnostics are observational and cannot replace the primary result.
