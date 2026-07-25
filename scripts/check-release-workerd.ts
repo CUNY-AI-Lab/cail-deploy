@@ -378,8 +378,8 @@ try {
   assert(
     stdout.includes("cail.action.admitted") &&
       stdout.includes(requestId) &&
-      /["']?cail\.principal\.type["']?:\s*["']service["']/u.test(stdout),
-    "service-attributed operational admission event was not observable",
+      /["']?cail\.principal\.type["']?:\s*["']anonymous["']/u.test(stdout),
+    "anonymous-attributed operational admission event was not observable",
   );
   console.log(
     JSON.stringify(

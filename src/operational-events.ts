@@ -57,7 +57,7 @@ export function emitReleaseAdmission(
     product_id: "kale-deploy",
     principal: logSubject
       ? { type: "user" as const, subject: logSubject }
-      : { type: "service" as const },
+      : { type: "anonymous" as const },
     http_method: "POST" as const,
     route: "/v1/projects/{projectId}/releases",
   });
@@ -79,7 +79,7 @@ export function emitReleaseTerminal(
     product_id: "kale-deploy",
     principal: logSubject
       ? { type: "user" as const, subject: logSubject }
-      : { type: "service" as const },
+      : { type: "anonymous" as const },
     http_method: "POST" as const,
     route: "/v1/projects/{projectId}/releases",
     duration_ms: Math.max(0, Date.now() - Date.parse(admittedAt)),
