@@ -54,7 +54,7 @@ export async function publishWorker(
   }
   let response: Response;
   try {
-    response = await fetch(
+    const request = new Request(
       `https://api.cloudflare.com/client/v4/accounts/${env.WFP_ACCOUNT_ID}/workers/dispatch/namespaces/${env.WFP_NAMESPACE}/scripts/${name}`,
       {
         method: "PUT",
@@ -63,6 +63,7 @@ export async function publishWorker(
         signal: AbortSignal.timeout(timeout),
       },
     );
+    response = env.WFP_API ? await env.WFP_API.fetch(request) : await fetch(request);
   } catch (cause) {
     throw new ApiError(
       502,

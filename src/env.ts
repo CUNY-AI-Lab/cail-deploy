@@ -80,6 +80,12 @@ export interface Env {
   WFP_ACCOUNT_ID: string;
   WFP_NAMESPACE: string;
   WFP_PUBLISH_TIMEOUT_MS?: string;
+  /**
+   * Optional internal HTTP service binding used by local full-lifecycle gates.
+   * Production omits it and calls Cloudflare's public API with the isolated
+   * publisher token.
+   */
+  WFP_API?: Fetcher;
   PREVIEW_TIMEOUT_MS?: string;
   CLOUDFLARE_API_TOKEN?: string;
   ALLOW_PRODUCTION_TARGET?: string;

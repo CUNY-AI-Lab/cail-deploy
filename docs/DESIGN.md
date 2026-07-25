@@ -23,6 +23,14 @@ The first vertical slice supports Worker-native TypeScript or JavaScript artifac
 
 The digest check prevents a producer or transport error from substituting different bytes for the requested revision. The owner comparison is required because the HTTP and MCP surfaces are multi-tenant. Public OAuth requires explicit consent and a one-use D1 nonce because the browser-to-client grant is a real CSRF/replay boundary; the nonce is bound to the verified subject, client, canonical authorization request, and expiry. OAuth protocol tokens remain in a run-scoped KV namespace. Prepared activation and retry follow the ambiguous-final-write failure already reproduced in CAIL-deploy at `1fd95315b2d4f3e5573383030856a7844ffa4151`.
 
+The full local lifecycle gate follows Cloudflare's documented HTTP service-binding interface: a test-only `Fetcher` receives the same fully qualified Workers for Platforms `PUT` that production sends to `api.cloudflare.com`. The provider Worker verifies the authorization header, account and namespace path, multipart metadata, and every module. Production has no `WFP_API` binding and therefore continues to use Cloudflare's public API. The local gate drives real workerd Workflow, D1, R2, and Worker Bundler state through ambiguous publication, one reconciliation winner, a second live revision, and rollback of the exact retained first revision. This is contract evidence, not a claim that Cloudflare provider state was changed.
+
+Canonical references:
+
+- [Cloudflare HTTP service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/http/)
+- [Cloudflare local multi-Worker development](https://developers.cloudflare.com/workers/local-development/multi-workers/)
+- [Workers for Platforms multipart upload example](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/platform-examples/)
+
 ## Scope decisions
 
 GitHub, repository ownership, webhooks, check runs, installation tokens, PATs, email/admin authorization, AWS dispatch, and old identifiers are absent. Linux/Sandbox builds are deferred until a first Linux-only artifact enters the integration scenario. Project D1/R2 provisioning and project secrets are deferred; this slice rejects all requested bindings, which keeps publication isolated without inventing a resource policy engine. One run-scoped KV binding stores only OAuth registration/grant/token protocol state. The isolated deployment verifies an offline run-scoped CAIL identity issuer with the accepted identity 4.6.0 source package. The local bearer map exists only for component tests.

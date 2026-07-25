@@ -6,8 +6,10 @@ import { join } from "node:path";
 import { createTestIdentityIssuer, TEST_SUBJECTS } from "@cuny-ai-lab/cail-identity/testing";
 
 const config = "wrangler.release-workerd-test.jsonc";
+const providerConfig = "wrangler.wfp-api-test.jsonc";
 const database = "kale-release-control-plane-release-workerd-test";
 const requestId = "33333333-3333-4333-8333-333333333333";
+const providerControl = { "X-Kale-WfP-Test-Control": "local-e2e-control" };
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -55,16 +57,58 @@ async function errorCode(response: Response): Promise<string | undefined> {
   return body.error?.code;
 }
 
+async function availablePort(): Promise<number> {
+  const socket = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: { data() {} },
+  });
+  const port = socket.port;
+  socket.stop(true);
+  return port;
+}
+
 function identityHeaders(jwt: string): Record<string, string> {
   return { "X-CAIL-Identity-JWT": jwt };
 }
 
+async function waitForRelease(
+  baseUrl: string,
+  projectId: string,
+  releaseId: string,
+  jwt: string,
+  expectedStatus: string,
+): Promise<{
+  status?: string;
+  events?: Array<{ type?: string; actorSubject?: string | null }>;
+}> {
+  let observed:
+    | {
+        status?: string;
+        events?: Array<{ type?: string; actorSubject?: string | null }>;
+      }
+    | undefined;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const response = await fetch(`${baseUrl}/v1/projects/${projectId}/releases/${releaseId}`, {
+      headers: identityHeaders(jwt),
+    });
+    assert(response.status === 200, `release read returned ${response.status}`);
+    observed = (await response.json()) as typeof observed;
+    if (observed?.status === expectedStatus) return observed;
+    await Bun.sleep(100);
+  }
+  throw new Error(
+    `release ${releaseId} did not reach ${expectedStatus}; observed ${String(observed?.status)}`,
+  );
+}
+
 const cwd = new URL("..", import.meta.url).pathname.replace(/\/$/u, "");
 const persistTo = await mkdtemp(join(tmpdir(), "kale-release-workerd-"));
-const portSocket = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-const port = portSocket.port;
-portSocket.stop(true);
+const providerPersistTo = await mkdtemp(join(tmpdir(), "kale-wfp-api-workerd-"));
+const port = await availablePort();
+const providerPort = await availablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
+const providerBaseUrl = `http://127.0.0.1:${providerPort}`;
 // Defaults to CAIL_CANONICAL_ISSUER. The issuer allowlist is a code constant,
 // not a reflection of CAIL_IDENTITY_ISSUER, so a `.invalid` test issuer is
 // refused at config load and every probe reads 503 — which would mask the
@@ -82,6 +126,54 @@ const wrongAudienceJwt = await issuer.mintIdentityJwt({
   audience: "cail:not-deploy",
   subject: TEST_SUBJECTS.alice,
 });
+
+const providerWorker = Bun.spawn(
+  [
+    "bunx",
+    "wrangler",
+    "dev",
+    "--local",
+    "--config",
+    providerConfig,
+    "--port",
+    String(providerPort),
+    "--persist-to",
+    providerPersistTo,
+  ],
+  { cwd, stdout: "pipe", stderr: "pipe" },
+);
+const providerStdoutPromise = new Response(providerWorker.stdout).text();
+const providerStderrPromise = new Response(providerWorker.stderr).text();
+let providerReady = false;
+for (let attempt = 0; attempt < 150; attempt += 1) {
+  try {
+    const response = await fetch(`${providerBaseUrl}/__control/state`, {
+      headers: providerControl,
+    });
+    if (response.ok) {
+      providerReady = true;
+      break;
+    }
+  } catch {
+    // Local provider contract Worker is still starting.
+  }
+  if (providerWorker.exitCode !== null) break;
+  await Bun.sleep(100);
+}
+if (!providerReady) {
+  providerWorker.kill();
+  const [stdout, stderr] = await Promise.all([providerStdoutPromise, providerStderrPromise]);
+  throw new Error(`WfP provider contract Worker did not start.\n${stdout}\n${stderr}`);
+}
+const resetProvider = await fetch(`${providerBaseUrl}/__control/reset`, {
+  method: "POST",
+  headers: {
+    ...providerControl,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ ambiguousCalls: [1] }),
+});
+assert(resetProvider.status === 200, "WfP provider contract reset failed");
 
 await run(
   [
@@ -123,11 +215,13 @@ const worker = Bun.spawn(
     "--var",
     `CAIL_IDENTITY_JWKS:${issuer.jwksJson}`,
     "--var",
-    "RUN_ID:release-workerd-test",
+    "RUN_ID:integration-local-e2e",
     "--var",
-    "WFP_ACCOUNT_ID:not-used",
+    "WFP_ACCOUNT_ID:integration-account",
     "--var",
-    "WFP_NAMESPACE:not-used",
+    "WFP_NAMESPACE:integration-namespace",
+    "--var",
+    "CLOUDFLARE_API_TOKEN:local-contract-token",
   ],
   { cwd, stdout: "pipe", stderr: "pipe" },
 );
@@ -139,8 +233,17 @@ let evidence:
       projectId: string;
       revisionId: string;
       releaseId: string;
+      secondRevisionId: string;
+      secondReleaseId: string;
+      rollbackReleaseId: string;
       eventTypes: string[];
       artifactDigest: string;
+      providerCalls: Array<{
+        call: number;
+        revisionId: string;
+        moduleSha256: Record<string, string>;
+        responseStatus: number;
+      }>;
     }
   | undefined;
 let primaryError: unknown;
@@ -281,23 +384,13 @@ try {
     "release admission response drifted",
   );
 
-  let observed:
-    | {
-        status?: string;
-        events?: Array<{ type?: string; actorSubject?: string | null }>;
-      }
-    | undefined;
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const response = await fetch(
-      `${baseUrl}/v1/projects/${project.projectId}/releases/${release.releaseId}`,
-      { headers: identityHeaders(ownerJwt) },
-    );
-    assert(response.status === 200, `release read returned ${response.status}`);
-    observed = (await response.json()) as typeof observed;
-    if (observed?.status === "awaiting_approval") break;
-    await Bun.sleep(100);
-  }
-  assert(observed?.status === "awaiting_approval", "release did not reach awaiting_approval");
+  const observed = await waitForRelease(
+    baseUrl,
+    project.projectId,
+    release.releaseId,
+    ownerJwt,
+    "awaiting_approval",
+  );
   const eventTypes = observed.events?.map((event) => event.type ?? "") ?? [];
   assert(
     eventTypes.join(",") ===
@@ -357,21 +450,240 @@ try {
     "negative controls created unexpected durable state",
   );
 
+  const approvalResponse = await fetch(
+    `${baseUrl}/v1/projects/${project.projectId}/releases/${release.releaseId}/approve`,
+    {
+      method: "POST",
+      headers: {
+        ...identityHeaders(ownerJwt),
+        "Content-Type": "application/json",
+        "Idempotency-Key": "release-workerd-approval",
+      },
+      body: JSON.stringify({ decision: "approved" }),
+    },
+  );
+  assert(approvalResponse.status === 202, `release approval returned ${approvalResponse.status}`);
+  try {
+    await waitForRelease(baseUrl, project.projectId, release.releaseId, ownerJwt, "reconciling");
+  } catch (error) {
+    const providerFailure = await fetch(`${providerBaseUrl}/__control/state`, {
+      headers: providerControl,
+    });
+    throw new Error(`${String(error)}; provider state=${await providerFailure.text()}`);
+  }
+
+  const reconciliationUrl = `${baseUrl}/v1/projects/${project.projectId}/releases/${release.releaseId}/reconcile`;
+  const reconciliationResponses = await Promise.all([
+    fetch(reconciliationUrl, {
+      method: "POST",
+      headers: {
+        ...identityHeaders(ownerJwt),
+        "X-CAIL-Request-Id": requestId,
+      },
+    }),
+    fetch(reconciliationUrl, {
+      method: "POST",
+      headers: {
+        ...identityHeaders(ownerJwt),
+        "X-CAIL-Request-Id": requestId,
+      },
+    }),
+  ]);
+  const reconciliationStatuses = reconciliationResponses
+    .map((response) => response.status)
+    .sort((left, right) => left - right);
+  assert(
+    reconciliationStatuses[0] === 200 && reconciliationStatuses[1] === 409,
+    `concurrent reconciliation did not produce one authority winner: ${reconciliationStatuses.join(",")}`,
+  );
+  await waitForRelease(baseUrl, project.projectId, release.releaseId, ownerJwt, "live");
+
+  const secondArtifact = new TextEncoder().encode(
+    JSON.stringify({
+      schemaVersion: "kale.artifact.v1",
+      runtime: "worker",
+      entrypoint: "src/index.ts",
+      files: {
+        "src/index.ts": "export default { fetch() { return new Response('kale-fixture-v2') } }",
+      },
+      compatibility: { date: "2026-07-22", flags: [] },
+      requestedBindings: [],
+    }),
+  );
+  const secondArtifactDigest = createHash("sha256").update(secondArtifact).digest("hex");
+  const secondContentDigest = `sha-256=:${createHash("sha256")
+    .update(secondArtifact)
+    .digest("base64")}:`;
+  const secondRevisionResponse = await fetch(revisionUrl, {
+    method: "POST",
+    headers: {
+      ...identityHeaders(ownerJwt),
+      "Content-Type": "application/vnd.cuny.kale.artifact.v1+json",
+      "Content-Digest": secondContentDigest,
+    },
+    body: secondArtifact,
+  });
+  assert(
+    secondRevisionResponse.status === 201,
+    `second revision upload returned ${secondRevisionResponse.status}`,
+  );
+  const secondRevision = (await secondRevisionResponse.json()) as {
+    revisionId?: string;
+  };
+  assert(
+    secondRevision.revisionId === `rev_sha256_${secondArtifactDigest}`,
+    "second revision id did not preserve exact artifact bytes",
+  );
+
+  const secondReleaseResponse = await fetch(
+    `${baseUrl}/v1/projects/${project.projectId}/releases`,
+    {
+      method: "POST",
+      headers: {
+        ...identityHeaders(ownerJwt),
+        "Content-Type": "application/json",
+        "Idempotency-Key": "release-workerd-release-v2",
+      },
+      body: JSON.stringify({
+        revisionId: secondRevision.revisionId,
+        target: "preview",
+        approval: "automatic",
+      }),
+    },
+  );
+  assert(
+    secondReleaseResponse.status === 202,
+    `second release returned ${secondReleaseResponse.status}`,
+  );
+  const secondRelease = (await secondReleaseResponse.json()) as {
+    releaseId?: string;
+  };
+  assert(typeof secondRelease.releaseId === "string", "second release response omitted its id");
+  await waitForRelease(baseUrl, project.projectId, secondRelease.releaseId, ownerJwt, "live");
+
+  const rollbackResponse = await fetch(
+    `${baseUrl}/v1/projects/${project.projectId}/releases/${release.releaseId}/rollback`,
+    {
+      method: "POST",
+      headers: {
+        ...identityHeaders(ownerJwt),
+        "Content-Type": "application/json",
+        "Idempotency-Key": "release-workerd-rollback-v1",
+      },
+      body: JSON.stringify({ approval: "automatic" }),
+    },
+  );
+  assert(rollbackResponse.status === 202, `rollback release returned ${rollbackResponse.status}`);
+  const rollbackRelease = (await rollbackResponse.json()) as {
+    releaseId?: string;
+    rollbackOfReleaseId?: string;
+  };
+  assert(
+    typeof rollbackRelease.releaseId === "string" &&
+      rollbackRelease.rollbackOfReleaseId === release.releaseId,
+    "rollback admission did not retain its exact source release",
+  );
+  await waitForRelease(baseUrl, project.projectId, rollbackRelease.releaseId, ownerJwt, "live");
+
+  const providerResponse = await fetch(`${providerBaseUrl}/__control/state`, {
+    headers: providerControl,
+  });
+  assert(providerResponse.status === 200, "provider observations were unavailable");
+  const providerState = (await providerResponse.json()) as {
+    observations?: Array<{
+      call: number;
+      accountId: string;
+      namespace: string;
+      authorizationAccepted: boolean;
+      mainModule: string;
+      revisionId: string;
+      moduleNames: string[];
+      moduleSha256: Record<string, string>;
+      responseStatus: number;
+    }>;
+  };
+  const providerCalls = providerState.observations ?? [];
+  assert(
+    providerCalls.length === 4 &&
+      providerCalls.every(
+        (call) =>
+          call.accountId === "integration-account" &&
+          call.namespace === "integration-namespace" &&
+          call.authorizationAccepted &&
+          call.moduleNames.includes(call.mainModule),
+      ),
+    "provider contract did not receive four exact authorized multipart publications",
+  );
+  assert(
+    providerCalls.map((call) => call.responseStatus).join(",") === "503,200,200,200" &&
+      providerCalls.map((call) => call.revisionId).join(",") ===
+        [
+          revision.revisionId,
+          revision.revisionId,
+          secondRevision.revisionId,
+          revision.revisionId,
+        ].join(","),
+    "provider publication sequence did not preserve ambiguous reconciliation, v2, and rollback bytes",
+  );
+  assert(
+    JSON.stringify(providerCalls[0]?.moduleSha256) ===
+      JSON.stringify(providerCalls[1]?.moduleSha256) &&
+      JSON.stringify(providerCalls[0]?.moduleSha256) ===
+        JSON.stringify(providerCalls[3]?.moduleSha256) &&
+      JSON.stringify(providerCalls[0]?.moduleSha256) !==
+        JSON.stringify(providerCalls[2]?.moduleSha256),
+    "rollback did not republish the retained v1 modules exactly",
+  );
+
+  const finalCounts = await d1Rows<{
+    projects: number;
+    revisions: number;
+    releases: number;
+    liveReleases: number;
+  }>(
+    cwd,
+    persistTo,
+    "SELECT (SELECT COUNT(*) FROM projects) AS projects, (SELECT COUNT(*) FROM revisions) AS revisions, (SELECT COUNT(*) FROM releases) AS releases, (SELECT COUNT(*) FROM releases WHERE status = 'live') AS liveReleases",
+  );
+  assert(
+    finalCounts[0]?.projects === 1 &&
+      finalCounts[0].revisions === 2 &&
+      finalCounts[0].releases === 3 &&
+      finalCounts[0].liveReleases === 3,
+    "full lifecycle durable counts did not match two revisions and rollback",
+  );
+
   evidence = {
     projectId: project.projectId,
     revisionId: revision.revisionId,
     releaseId: release.releaseId,
+    secondRevisionId: secondRevision.revisionId,
+    secondReleaseId: secondRelease.releaseId,
+    rollbackReleaseId: rollbackRelease.releaseId,
     eventTypes,
     artifactDigest,
+    providerCalls: providerCalls.map(({ call, revisionId, moduleSha256, responseStatus }) => ({
+      call,
+      revisionId,
+      moduleSha256,
+      responseStatus,
+    })),
   };
 } catch (error) {
   primaryError = error;
 } finally {
   worker.kill();
   await worker.exited;
+  providerWorker.kill();
+  await providerWorker.exited;
 }
 
-const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+const [stdout, stderr, providerStdout, providerStderr] = await Promise.all([
+  stdoutPromise,
+  stderrPromise,
+  providerStdoutPromise,
+  providerStderrPromise,
+]);
 try {
   if (primaryError) throw primaryError;
   assert(evidence, "release workerd evidence was not collected");
@@ -396,7 +708,12 @@ try {
     ),
   );
 } catch (error) {
-  throw new Error(`${String(error)}\nworkerd stdout:\n${stdout}\nworkerd stderr:\n${stderr}`);
+  throw new Error(
+    `${String(error)}\nworkerd stdout:\n${stdout}\nworkerd stderr:\n${stderr}\nprovider stdout:\n${providerStdout}\nprovider stderr:\n${providerStderr}`,
+  );
 } finally {
-  await rm(persistTo, { recursive: true, force: true });
+  await Promise.all([
+    rm(persistTo, { recursive: true, force: true }),
+    rm(providerPersistTo, { recursive: true, force: true }),
+  ]);
 }

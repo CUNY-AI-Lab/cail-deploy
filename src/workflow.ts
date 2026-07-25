@@ -132,7 +132,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
         }
       }
 
-      await step.do(
+      const publication = await step.do(
         "publish prepared worker",
         { retries: { limit: 0, delay: "1 second", backoff: "constant" } },
         async () => {
@@ -142,12 +142,20 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
           const retainedJson = await retained.text();
           if ((await sha256Hex(retainedJson)) !== preparedDigest)
             throw artifactIntegrityFailure("Prepared artifact digest changed.");
-          const name = await publishWorker(
-            this.env,
-            projectId,
-            revisionId,
-            JSON.parse(retainedJson) as PreparedEnvelope,
-          );
+          let name: string;
+          try {
+            name = await publishWorker(
+              this.env,
+              projectId,
+              revisionId,
+              JSON.parse(retainedJson) as PreparedEnvelope,
+            );
+          } catch (error) {
+            if (apiErrorSnapshot(error)?.code === "publication_ambiguous") {
+              return { outcome: "ambiguous" as const };
+            }
+            throw error;
+          }
           await this.env.DB.prepare("UPDATE releases SET publication_name = ? WHERE release_id = ?")
             .bind(name, releaseId)
             .run();
@@ -165,17 +173,17 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
               "ok",
               "completed",
             );
+          return { outcome: "live" as const };
         },
       );
-    } catch (error) {
-      if (apiErrorSnapshot(error)?.code === "publication_ambiguous") {
+      if (publication.outcome === "ambiguous") {
         await step.do("record ambiguous publication", () =>
           appendReleaseStatus(this.env, releaseId, "reconciling", "release.reconciling", {
             code: "publication_ambiguous",
           }),
         );
-        return;
       }
+    } catch (error) {
       await finalizeWorkflowFailure(
         error,
         () =>

@@ -30,9 +30,9 @@ describe("Cloudflare volatile boundaries", () => {
 
   test("a hanging WfP PUT becomes an ambiguous publication at the configured deadline", async () => {
     globalThis.fetch = mock(
-      async (_input: RequestInfo | URL, init?: RequestInit) =>
+      async (input: RequestInfo | URL) =>
         new Promise<Response>((_resolve, reject) => {
-          const signal = init?.signal;
+          const signal = input instanceof Request ? input.signal : undefined;
           if (!signal) {
             reject(new Error("missing timeout signal"));
             return;
@@ -73,6 +73,61 @@ describe("Cloudflare volatile boundaries", () => {
     });
     expect((captured as Error).cause).toBeInstanceOf(DOMException);
     expect(((captured as Error).cause as DOMException).name).toBe("TimeoutError");
+  });
+
+  test("the local WfP service binding receives the same complete Cloudflare request", async () => {
+    let captured: Request | undefined;
+    const WFP_API = {
+      fetch: mock(async (request: Request) => {
+        captured = request;
+        return Response.json({ success: true, result: { id: "publication" } });
+      }),
+    };
+    const revisionId = `rev_sha256_${"b".repeat(64)}`;
+    const result = await publishWorker(
+      {
+        CLOUDFLARE_API_TOKEN: "test-only",
+        WFP_ACCOUNT_ID: "account",
+        WFP_NAMESPACE: "namespace",
+        RUN_ID: "ki-20260722123456-abcdef12",
+        WFP_API,
+      } as unknown as Env,
+      "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      revisionId,
+      {
+        mainModule: "index.js",
+        modules: {
+          "index.js": "export default {}",
+          "support.js": "export const support = true;",
+        },
+        compatibilityDate: "2026-07-22",
+        compatibilityFlags: ["nodejs_compat"],
+      },
+    );
+
+    expect(result).toBe("kp-ki-20260722123456-abcdef12-aaaaaaaaaaaa");
+    expect(captured?.url).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/account/workers/dispatch/namespaces/namespace/scripts/kp-ki-20260722123456-abcdef12-aaaaaaaaaaaa",
+    );
+    expect(captured?.method).toBe("PUT");
+    expect(captured?.headers.get("authorization")).toBe("Bearer test-only");
+    const form = await captured?.formData();
+    const metadata = form?.get("metadata");
+    expect(metadata).toBeInstanceOf(File);
+    expect(JSON.parse(await (metadata as File).text())).toEqual({
+      main_module: "index.js",
+      compatibility_date: "2026-07-22",
+      compatibility_flags: ["nodejs_compat"],
+      bindings: [
+        {
+          type: "plain_text",
+          name: "KALE_REVISION_ID",
+          text: revisionId,
+        },
+      ],
+    });
+    expect([...form!.keys()].sort()).toEqual(["index.js", "metadata", "support.js"]);
+    expect(globalThis.fetch).toBe(originalFetch);
   });
 
   test("WfP names are run-scoped and 4xx is deterministic rejection", async () => {
