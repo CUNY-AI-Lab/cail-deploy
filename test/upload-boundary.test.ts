@@ -4,11 +4,16 @@ import { readArtifactBody } from "../src/api";
 const requestId = "11111111-1111-4111-8111-111111111111";
 const maxArtifactBytes = 2 * 1024 * 1024;
 
-function streamingRequest(body: ReadableStream<Uint8Array>, contentLength?: number): Request {
+function streamingRequest(
+  body: ReadableStream<Uint8Array>,
+  contentLength?: number,
+  signal?: AbortSignal,
+): Request {
   return new Request("https://deploy.test/v1/projects/project/revisions", {
     method: "POST",
     body,
     duplex: "half",
+    signal,
     headers: contentLength === undefined ? undefined : { "Content-Length": String(contentLength) },
   } as RequestInit);
 }
@@ -95,19 +100,22 @@ describe("revision upload body boundary", () => {
     let cancelled = false;
     let pulls = 0;
     const request = streamingRequest(
-      new ReadableStream<Uint8Array>({
-        pull(controller) {
-          pulls += 1;
-          if (pulls === 1) {
-            controller.enqueue(new Uint8Array(maxArtifactBytes));
-          } else {
-            controller.enqueue(new Uint8Array([1]));
-          }
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            pulls += 1;
+            if (pulls === 1) {
+              controller.enqueue(new Uint8Array(maxArtifactBytes));
+            } else {
+              controller.enqueue(new Uint8Array([1]));
+            }
+          },
+          cancel() {
+            cancelled = true;
+          },
         },
-        cancel() {
-          cancelled = true;
-        },
-      }),
+        { highWaterMark: 0 },
+      ),
     );
 
     await expect(readArtifactBody(request, requestId)).rejects.toMatchObject({
@@ -173,6 +181,67 @@ describe("revision upload body boundary", () => {
     };
     try {
       await expect(readArtifactBody(request, requestId)).rejects.toBe(primary);
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
+  test("settles a stalled read on caller cancellation without waiting for cleanup", async () => {
+    const controller = new AbortController();
+    const cause = new Error("PRIVATE_CALLER_ABORT");
+    let cancellations = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise<void>(() => undefined);
+      },
+      cancel() {
+        cancellations += 1;
+        return new Promise<void>(() => undefined);
+      },
+    });
+    const request = streamingRequest(body, undefined, controller.signal);
+    const pending = readArtifactBody(request, requestId);
+
+    controller.abort(cause);
+
+    await expect(pending).rejects.toMatchObject({
+      status: 499,
+      code: "request_cancelled",
+      cause,
+    });
+    expect(cancellations).toBe(1);
+    expect(body.locked).toBe(false);
+  });
+
+  test("contains rejecting cancellation and throwing diagnostics on caller abort", async () => {
+    const controller = new AbortController();
+    const diagnostics: unknown[] = [];
+    const originalConsoleError = console.error;
+    console.error = (diagnostic: unknown) => {
+      diagnostics.push(diagnostic);
+      throw new Error("PRIVATE_DIAGNOSTIC_FAILURE");
+    };
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise<void>(() => undefined);
+      },
+      cancel() {
+        return Promise.reject(new Error("PRIVATE_CANCEL_FAILURE"));
+      },
+    });
+    const request = streamingRequest(body, undefined, controller.signal);
+    const pending = readArtifactBody(request, requestId);
+
+    try {
+      controller.abort(new Error("PRIVATE_ABORT_REASON"));
+      await expect(pending).rejects.toMatchObject({
+        status: 499,
+        code: "request_cancelled",
+      });
+      await Promise.resolve();
+      expect(diagnostics).toHaveLength(1);
+      expect(JSON.stringify(diagnostics)).not.toContain("PRIVATE_");
+      expect(body.locked).toBe(false);
     } finally {
       console.error = originalConsoleError;
     }

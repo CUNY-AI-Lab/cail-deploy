@@ -139,6 +139,44 @@ function cancelRequestBody(
   observeDetachedCleanup(() => reader.cancel(), "request_body_cancel_failed", { requestId });
 }
 
+function requestCancelled(requestId: string, cause: unknown): ApiError {
+  return new ApiError(499, "request_cancelled", "The request was cancelled.", {
+    cause,
+  });
+}
+
+async function readArtifactChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+  requestId: string,
+  cancel: () => void,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) {
+    cancel();
+    throw requestCancelled(requestId, signal.reason);
+  }
+
+  return await new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+    let settled = false;
+    const finish = (continuation: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      continuation();
+    };
+    const onAbort = () => {
+      cancel();
+      finish(() => reject(requestCancelled(requestId, signal.reason)));
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+    void reader.read().then(
+      (result) => finish(() => resolve(result)),
+      (cause) => finish(() => reject(cause)),
+    );
+  });
+}
+
 function releaseRequestBodyReader(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   requestId: string,
@@ -178,15 +216,22 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
   }
 
   const reader = request.body.getReader();
+  const signal = request.signal ?? new AbortController().signal;
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let cancellationStarted = false;
+  const cancel = () => {
+    if (cancellationStarted) return;
+    cancellationStarted = true;
+    cancelRequestBody(reader, requestId);
+  };
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readArtifactChunk(reader, signal, requestId, cancel);
       if (done) break;
       total += value.byteLength;
       if (total > MAX_ARTIFACT_BYTES) {
-        cancelRequestBody(reader, requestId);
+        cancel();
         throw new ApiError(
           413,
           "artifact_size_invalid",

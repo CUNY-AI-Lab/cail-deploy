@@ -34,6 +34,13 @@ try {
         workflowStatus?: string;
         preparedResponse?: string;
         inheritedEntrypointRejected?: boolean;
+        stalledUploadAbort?: {
+          outcome?: string;
+          status?: number;
+          code?: string;
+          cancellations?: number;
+          locked?: boolean;
+        };
       };
       if (
         !result.mainModule ||
@@ -42,14 +49,19 @@ try {
         !result.workflowStatus ||
         result.workflowStatus === "unknown" ||
         result.preparedResponse !== "declared-alternate-entrypoint" ||
-        result.inheritedEntrypointRejected !== true
+        result.inheritedEntrypointRejected !== true ||
+        result.stalledUploadAbort?.outcome !== "rejected" ||
+        result.stalledUploadAbort.status !== 499 ||
+        result.stalledUploadAbort.code !== "request_cancelled" ||
+        result.stalledUploadAbort.cancellations !== 1 ||
+        result.stalledUploadAbort.locked !== false
       ) {
         throw new Error(
-          "workerd did not honor the declared entrypoint, reject an inherited entrypoint, and return one deterministic Workflow.",
+          "workerd did not honor the declared entrypoint, return one deterministic Workflow, and enforce prompt upload cancellation cleanup.",
         );
       }
       console.log(
-        `Workerd gates passed: ${result.mainModule}, ${result.moduleCount} module(s), Workflow ${result.workflowId} ${result.workflowStatus}`,
+        `Workerd gates passed: ${result.mainModule}, ${result.moduleCount} module(s), Workflow ${result.workflowId} ${result.workflowStatus}, stalled upload ${result.stalledUploadAbort.status}/${result.stalledUploadAbort.code}`,
       );
       lastError = undefined;
       break;

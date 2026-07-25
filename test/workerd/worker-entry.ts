@@ -1,7 +1,8 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import { prepareAndSmokeWorker } from "../../src/adapters/cloudflare/worker-bundler";
-import { ensureWorkflowInstance } from "../../src/api";
+import { ensureWorkflowInstance, readArtifactBody } from "../../src/api";
 import { artifactSchema } from "../../src/domain/contracts";
+import { apiErrorSnapshot } from "../../src/domain/errors";
 import type { ReleaseWorkflowParams, TestWorkflowBinding, WorkerLoaderLike } from "../../src/env";
 
 const artifactBytes =
@@ -18,6 +19,55 @@ const workflowParams: ReleaseWorkflowParams = {
 
 export class AdmissionWorkflow extends WorkflowEntrypoint<unknown, ReleaseWorkflowParams> {
   override async run(): Promise<void> {}
+}
+
+async function stalledUploadAbortGate(): Promise<{
+  outcome: string;
+  status?: number;
+  code?: string;
+  cancellations: number;
+  locked: boolean;
+}> {
+  const controller = new AbortController();
+  let cancellations = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull() {
+      return new Promise<void>(() => undefined);
+    },
+    cancel() {
+      cancellations += 1;
+      return new Promise<void>(() => undefined);
+    },
+  });
+  const request = new Request("https://deploy.invalid/v1/projects/project/revisions", {
+    method: "POST",
+    body,
+    duplex: "half",
+    signal: controller.signal,
+  } as RequestInit);
+  const resultPromise = readArtifactBody(request, "99999999-9999-4999-8999-999999999999").then(
+    () => ({ outcome: "resolved" }),
+    (error: unknown) => {
+      const snapshot = apiErrorSnapshot(error);
+      return {
+        outcome: "rejected",
+        ...(snapshot ? { status: snapshot.status, code: snapshot.code } : {}),
+      };
+    },
+  );
+
+  controller.abort(new Error("workerd caller cancelled upload"));
+  const result = await Promise.race([
+    resultPromise,
+    new Promise<{ outcome: string }>((resolve) =>
+      setTimeout(() => resolve({ outcome: "timeout" }), 250),
+    ),
+  ]);
+  return {
+    ...result,
+    cancellations,
+    locked: request.body?.locked ?? false,
+  };
 }
 
 export default {
@@ -45,6 +95,7 @@ export default {
     await ensureWorkflowInstance(workflowEnv, workflowId, workflowParams);
     const instance = await env.RELEASE_WORKFLOW.get(workflowId);
     const workflowStatus = await instance.status();
+    const stalledUploadAbort = await stalledUploadAbortGate();
     return Response.json({
       mainModule: prepared.mainModule,
       moduleCount: Object.keys(prepared.modules).length,
@@ -52,6 +103,7 @@ export default {
       workflowStatus: workflowStatus.status,
       preparedResponse: await preparedResponse.text(),
       inheritedEntrypointRejected,
+      stalledUploadAbort,
     });
   },
 };
