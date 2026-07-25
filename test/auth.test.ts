@@ -26,10 +26,79 @@ describe("CAIL identity boundary", () => {
     ).toThrow("distinct operational pseudonym");
   });
 
-  test("accepts one offline RS256 token at the exact issuer and audience", async () => {
-    const issuer = await createTestIdentityIssuer({
-      issuer: "https://identity.integration.invalid",
+  test("refuses an issuer outside the allowlist as an operator error", async () => {
+    // The configured issuer must belong to a code-owned allowlist. Deriving the
+    // allowlist from the configured value made the check a tautology, so a bad
+    // config push could point issuer and JWKS at an attacker pair and Deploy
+    // would verify tokens minted by it.
+    const rogue = await createTestIdentityIssuer({
+      issuer: "https://attacker.example/sso",
     });
+    const token = await rogue.mintIdentityJwt({
+      audience,
+      subject: TEST_SUBJECTS.alice,
+    });
+    await expect(
+      authenticate(
+        new Request("https://deploy.invalid", {
+          headers: { "X-CAIL-Identity-JWT": token },
+        }),
+        env({ CAIL_IDENTITY_JWKS: rogue.jwksJson, CAIL_IDENTITY_ISSUER: rogue.issuer }),
+      ),
+    ).rejects.toMatchObject({ status: 503, code: "identity_not_configured" });
+  });
+
+  test("reports an unusable key set as unavailable rather than a bad credential", async () => {
+    // 4.6.0 treats an empty or duplicate-`kid` key set as a token concern, so
+    // every user saw 401 during a bad JWKS rotation while peer services
+    // correctly reported 503. A caller cannot fix an operator error.
+    const issuer = await createTestIdentityIssuer();
+    const token = await issuer.mintIdentityJwt({
+      audience,
+      subject: TEST_SUBJECTS.alice,
+    });
+    for (const jwksJson of [
+      JSON.stringify({ keys: [] }),
+      JSON.stringify({
+        keys: [
+          ...(JSON.parse(issuer.jwksJson) as { keys: unknown[] }).keys,
+          ...(JSON.parse(issuer.jwksJson) as { keys: unknown[] }).keys,
+        ],
+      }),
+    ]) {
+      await expect(
+        authenticate(
+          new Request("https://deploy.invalid", {
+            headers: { "X-CAIL-Identity-JWT": token },
+          }),
+          env({ CAIL_IDENTITY_JWKS: jwksJson, CAIL_IDENTITY_ISSUER: issuer.issuer }),
+        ),
+      ).rejects.toMatchObject({ status: 503, code: "identity_not_configured" });
+    }
+  });
+
+  test("reports a missing service audience as unavailable rather than a bad credential", async () => {
+    const issuer = await createTestIdentityIssuer();
+    const token = await issuer.mintIdentityJwt({
+      audience,
+      subject: TEST_SUBJECTS.alice,
+    });
+    await expect(
+      authenticate(
+        new Request("https://deploy.invalid", {
+          headers: { "X-CAIL-Identity-JWT": token },
+        }),
+        env({
+          CAIL_IDENTITY_JWKS: issuer.jwksJson,
+          CAIL_IDENTITY_ISSUER: issuer.issuer,
+          SERVICE_AUDIENCE: "",
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 503, code: "identity_not_configured" });
+  });
+
+  test("accepts one offline RS256 token at the exact issuer and audience", async () => {
+    const issuer = await createTestIdentityIssuer();
     const token = await issuer.mintIdentityJwt({
       audience,
       subject: TEST_SUBJECTS.alice,
@@ -47,9 +116,7 @@ describe("CAIL identity boundary", () => {
   });
 
   test("does not invent an operational subject when the signed claim is absent", async () => {
-    const issuer = await createTestIdentityIssuer({
-      issuer: "https://identity.integration.invalid",
-    });
+    const issuer = await createTestIdentityIssuer();
     const token = await issuer.mintIdentityJwt({ audience, subject: TEST_SUBJECTS.alice });
     const principal = await authenticate(
       new Request("https://deploy.invalid", { headers: { "X-CAIL-Identity-JWT": token } }),
@@ -59,9 +126,7 @@ describe("CAIL identity boundary", () => {
   });
 
   test("rejects a malformed signed operational subject and ignores caller headers", async () => {
-    const issuer = await createTestIdentityIssuer({
-      issuer: "https://identity.integration.invalid",
-    });
+    const issuer = await createTestIdentityIssuer();
     const malformed = await issuer.mintIdentityJwt({
       audience,
       subject: TEST_SUBJECTS.alice,
@@ -90,9 +155,7 @@ describe("CAIL identity boundary", () => {
   });
 
   test("rejects wrong audience and credential ambiguity", async () => {
-    const issuer = await createTestIdentityIssuer({
-      issuer: "https://identity.integration.invalid",
-    });
+    const issuer = await createTestIdentityIssuer();
     const wrongAudience = await issuer.mintIdentityJwt({ audience: "https://other.invalid" });
     await expect(
       authenticate(
@@ -114,9 +177,7 @@ describe("CAIL identity boundary", () => {
   });
 
   test("serializes an async authentication rejection at the Worker boundary", async () => {
-    const issuer = await createTestIdentityIssuer({
-      issuer: "https://identity.integration.invalid",
-    });
+    const issuer = await createTestIdentityIssuer();
     const wrongAudience = await issuer.mintIdentityJwt({ audience: "https://other.invalid" });
     const requestId = "019f8bdc-342a-76e1-ba71-005d69808f86";
     const response = await workerHandler.fetch(

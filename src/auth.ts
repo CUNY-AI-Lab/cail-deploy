@@ -1,7 +1,25 @@
-import { parseIdentityConfig, verifyIdentityJwt } from "@cuny-ai-lab/cail-identity";
+import {
+  CAIL_CANONICAL_ISSUER,
+  CAIL_STAGING_ISSUER,
+  parseIdentityConfig,
+  verifyIdentityJwt,
+} from "@cuny-ai-lab/cail-identity";
+import type { JSONWebKeySet } from "jose";
 import { SUBJECT_PATTERN } from "./domain/contracts";
 import { ApiError } from "./domain/errors";
 import type { Env } from "./env";
+
+// A key set with no keys, or with an ambiguous `kid`, cannot verify anything.
+// Newer cail-identity rejects both at config load; 4.6.0 does not, so the check
+// lives here until Deploy migrates.
+function isUsableKeySet(jwks: JSONWebKeySet): boolean {
+  if (!Array.isArray(jwks.keys) || jwks.keys.length === 0) return false;
+  const kids = jwks.keys.map((key) => key.kid);
+  if (kids.some((kid) => typeof kid !== "string" || kid.length === 0)) {
+    return false;
+  }
+  return new Set(kids).size === kids.length;
+}
 
 export interface Principal {
   subject: string;
@@ -26,8 +44,24 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
     const config = parseIdentityConfig({
       jwks: env.CAIL_IDENTITY_JWKS,
       issuer: env.CAIL_IDENTITY_ISSUER,
+      // An exact allowlist independent of the configured issuer. Without it the
+      // issuer check is a tautology and a misconfigured or compromised
+      // issuer/JWKS pair would be loaded and its tokens trusted.
+      supportedIssuers: [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER],
     });
     if (!config.ok) {
+      throw new ApiError(
+        503,
+        "identity_not_configured",
+        "CAIL identity verification is not configured.",
+      );
+    }
+    // This primitive treats an empty or duplicate-`kid` key set, and a missing
+    // audience, as token concerns — so every user saw 401 invalid_credential
+    // during a bad JWKS rotation while the other services correctly reported
+    // 503. These are operator errors: a caller cannot fix them and must not be
+    // told its credential is bad.
+    if (!isUsableKeySet(config.jwks) || !env.SERVICE_AUDIENCE) {
       throw new ApiError(
         503,
         "identity_not_configured",

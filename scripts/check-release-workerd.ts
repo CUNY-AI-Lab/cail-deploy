@@ -65,9 +65,11 @@ const portSocket = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data()
 const port = portSocket.port;
 portSocket.stop(true);
 const baseUrl = `http://127.0.0.1:${port}`;
-const issuer = await createTestIdentityIssuer({
-  issuer: "https://identity.release-workerd-test.invalid",
-});
+// Defaults to CAIL_CANONICAL_ISSUER. The issuer allowlist is a code constant,
+// not a reflection of CAIL_IDENTITY_ISSUER, so a `.invalid` test issuer is
+// refused at config load and every probe reads 503 — which would mask the
+// wrong-audience and cross-owner assertions below rather than exercise them.
+const issuer = await createTestIdentityIssuer();
 const ownerJwt = await issuer.mintIdentityJwt({
   audience: "cail:deploy",
   subject: TEST_SUBJECTS.alice,

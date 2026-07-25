@@ -271,7 +271,9 @@ const portSocket = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data()
 const port = portSocket.port;
 portSocket.stop(true);
 const baseUrl = `http://127.0.0.1:${port}`;
-const issuer = await createTestIdentityIssuer({ issuer: "https://identity.oauth-test.invalid" });
+// Defaults to CAIL_CANONICAL_ISSUER; see check-release-workerd.ts for why a
+// `.invalid` test issuer no longer reaches token validation at all.
+const issuer = await createTestIdentityIssuer();
 const aliceJwt = await issuer.mintIdentityJwt({
   audience: "cail:deploy",
   subject: TEST_SUBJECTS.alice,
