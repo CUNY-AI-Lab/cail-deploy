@@ -1,3 +1,4 @@
+import { Server, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ARTIFACT_MEDIA_TYPE, handleApiForPrincipal, MAX_ARTIFACT_BYTES } from "./api";
 import type { Principal } from "./auth";
@@ -60,7 +61,7 @@ const rollbackReleaseArgumentsSchema = z
 
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 
-const tools = [
+export const tools = [
   ["kale.create_project", ["name", "idempotencyKey"]],
   ["kale.upload_revision", ["projectId", "artifactBase64", "contentDigest"]],
   ["kale.create_release", ["projectId", "revisionId", "target", "approval", "idempotencyKey"]],
@@ -128,15 +129,7 @@ function releaseMcpBodyReader(
   }
 }
 
-async function readMcpMessage(
-  request: Request,
-  requestId: string,
-): Promise<{
-  jsonrpc?: string;
-  id?: unknown;
-  method?: string;
-  params?: Record<string, unknown>;
-}> {
+export async function readMcpMessage(request: Request, requestId: string): Promise<unknown> {
   const tooLarge = () =>
     new ApiError(413, "mcp_request_too_large", "The MCP request body exceeds the supported limit.");
   const declaredLength = request.headers.get("Content-Length");
@@ -180,91 +173,30 @@ async function readMcpMessage(
     offset += chunk.byteLength;
   }
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as {
-      jsonrpc?: string;
-      id?: unknown;
-      method?: string;
-      params?: Record<string, unknown>;
-    };
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
   } catch (cause) {
     throw new ApiError(400, "invalid_mcp", "The MCP request body must be valid JSON.", { cause });
   }
 }
 
-async function mcpToolResult(
-  id: unknown,
-  response: Response,
-  requestId: string,
-): Promise<Response> {
+async function mcpToolResult(response: Response, requestId: string): Promise<CallToolResult> {
   const text = await response.text();
-  return Response.json(
-    {
-      jsonrpc: "2.0",
-      id,
-      result: { content: [{ type: "text", text }], isError: !response.ok },
-    },
-    {
-      headers: {
-        "X-CAIL-Request-Id": requestId,
-        "x-request-id": requestId,
-      },
-    },
-  );
+  return { content: [{ type: "text", text }], isError: !response.ok };
 }
 
-export async function handleMcpWithPrincipal(
-  request: Request,
+async function callKaleTool(
+  name: string,
+  argumentsValue: unknown,
+  requestUrl: string,
   env: Env,
   requestId: string,
   principal: Principal,
-): Promise<Response> {
-  const message = await readMcpMessage(request, requestId);
-  if (message.jsonrpc !== "2.0")
-    throw new ApiError(400, "invalid_mcp", "MCP requires JSON-RPC 2.0.");
-  if (message.method === "initialize") {
-    return Response.json({
-      jsonrpc: "2.0",
-      id: message.id,
-      result: {
-        protocolVersion: "2025-06-18",
-        capabilities: { tools: {} },
-        serverInfo: { name: "kale-release-control-plane", version: "0.1.0" },
-      },
-    });
-  }
-  if (message.method === "tools/list") {
-    return Response.json({
-      jsonrpc: "2.0",
-      id: message.id,
-      result: {
-        tools: tools.map(([name, required]) => ({
-          name,
-          description: `Kale release operation ${name}.`,
-          inputSchema: {
-            type: "object",
-            required,
-            additionalProperties: false,
-            properties: Object.fromEntries(required.map((key) => [key, { type: "string" }])),
-          },
-        })),
-      },
-    });
-  }
-  if (message.method === "notifications/initialized") {
-    return new Response(null, { status: 202 });
-  }
-  if (message.method !== "tools/call")
-    throw new ApiError(400, "unknown_mcp_method", "The MCP method is not supported.");
-  const name = message.params?.name;
-  if (typeof name !== "string") {
-    return mcpToolResult(message.id, errorResponse(invalidToolArguments(), requestId), requestId);
-  }
+): Promise<CallToolResult> {
   const headers = new Headers();
   let path: string;
   let method: "GET" | "POST" = "POST";
   let body: BodyInit | undefined;
   try {
-    const argumentsValue = message.params?.arguments;
     if (name === "kale.create_project") {
       const args = parseToolArguments(createProjectArgumentsSchema, argumentsValue);
       path = "/v1/projects";
@@ -305,12 +237,12 @@ export async function handleMcpWithPrincipal(
     }
   } catch (error) {
     if (!apiErrorSnapshot(error)) throw error;
-    return mcpToolResult(message.id, errorResponse(error, requestId), requestId);
+    return mcpToolResult(errorResponse(error, requestId), requestId);
   }
   let response: Response;
   try {
     response = await handleApiForPrincipal(
-      new Request(new URL(path, request.url), { method, headers, body }),
+      new Request(new URL(path, requestUrl), { method, headers, body }),
       env,
       principal,
       requestId,
@@ -318,5 +250,113 @@ export async function handleMcpWithPrincipal(
   } catch (error) {
     response = errorResponse(error, requestId);
   }
-  return mcpToolResult(message.id, response, requestId);
+  return mcpToolResult(response, requestId);
+}
+
+function listedTools() {
+  return tools.map(([name, required]) => ({
+    name,
+    description: `Kale release operation ${name}.`,
+    inputSchema: {
+      type: "object" as const,
+      required: [...required],
+      additionalProperties: false,
+      properties: Object.fromEntries(required.map((key) => [key, { type: "string" }])),
+    },
+  }));
+}
+
+function legacyToolResponse(id: unknown, result: CallToolResult, requestId: string): Response {
+  return Response.json(
+    { jsonrpc: "2.0", id, result },
+    {
+      headers: {
+        "X-CAIL-Request-Id": requestId,
+        "x-request-id": requestId,
+      },
+    },
+  );
+}
+
+export async function handleLegacyMcpMessage(
+  parsedBody: unknown,
+  requestUrl: string,
+  env: Env,
+  requestId: string,
+  principal: Principal,
+): Promise<Response> {
+  if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
+    throw new ApiError(400, "invalid_mcp", "MCP requires a JSON-RPC 2.0 request object.");
+  }
+  const message = parsedBody as {
+    jsonrpc?: string;
+    id?: unknown;
+    method?: string;
+    params?: Record<string, unknown>;
+  };
+  if (message.jsonrpc !== "2.0")
+    throw new ApiError(400, "invalid_mcp", "MCP requires JSON-RPC 2.0.");
+  if (message.method === "initialize") {
+    return Response.json({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "kale-release-control-plane", version: "0.1.0" },
+      },
+    });
+  }
+  if (message.method === "tools/list") {
+    return Response.json({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: { tools: listedTools() },
+    });
+  }
+  if (message.method === "notifications/initialized") {
+    return new Response(null, { status: 202 });
+  }
+  if (message.method !== "tools/call")
+    throw new ApiError(400, "unknown_mcp_method", "The MCP method is not supported.");
+  const name = message.params?.name;
+  if (typeof name !== "string") {
+    return legacyToolResponse(
+      message.id,
+      await mcpToolResult(errorResponse(invalidToolArguments(), requestId), requestId),
+      requestId,
+    );
+  }
+  return legacyToolResponse(
+    message.id,
+    await callKaleTool(name, message.params?.arguments, requestUrl, env, requestId, principal),
+    requestId,
+  );
+}
+
+export function createKaleMcpServer(
+  requestUrl: string,
+  env: Env,
+  requestId: string,
+  principal: Principal,
+): Server {
+  const server = new Server(
+    { name: "kale-release-control-plane", version: "0.1.0" },
+    {
+      capabilities: { tools: {} },
+      supportedProtocolVersions: ["2026-07-28", "2025-06-18"],
+    },
+  );
+  server.setRequestHandler("tools/list", async () => ({ tools: listedTools() }));
+  server.setRequestHandler("tools/call", async (request) =>
+    callKaleTool(
+      request.params.name,
+      request.params.arguments,
+      requestUrl,
+      env,
+      requestId,
+      principal,
+    ),
+  );
+  return server;
 }

@@ -31,6 +31,16 @@ Canonical references:
 - [Cloudflare local multi-Worker development](https://developers.cloudflare.com/workers/local-development/multi-workers/)
 - [Workers for Platforms multipart upload example](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/platform-examples/)
 
+## MCP protocol direction
+
+Deploy serves two stateless protocol lanes on the same provider-protected `/mcp` route. The frozen `kale.release.v1` compatibility lane retains its exact JSON behavior and MCP `2025-06-18` negotiation. Modern clients use Cloudflare Agents' `createMcpHandler` factory and MCP SDK v2 with `2026-07-28` negotiation. Both lanes call one tool dispatcher and publish one set of tool schemas.
+
+The adapter reads and bounds each request once before protocol classification because the SDK handler does not own Deploy's payload ceiling. Present `Host` and `Origin` hostnames are checked against the request URL hostname before dispatch. The existing Cloudflare OAuth provider still validates bearer tokens and passes restricted principal props into the route; neither MCP implementation receives a bearer token or derives authority from an MCP session. Tool failures remain correlated Kale error documents inside MCP `isError` results.
+
+The package graph is pinned to `agents@0.20.1`, `@modelcontextprotocol/server@2.0.0`, `@modelcontextprotocol/client@2.0.0`, and the Agents peer `@modelcontextprotocol/sdk@1.30.0`. The previously accepted v1.29 client remains installed under the test-only `@modelcontextprotocol/sdk-legacy` alias. `0.20.1` is used instead of `0.20.0` because it corrects the Agents peer versions for the published MCP v2 packages. The `2026-07-28` protocol remains a release candidate, so the modern lane is additive and disposable: the provider, legacy lane, D1/R2 authority, and deployment boundary do not depend on it. `McpAgent`, Durable Objects for MCP sessions, bindings, ingress, and secrets remain absent.
+
+Reference: [Cloudflare Agents SDK v0.20.0 and MCP SDK v2](https://developers.cloudflare.com/changelog/post/2026-07-27-agents-sdk-v0.20.0-mcp-sdk-v2/)
+
 ## Scope decisions
 
 GitHub, repository ownership, webhooks, check runs, installation tokens, PATs, email/admin authorization, AWS dispatch, and old identifiers are absent. Linux/Sandbox builds are deferred until a first Linux-only artifact enters the integration scenario. Project D1/R2 provisioning and project secrets are deferred; this slice rejects all requested bindings, which keeps publication isolated without inventing a resource policy engine. One run-scoped KV binding stores only OAuth registration/grant/token protocol state. The isolated deployment verifies an offline run-scoped CAIL identity issuer with the accepted identity 4.6.0 source package. The local bearer map exists only for component tests.

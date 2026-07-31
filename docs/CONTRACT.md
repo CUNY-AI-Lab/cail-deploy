@@ -26,7 +26,9 @@ Clients propagate correlation through `X-CAIL-Request-Id`, which must be a UUID.
 
 ## MCP
 
-`POST /mcp` exposes the same operations through JSON-RPC 2.0 tools. `kale.upload_revision` carries `artifactBase64` and `contentDigest`; all other arguments mirror the service API. MCP never has more authority than the provider-validated bearer principal, and the bearer is never forwarded into the raw API authentication function.
+`POST /mcp` exposes the same operations through JSON-RPC 2.0 tools. The frozen compatibility lane negotiates MCP `2025-06-18`; the stateless MCP SDK v2 lane negotiates `2026-07-28`. Both lanes expose the same six tool names, descriptions, strict input schemas, and Kale tool-result errors. `kale.upload_revision` carries `artifactBase64` and `contentDigest`; all other arguments mirror the service API.
+
+The provider validates the bearer before protocol handling. MCP never has more authority than that provider-validated principal, the bearer is never forwarded into the raw API authentication function, and protocol state never becomes authority. Requests are bounded before protocol classification. Present `Host` and `Origin` hostnames must match the request URL hostname. Public responses preserve `X-CAIL-Request-Id`, and tool failures carry the same request ID in their Kale error document.
 
 The public surface is frozen in `contract/oauth-mcp-v1.json`:
 
@@ -39,6 +41,8 @@ The public surface is frozen in `contract/oauth-mcp-v1.json`:
 - Missing, invalid, expired, or wrong-resource bearer tokens return the provider's RFC 9728 `401` challenge. Missing scope returns `403` with `scope="cail:deploy"`. Tokens and provider internals are never included in application error bodies.
 
 The exact provider pin is `@cloudflare/workers-oauth-provider@0.5.0`, source `b4bc502c3421f2bc8a61760fb84790f09d0fa529`, npm tarball SHA-256 `097c5955e8eb6092575a008d9e3b960fc945b48c8fb26ae252bedd9482bdce11`. Its default refresh-token TTL is 30 days and dynamic-registration TTL is 90 days. These are test-only protocol records in `OAUTH_KV`; D1 project/revision/release state does not depend on them.
+
+The MCP transport pins are `agents@0.20.1`, `@modelcontextprotocol/server@2.0.0`, and `@modelcontextprotocol/client@2.0.0`. `@modelcontextprotocol/sdk@1.30.0` satisfies the Agents peer pin; the frozen lane is exercised with the repository's previous `@modelcontextprotocol/sdk@1.29.0` client through the test-only `@modelcontextprotocol/sdk-legacy` alias. Cloudflare-specific MCP transport imports remain isolated in `src/adapters/cloudflare/mcp.ts`; the shared tool dispatcher does not depend on Cloudflare Agents.
 
 ## Artifact
 

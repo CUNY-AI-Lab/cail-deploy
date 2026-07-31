@@ -3,8 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Buffer } from "node:buffer";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  Client as ModernClient,
+  StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
+import { Client } from "@modelcontextprotocol/sdk-legacy/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk-legacy/client/streamableHttp.js";
 import {
   createTestIdentityIssuer,
   TEST_OPERATIONAL_SUBJECTS,
@@ -696,6 +700,44 @@ try {
   );
   await standardClient.close();
 
+  const modernTransport = new ModernStreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+    requestInit: {
+      headers: {
+        Authorization: `Bearer ${aliceToken.access_token}`,
+        "X-CAIL-Request-Id": requestId,
+      },
+    },
+  });
+  const modernClient = new ModernClient(
+    { name: "kale-oauth-modern-conformance", version: "0.1.0" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  await modernClient.connect(modernTransport);
+  assert(
+    modernClient.getNegotiatedProtocolVersion() === "2026-07-28",
+    "modern MCP client did not negotiate 2026-07-28",
+  );
+  const modernListed = await modernClient.listTools();
+  assert(
+    JSON.stringify(modernListed.tools.map((tool) => tool.name)) ===
+      JSON.stringify(listed.tools.map((tool) => tool.name)),
+    "modern and legacy MCP clients saw different tools",
+  );
+  const modernProjectResult = await modernClient.callTool({
+    name: "kale.create_project",
+    arguments: {
+      name: "OAuth MCP modern fixture",
+      idempotencyKey: "oauth-modern-client-project",
+    },
+  });
+  const modernProject = JSON.parse(toolText(modernProjectResult)) as { projectId?: string };
+  assert(
+    typeof modernProject.projectId === "string" &&
+      /^prj_[0-9a-f]{32}$/u.test(modernProject.projectId),
+    "modern client project failed",
+  );
+  await modernClient.close();
+
   const bobToken = await authorize(baseUrl, client.client_id, bobJwt);
   for (const [name, arguments_] of [
     [
@@ -773,7 +815,8 @@ try {
         gate: "oauth-mcp-local-workerd",
         provider: "@cloudflare/workers-oauth-provider@0.5.0",
         standardClient: "@modelcontextprotocol/sdk@1.29.0",
-        protocolVersion: "2025-06-18",
+        modernClient: "@modelcontextprotocol/client@2.0.0",
+        protocolVersions: ["2025-06-18", "2026-07-28"],
         tools: listed.tools.map((tool) => tool.name),
         projectId: project.projectId,
         revisionId: revision.revisionId,

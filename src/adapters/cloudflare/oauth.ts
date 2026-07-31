@@ -3,7 +3,6 @@ import { OAuthProvider, type OAuthProviderOptions } from "@cloudflare/workers-oa
 import { ApiError, errorResponse } from "../../domain/errors";
 import type { Env, OAuthHelpersLike } from "../../env";
 import { workerHandler } from "../../handler";
-import { handleMcpWithPrincipal } from "../../mcp";
 import { handleOAuthAuthorize } from "../../oauth-consent";
 import {
   insufficientScopeResponse,
@@ -12,6 +11,7 @@ import {
   oauthPrincipalFromProps,
 } from "../../oauth-principal";
 import { requestIdForRequest } from "../../request-id";
+import { handleMcpWithPrincipal } from "./mcp";
 import { validatedOAuthPublicBaseUrl } from "./oauth-origin";
 
 function publicBaseUrl(env: Env): string {

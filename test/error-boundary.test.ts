@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { TEST_SUBJECTS } from "@cuny-ai-lab/cail-identity/testing";
+import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
 import type { Principal } from "../src/auth";
 import { ApiError, errorResponse } from "../src/domain/errors";
 import type { Env } from "../src/env";
 import { workerHandler } from "../src/handler";
-import { handleMcpWithPrincipal } from "../src/mcp";
 
 const requestId = "019f8bdc-342a-76e1-ba71-005d69808f86";
 const principal: Principal = {

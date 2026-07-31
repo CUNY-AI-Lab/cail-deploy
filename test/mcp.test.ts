@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  Client as ModernClient,
+  StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
+import { Client } from "@modelcontextprotocol/sdk-legacy/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk-legacy/client/streamableHttp.js";
+import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
 import type { Principal } from "../src/auth";
 import type { Env } from "../src/env";
-import { handleMcpWithPrincipal, MAX_ARTIFACT_BASE64_CHARS, MAX_MCP_BODY_BYTES } from "../src/mcp";
+import { MAX_ARTIFACT_BASE64_CHARS, MAX_MCP_BODY_BYTES } from "../src/mcp";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
 const principal: Principal = {
@@ -12,9 +17,13 @@ const principal: Principal = {
 };
 
 const clients: Client[] = [];
+const modernClients: ModernClient[] = [];
 
 afterEach(async () => {
-  await Promise.all(clients.splice(0).map((client) => client.close()));
+  await Promise.all([
+    ...clients.splice(0).map((client) => client.close()),
+    ...modernClients.splice(0).map((client) => client.close()),
+  ]);
 });
 
 async function standardClientAgainst(env: Env): Promise<Client> {
@@ -31,13 +40,213 @@ async function standardClientAgainst(env: Env): Promise<Client> {
   return client;
 }
 
+async function modernClientAgainst(env: Env): Promise<ModernClient> {
+  const transport = new ModernStreamableHTTPClientTransport(new URL("https://deploy.invalid/mcp"), {
+    fetch: async (input, init) =>
+      handleMcpWithPrincipal(new Request(input, init), env, requestId, principal),
+  });
+  const client = new ModernClient(
+    {
+      name: "kale-mcp-modern-regression",
+      version: "0.1.0",
+    },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  modernClients.push(client);
+  await client.connect(transport);
+  return client;
+}
+
 function toolText(result: Awaited<ReturnType<Client["callTool"]>>): string {
   const content = result.content[0];
   if (content?.type !== "text") throw new Error("Expected MCP text content.");
   return content.text;
 }
 
+function modernRequest(
+  method: string,
+  params: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Request {
+  return new Request("https://deploy.invalid/mcp", {
+    method: "POST",
+    headers: {
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+      "MCP-Protocol-Version": "2026-07-28",
+      "Mcp-Method": method,
+      ...headers,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "modern-regression",
+      method,
+      params: {
+        ...params,
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {},
+          "io.modelcontextprotocol/clientInfo": {
+            name: "kale-mcp-modern-regression",
+            version: "0.1.0",
+          },
+        },
+      },
+    }),
+  });
+}
+
 describe("MCP tool argument boundary", () => {
+  test("serves the stateless 2026-07-28 protocol with the frozen tool surface", async () => {
+    const client = await modernClientAgainst({} as Env);
+
+    expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
+    expect((await client.listTools()).tools).toEqual([
+      {
+        name: "kale.create_project",
+        description: "Kale release operation kale.create_project.",
+        inputSchema: {
+          type: "object",
+          required: ["name", "idempotencyKey"],
+          additionalProperties: false,
+          properties: {
+            name: { type: "string" },
+            idempotencyKey: { type: "string" },
+          },
+        },
+      },
+      {
+        name: "kale.upload_revision",
+        description: "Kale release operation kale.upload_revision.",
+        inputSchema: {
+          type: "object",
+          required: ["projectId", "artifactBase64", "contentDigest"],
+          additionalProperties: false,
+          properties: {
+            projectId: { type: "string" },
+            artifactBase64: { type: "string" },
+            contentDigest: { type: "string" },
+          },
+        },
+      },
+      {
+        name: "kale.create_release",
+        description: "Kale release operation kale.create_release.",
+        inputSchema: {
+          type: "object",
+          required: ["projectId", "revisionId", "target", "approval", "idempotencyKey"],
+          additionalProperties: false,
+          properties: {
+            projectId: { type: "string" },
+            revisionId: { type: "string" },
+            target: { type: "string" },
+            approval: { type: "string" },
+            idempotencyKey: { type: "string" },
+          },
+        },
+      },
+      {
+        name: "kale.get_release",
+        description: "Kale release operation kale.get_release.",
+        inputSchema: {
+          type: "object",
+          required: ["projectId", "releaseId"],
+          additionalProperties: false,
+          properties: {
+            projectId: { type: "string" },
+            releaseId: { type: "string" },
+          },
+        },
+      },
+      {
+        name: "kale.approve_release",
+        description: "Kale release operation kale.approve_release.",
+        inputSchema: {
+          type: "object",
+          required: ["projectId", "releaseId", "idempotencyKey"],
+          additionalProperties: false,
+          properties: {
+            projectId: { type: "string" },
+            releaseId: { type: "string" },
+            idempotencyKey: { type: "string" },
+          },
+        },
+      },
+      {
+        name: "kale.rollback_release",
+        description: "Kale release operation kale.rollback_release.",
+        inputSchema: {
+          type: "object",
+          required: ["projectId", "releaseId", "approval", "idempotencyKey"],
+          additionalProperties: false,
+          properties: {
+            projectId: { type: "string" },
+            releaseId: { type: "string" },
+            approval: { type: "string" },
+            idempotencyKey: { type: "string" },
+          },
+        },
+      },
+    ]);
+
+    const invalid = await client.callTool({
+      name: "kale.create_project",
+      arguments: { name: 42, idempotencyKey: "modern-invalid" },
+    });
+    expect(invalid.isError).toBe(true);
+    expect(JSON.parse(toolText(invalid))).toEqual({
+      error: {
+        code: "invalid_mcp_arguments",
+        message: "The MCP tool arguments do not match the tool contract.",
+        requestId,
+      },
+    });
+  });
+
+  test("accepts same-origin modern requests and rejects hostile boundary claims", async () => {
+    let envReads = 0;
+    const env = new Proxy({} as Env, {
+      get() {
+        envReads += 1;
+        throw new Error("The API handler must not run for rejected modern requests.");
+      },
+    });
+
+    const sameOrigin = await handleMcpWithPrincipal(
+      modernRequest(
+        "server/discover",
+        {},
+        {
+          Host: "deploy.invalid",
+          Origin: "https://deploy.invalid",
+        },
+      ),
+      env,
+      requestId,
+      principal,
+    );
+    expect(sameOrigin.status).toBe(200);
+
+    for (const headers of [{ Host: "other.invalid" }, { Origin: "https://other.invalid" }]) {
+      const response = await handleMcpWithPrincipal(
+        modernRequest("server/discover", {}, headers),
+        env,
+        requestId,
+        principal,
+      );
+      expect(response.status).toBe(403);
+    }
+
+    const mismatch = await handleMcpWithPrincipal(
+      modernRequest("tools/list", {}, { "Mcp-Method": "tools/call" }),
+      env,
+      requestId,
+      principal,
+    );
+    expect(mismatch.status).toBe(400);
+    expect(envReads).toBe(0);
+  });
+
   test("standard SDK calls keep invalid tool arguments inside correlated MCP errors", async () => {
     let envReads = 0;
     const env = new Proxy({} as Env, {

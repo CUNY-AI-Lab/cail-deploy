@@ -21,9 +21,25 @@
       "npmIntegritySha512": "KlqhvvG6XAkemDlckeiqpMpXzYjpfW+IXkxfIHJOxnrotfZdVVkeiAMTTtmYBizwvY/t6FtR9d2Da+NZLboM5g==",
       "maturity": "0.x volatile adapter",
       "boundary": "src/adapters/cloudflare/oauth.ts",
-      "conformance": "scripts/check-oauth.ts runs the real provider in local Wrangler workerd with ephemeral KV/D1/R2 and the standard MCP SDK client",
+      "conformance": "scripts/check-oauth.ts runs the real provider in local Wrangler workerd with ephemeral KV/D1/R2 and both the frozen MCP SDK v1 client and the MCP SDK v2 client",
       "replacement": "Use Cloudflare's documented successor only after source conformance and an isolated canary. The CAIL project/revision/release and Principal contracts do not depend on provider classes.",
       "rollback": "Keep the accepted d95 HTTP API runtime frozen or repin 0.5.0; OAuth KV state is test-only and may be deleted without affecting D1 ownership or release history."
+    },
+    "agents": {
+      "accepted": "0.20.1",
+      "evaluatedAt": "2026-07-28",
+      "npmIntegritySha512": "HQRYMeZpD3k8djYBH7atRPojZMee3NvmXkzsmMWXfdHZ94vMljmWqSsD1XZd70LovHyQrw6/R81AZZIsRiFM6Q==",
+      "peerPins": {
+        "@modelcontextprotocol/client": "2.0.0",
+        "@modelcontextprotocol/server": "2.0.0",
+        "@modelcontextprotocol/sdk": "1.30.0"
+      },
+      "legacyClientPin": "@modelcontextprotocol/sdk@1.29.0",
+      "maturity": "0.x volatile adapter over an MCP 2026-07-28 release candidate",
+      "boundary": "src/adapters/cloudflare/mcp.ts",
+      "conformance": "scripts/check-oauth.ts proves authenticated legacy 2025-06-18 and modern 2026-07-28 clients against the real provider in local Wrangler workerd; test/mcp.test.ts freezes tool schemas, bounded parsing, errors, routing headers, Host, and Origin behavior",
+      "replacement": "Repin only after the package-integrity gate, both client lanes, and bundle measurement pass. The shared Kale tool dispatcher and OAuth Principal contract do not depend on Agents classes.",
+      "rollback": "Remove the modern handler branch and its package pins while retaining the frozen legacy adapter; D1 ownership, R2 bytes, OAuth grants, bindings, and ingress are unchanged."
     },
     "@cloudflare/worker-bundler": {
       "tested": "0.2.2",
