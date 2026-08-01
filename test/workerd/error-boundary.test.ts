@@ -5,6 +5,7 @@ import {
   oauthWorkerHandler,
 } from "../../src/adapters/cloudflare/oauth";
 import { ApiError } from "../../src/domain/errors";
+import { canonicalJson, sha256Hex } from "../../src/domain/digests";
 import type { Env, ReleaseWorkflowParams } from "../../src/env";
 import { ReleaseWorkflow } from "../../src/workflow";
 
@@ -50,23 +51,89 @@ interface BoundStatement {
   args: unknown[];
 }
 
-async function runWorkflowPrimary(primary: unknown): Promise<{
+type PrimaryFailurePhase = "validation" | "publication";
+
+async function runWorkflowPrimary(
+  primary: unknown,
+  phase: PrimaryFailurePhase = "validation",
+): Promise<{
   ambiguousCalls: number;
   batches: BoundStatement[][];
   terminalCalls: number;
   thrown: unknown;
 }> {
+  const artifact = {
+    schemaVersion: "kale.artifact.v1" as const,
+    runtime: "worker" as const,
+    entrypoint: "src/index.ts",
+    files: { "src/index.ts": "export default { fetch() { return new Response('ok') } }" },
+    compatibility: { date: "2026-07-22", flags: [] },
+    requestedBindings: [],
+  };
+  const preparedJson = canonicalJson({
+    mainModule: "bundle.js",
+    modules: { "bundle.js": "export default { fetch() { return new Response('ok') } }" },
+    compatibilityDate: "2026-07-22",
+    compatibilityFlags: [],
+  });
+  const preparedDigest = await sha256Hex(preparedJson);
+  const release = {
+    project_id: workflowParams.projectId,
+    release_id: releaseId,
+    revision_id: workflowParams.revisionId,
+    target: "preview" as const,
+    approval: "automatic" as const,
+    status: "prepared",
+    workflow_instance_id: "workflow",
+    prepared_key: `prepared/${preparedDigest}.json`,
+    prepared_digest: preparedDigest,
+    publication_name: null,
+    rollback_of_release_id: null,
+    approved_by_subject: null,
+    operational_subject: null,
+    request_id: requestId,
+    admitted_at: workflowParams.admittedAt,
+    created_at: workflowParams.admittedAt,
+    updated_at: workflowParams.admittedAt,
+  };
   const batches: BoundStatement[][] = [];
   const env = {
     AUTH_MODE: "test",
+    RUN_ID: "workerd-test",
+    CLOUDFLARE_API_TOKEN: "test-token",
+    WFP_ACCOUNT_ID: "test-account",
+    WFP_NAMESPACE: "test-namespace",
+    WFP_PUBLISH_TIMEOUT_MS: "1000",
+    WFP_API: {
+      async fetch() {
+        throw primary;
+      },
+    },
+    ARTIFACTS: {
+      async get() {
+        return { text: async () => preparedJson };
+      },
+    },
     DB: {
       prepare(sql: string) {
-        const statement: BoundStatement & { bind(...args: unknown[]): BoundStatement } = {
+        const statement: BoundStatement & {
+          bind(...args: unknown[]): BoundStatement;
+          first<T>(): Promise<T | null>;
+          run(): Promise<{ meta: { changes: number } }>;
+        } = {
           sql,
           args: [],
           bind(...args: unknown[]) {
             statement.args = args;
             return statement;
+          },
+          async first<T>() {
+            if (sql.includes("terminal_outcome")) return { terminal_outcome: 0 } as T;
+            if (sql.startsWith("SELECT * FROM releases")) return release as T;
+            throw new Error(`Unexpected D1 first query: ${sql}`);
+          },
+          async run() {
+            return { meta: { changes: 1 } };
           },
         };
         return statement;
@@ -84,10 +151,29 @@ async function runWorkflowPrimary(primary: unknown): Promise<{
   let terminalCalls = 0;
   const step = {
     async do(name: string, ...options: unknown[]) {
-      if (name === "mark validating") throw primary;
       const callback = options.find(
         (option): option is () => Promise<unknown> => typeof option === "function",
       );
+      if (name === "mark validating") {
+        if (phase === "validation") throw primary;
+        return { state: "applied" as const };
+      }
+      if (phase === "publication") {
+        if (name === "verify immutable revision") return artifact;
+        if (name === "bundle and retain worker") {
+          return {
+            outcome: "prepared" as const,
+            preparedKey: release.prepared_key as string,
+            preparedDigest,
+            preparedJson,
+          };
+        }
+        if (name === "record prepared artifact") return { state: "applied" as const };
+        if (name === "publish prepared worker") {
+          if (!callback) throw new Error(`Missing callback for ${name}.`);
+          return callback();
+        }
+      }
       if (!callback) throw new Error(`Missing callback for ${name}.`);
       if (name === "record ambiguous publication") ambiguousCalls += 1;
       else if (name === "record terminal failure") terminalCalls += 1;
@@ -241,11 +327,15 @@ describe("Workflow terminal error classification in workerd", () => {
       "publication_ambiguous",
       "Publication outcome is ambiguous.",
     );
-    const ambiguousResult = await runWorkflowPrimary(ambiguous);
+    const ambiguousResult = await runWorkflowPrimary(ambiguous, "publication");
     expect(ambiguousResult.thrown).toBeUndefined();
     expect(ambiguousResult.ambiguousCalls).toBe(1);
     expect(ambiguousResult.terminalCalls).toBe(0);
-    expect(ambiguousResult.batches[0]?.[1]?.args[5]).toBe('{"code":"publication_ambiguous"}');
+    expect(
+      ambiguousResult.batches.some(
+        (batch) => batch[1]?.args[5] === '{"code":"publication_ambiguous"}',
+      ),
+    ).toBe(true);
 
     const integrity = new ApiError(
       500,
