@@ -73,7 +73,10 @@ async function runWorkflowPrimary(primary: unknown): Promise<{
       },
       async batch(statements: BoundStatement[]) {
         batches.push(statements);
-        return [{ meta: { changes: 0 } }, { meta: { changes: 1 } }];
+        // transitionReleaseStatus updates the row first, then inserts its
+        // event only when that update changed one row. Keep both statements
+        // successful so this fake models the atomic pair used by production.
+        return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
       },
     },
   } as unknown as Env;
@@ -226,8 +229,8 @@ describe("Workflow terminal error classification in workerd", () => {
     expect(result.terminalCalls).toBe(1);
     expect(result.ambiguousCalls).toBe(0);
     expect(result.batches).toHaveLength(1);
-    expect(result.batches[0]?.[0]?.args[4]).toBe('{"code":"release_failed"}');
-    expect(result.batches[0]?.[1]?.args[0]).toBe("failed");
+    expect(result.batches[0]?.[1]?.args[5]).toBe('{"code":"release_failed"}');
+    expect(result.batches[0]?.[0]?.args[0]).toBe("failed");
     expect(JSON.stringify(result.batches)).not.toContain(privateSentinel.message);
     expect(traps).toBe(0);
   });
@@ -253,6 +256,6 @@ describe("Workflow terminal error classification in workerd", () => {
     expect(integrityResult.thrown).toBe(integrity);
     expect(integrityResult.terminalCalls).toBe(1);
     expect(integrityResult.ambiguousCalls).toBe(0);
-    expect(integrityResult.batches[0]?.[0]?.args[4]).toBe('{"code":"artifact_integrity_failed"}');
+    expect(integrityResult.batches[0]?.[1]?.args[5]).toBe('{"code":"artifact_integrity_failed"}');
   });
 });

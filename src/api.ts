@@ -687,21 +687,6 @@ async function reconcileRelease(
       "The release has no ambiguous prepared publication to reconcile.",
     );
   }
-  const retained = await env.ARTIFACTS.get(release.prepared_key);
-  if (!retained)
-    throw new ApiError(
-      409,
-      "prepared_artifact_missing",
-      "The retained prepared artifact is missing.",
-    );
-  const json = await retained.text();
-  if ((await sha256Hex(json)) !== release.prepared_digest) {
-    throw new ApiError(
-      409,
-      "prepared_digest_mismatch",
-      "The retained prepared artifact failed verification.",
-    );
-  }
   const requestDigest = await sha256Hex(
     canonicalJson({
       releaseId,
@@ -751,6 +736,22 @@ async function reconcileRelease(
       409,
       "release_reconciliation_in_progress",
       "The release is already being reconciled.",
+    );
+  }
+
+  const retained = await env.ARTIFACTS.get(release.prepared_key);
+  if (!retained)
+    throw new ApiError(
+      409,
+      "prepared_artifact_missing",
+      "The retained prepared artifact is missing.",
+    );
+  const json = await retained.text();
+  if ((await sha256Hex(json)) !== release.prepared_digest) {
+    throw new ApiError(
+      409,
+      "prepared_digest_mismatch",
+      "The retained prepared artifact failed verification.",
     );
   }
 

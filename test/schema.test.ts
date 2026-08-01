@@ -2,14 +2,25 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { RELEASE_INSERT_SQL } from "../src/api";
 import { CONSUME_CONSENT_NONCE_SQL } from "../src/oauth-consent";
-import { appendTerminalStatus } from "../src/storage";
+import {
+  appendReleaseStatus,
+  appendTerminalStatus,
+  hasTerminalReleaseOutcome,
+} from "../src/storage";
 
 class SqliteD1 {
   constructor(private readonly db: Database) {}
 
   prepare(query: string) {
+    const db = this.db;
     return {
-      bind: (...values: unknown[]) => ({ query, values }),
+      bind: (...values: unknown[]) => ({
+        query,
+        values,
+        async first<T>() {
+          return (db.prepare(query).get(...values) as T | null) ?? null;
+        },
+      }),
     };
   }
 
@@ -119,6 +130,297 @@ describe("durable release invariants", () => {
         .query("SELECT type FROM release_events WHERE release_id = ? ORDER BY sequence")
         .all(releaseId),
     ).toEqual([{ type: "release.live" }]);
+  });
+
+  test("terminal outcomes fence every later nonterminal transition", async () => {
+    for (const [status, type] of [
+      ["live", "release.live"],
+      ["failed", "release.failed"],
+      ["rejected", "release.rejected"],
+    ] as const) {
+      const db = new Database(":memory:");
+      db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
+      const now = new Date().toISOString();
+      const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const revisionId = `rev_sha256_${"b".repeat(64)}`;
+      const releaseId = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      db.run("INSERT INTO projects VALUES (?, ?, ?, ?)", [
+        projectId,
+        "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "test",
+        now,
+      ]);
+      db.run("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)", [
+        projectId,
+        revisionId,
+        "b".repeat(64),
+        1,
+        "key",
+        "ready",
+        now,
+      ]);
+      db.run(
+        "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'publishing', ?, ?, ?, ?, ?)",
+        [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
+      );
+      const env = {
+        DB: new SqliteD1(db),
+      } as unknown as Parameters<typeof appendTerminalStatus>[0];
+
+      expect(await appendTerminalStatus(env, releaseId, status, type)).toBe(true);
+      expect(
+        await appendReleaseStatus(env, releaseId, "reconciling", "release.reconciling"),
+      ).toEqual({ state: "fenced" });
+      expect(db.query("SELECT status FROM releases WHERE release_id = ?").get(releaseId)).toEqual({
+        status,
+      });
+      expect(
+        db
+          .query("SELECT type FROM release_events WHERE release_id = ? ORDER BY sequence")
+          .all(releaseId),
+      ).toEqual([{ type }]);
+    }
+  });
+
+  test("the terminal fence is enforced for direct SQL writers by its migration trigger", async () => {
+    const db = new Database(":memory:");
+    db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
+    db.exec(
+      await Bun.file(new URL("../schema/0003_release_terminal_fence.sql", import.meta.url)).text(),
+    );
+    const now = new Date().toISOString();
+    const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const revisionId = `rev_sha256_${"b".repeat(64)}`;
+    const releaseId = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    db.run("INSERT INTO projects VALUES (?, ?, ?, ?)", [
+      projectId,
+      "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "test",
+      now,
+    ]);
+    db.run("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)", [
+      projectId,
+      revisionId,
+      "b".repeat(64),
+      1,
+      "key",
+      "ready",
+      now,
+    ]);
+    db.run(
+      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'live', ?, ?, ?, ?, ?)",
+      [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
+    );
+    const env = {
+      DB: new SqliteD1(db),
+    } as unknown as Parameters<typeof appendTerminalStatus>[0];
+
+    expect(() =>
+      db.run("UPDATE releases SET status = 'reconciling' WHERE release_id = ?", [releaseId]),
+    ).toThrow("terminal release status cannot regress");
+    expect(() =>
+      db.run("UPDATE releases SET status = 'failed' WHERE release_id = ?", [releaseId]),
+    ).toThrow("terminal release status cannot regress");
+    expect(db.query("SELECT status FROM releases WHERE release_id = ?").get(releaseId)).toEqual({
+      status: "live",
+    });
+
+    const eventOnlyReleaseId = "rel_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    db.run(
+      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'reconciling', ?, ?, ?, ?, ?)",
+      [
+        eventOnlyReleaseId,
+        projectId,
+        revisionId,
+        eventOnlyReleaseId,
+        "request-event-only",
+        now,
+        now,
+        now,
+      ],
+    );
+    db.run(
+      "INSERT INTO release_events (release_id, sequence, type, occurred_at) VALUES (?, 1, 'release.live', ?)",
+      [eventOnlyReleaseId, now],
+    );
+    expect(await hasTerminalReleaseOutcome(env, eventOnlyReleaseId)).toBe(true);
+    expect(
+      await appendReleaseStatus(env, eventOnlyReleaseId, "validating", "release.validating"),
+    ).toEqual({ state: "fenced" });
+    expect(() =>
+      db.run("UPDATE releases SET status = 'publishing' WHERE release_id = ?", [
+        eventOnlyReleaseId,
+      ]),
+    ).toThrow("terminal release status cannot regress");
+    expect(
+      db.query("SELECT status FROM releases WHERE release_id = ?").get(eventOnlyReleaseId),
+    ).toEqual({ status: "reconciling" });
+  });
+
+  test("forward transitions are idempotent and terminal completion wins the reverse ordering", async () => {
+    const db = new Database(":memory:");
+    db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
+    const now = new Date().toISOString();
+    const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const revisionId = `rev_sha256_${"b".repeat(64)}`;
+    const releaseId = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    db.run("INSERT INTO projects VALUES (?, ?, ?, ?)", [
+      projectId,
+      "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "test",
+      now,
+    ]);
+    db.run("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)", [
+      projectId,
+      revisionId,
+      "b".repeat(64),
+      1,
+      "key",
+      "ready",
+      now,
+    ]);
+    db.run(
+      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'queued', ?, ?, ?, ?, ?)",
+      [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
+    );
+    const env = {
+      DB: new SqliteD1(db),
+    } as unknown as Parameters<typeof appendTerminalStatus>[0];
+
+    expect(await appendReleaseStatus(env, releaseId, "validating", "release.validating")).toEqual({
+      state: "applied",
+    });
+    expect(await appendReleaseStatus(env, releaseId, "validating", "release.validating")).toEqual({
+      state: "already_applied",
+    });
+    expect(await appendTerminalStatus(env, releaseId, "live", "release.live")).toBe(true);
+    expect(await appendReleaseStatus(env, releaseId, "reconciling", "release.reconciling")).toEqual(
+      { state: "fenced" },
+    );
+    expect(db.query("SELECT status FROM releases WHERE release_id = ?").get(releaseId)).toEqual({
+      status: "live",
+    });
+    expect(
+      db
+        .query("SELECT type FROM release_events WHERE release_id = ? ORDER BY sequence")
+        .all(releaseId),
+    ).toEqual([{ type: "release.validating" }, { type: "release.live" }]);
+  });
+
+  test("publishing accepts an approved release from awaiting approval", async () => {
+    const db = new Database(":memory:");
+    db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
+    const now = new Date().toISOString();
+    const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const revisionId = `rev_sha256_${"b".repeat(64)}`;
+    const releaseId = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    db.run("INSERT INTO projects VALUES (?, ?, ?, ?)", [
+      projectId,
+      "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "test",
+      now,
+    ]);
+    db.run("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)", [
+      projectId,
+      revisionId,
+      "b".repeat(64),
+      1,
+      "key",
+      "ready",
+      now,
+    ]);
+    db.run(
+      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'required', 'awaiting_approval', ?, ?, ?, ?, ?)",
+      [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
+    );
+    db.run(
+      "INSERT INTO release_events (release_id, sequence, type, occurred_at) VALUES (?, 1, 'release.awaiting_approval', ?)",
+      [releaseId, now],
+    );
+    const env = {
+      DB: new SqliteD1(db),
+    } as unknown as Parameters<typeof appendReleaseStatus>[0];
+
+    expect(await appendReleaseStatus(env, releaseId, "publishing", "release.publishing")).toEqual({
+      state: "applied",
+    });
+    expect(db.query("SELECT status FROM releases WHERE release_id = ?").get(releaseId)).toEqual({
+      status: "publishing",
+    });
+    expect(
+      db
+        .query("SELECT type FROM release_events WHERE release_id = ? ORDER BY sequence")
+        .all(releaseId),
+    ).toEqual([{ type: "release.awaiting_approval" }, { type: "release.publishing" }]);
+  });
+
+  test("interleaved D1 transition batches keep one authoritative row/event pair", async () => {
+    const db = new Database(":memory:");
+    db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
+    const now = new Date().toISOString();
+    const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const revisionId = `rev_sha256_${"b".repeat(64)}`;
+    const releaseId = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    db.run("INSERT INTO projects VALUES (?, ?, ?, ?)", [
+      projectId,
+      "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "test",
+      now,
+    ]);
+    db.run("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)", [
+      projectId,
+      revisionId,
+      "b".repeat(64),
+      1,
+      "key",
+      "ready",
+      now,
+    ]);
+    db.run(
+      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'queued', ?, ?, ?, ?, ?)",
+      [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
+    );
+
+    let releaseFirstBatch: (() => void) | undefined;
+    const firstBatchGate = new Promise<void>((resolve) => {
+      releaseFirstBatch = resolve;
+    });
+    let firstBatchStarted: (() => void) | undefined;
+    const firstBatchBarrier = new Promise<void>((resolve) => {
+      firstBatchStarted = resolve;
+    });
+    class BarrierD1 extends SqliteD1 {
+      private batches = 0;
+
+      override async batch(
+        statements: Array<{ query: string; values: unknown[] }>,
+      ): Promise<Array<{ meta: { changes: number } }>> {
+        this.batches += 1;
+        if (this.batches === 1) {
+          firstBatchStarted?.();
+          await firstBatchGate;
+        }
+        return super.batch(statements);
+      }
+    }
+    const env = {
+      DB: new BarrierD1(db),
+    } as unknown as Parameters<typeof appendReleaseStatus>[0];
+
+    const first = appendReleaseStatus(env, releaseId, "validating", "release.validating");
+    await firstBatchBarrier;
+    const second = appendReleaseStatus(env, releaseId, "validating", "release.validating");
+    releaseFirstBatch?.();
+    const results = await Promise.all([first, second]);
+    expect(results.map(({ state }) => state).sort()).toEqual(["already_applied", "applied"]);
+    expect(db.query("SELECT status FROM releases WHERE release_id = ?").get(releaseId)).toEqual({
+      status: "validating",
+    });
+    expect(
+      db
+        .query("SELECT sequence, type FROM release_events WHERE release_id = ? ORDER BY sequence")
+        .all(releaseId),
+    ).toEqual([{ sequence: 1, type: "release.validating" }]);
   });
 
   test("approval compare-and-set accepts only one idempotency contender", async () => {

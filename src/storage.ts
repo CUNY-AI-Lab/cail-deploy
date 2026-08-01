@@ -38,6 +38,50 @@ export interface ReleaseRow {
   updated_at: string;
 }
 
+export type ReleaseStatus =
+  | "queued"
+  | "validating"
+  | "building"
+  | "prepared"
+  | "awaiting_approval"
+  | "publishing"
+  | "reconciling"
+  | "live"
+  | "rejected"
+  | "failed";
+
+export type ReleaseTransitionState = "applied" | "fenced" | "already_applied";
+
+export interface ReleaseTransitionResult {
+  state: ReleaseTransitionState;
+}
+
+const TERMINAL_RELEASE_STATUSES = ["live", "failed", "rejected"] as const;
+const NONTERMINAL_RELEASE_STATUSES = [
+  "queued",
+  "validating",
+  "building",
+  "prepared",
+  "awaiting_approval",
+  "publishing",
+  "reconciling",
+] as const;
+
+const TERMINAL_RELEASE_EVENT_TYPES = [
+  "release.live",
+  "release.failed",
+  "release.rejected",
+] as const;
+
+const TERMINAL_EVENT_STATUS: Record<
+  (typeof TERMINAL_RELEASE_EVENT_TYPES)[number],
+  "live" | "failed" | "rejected"
+> = {
+  "release.live": "live",
+  "release.failed": "failed",
+  "release.rejected": "rejected",
+};
+
 const RECONCILIATION_KEY = "prepared-publication";
 
 type ReconciliationClaim =
@@ -346,6 +390,31 @@ export async function completeReconciliation(
       token.createdAt,
     ),
     env.DB.prepare(
+      `UPDATE releases SET status = 'live', updated_at = ?
+       WHERE release_id = ? AND publication_name = ?
+         AND status IN ('publishing', 'reconciling')
+         AND NOT EXISTS (
+           SELECT 1 FROM release_events
+           WHERE release_id = releases.release_id
+             AND type IN ('release.live', 'release.failed', 'release.rejected')
+         )
+         AND EXISTS (
+           SELECT 1 FROM idempotency
+           WHERE project_id = ? AND operation = ? AND idempotency_key = ?
+             AND request_digest = ? AND response_json = ? AND created_at = ?
+         )`,
+    ).bind(
+      now,
+      release.release_id,
+      publicationName,
+      release.project_id,
+      reconciliationOperation(release.release_id),
+      RECONCILIATION_KEY,
+      requestDigest,
+      token.responseJson,
+      token.createdAt,
+    ),
+    env.DB.prepare(
       `INSERT OR IGNORE INTO release_events
          (release_id, sequence, type, occurred_at, detail_json)
        SELECT ?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1),
@@ -361,30 +430,6 @@ export async function completeReconciliation(
       release.release_id,
       now,
       JSON.stringify({ publicationName, reconciled: true, requestId }),
-      release.project_id,
-      reconciliationOperation(release.release_id),
-      RECONCILIATION_KEY,
-      requestDigest,
-      token.responseJson,
-      token.createdAt,
-    ),
-    env.DB.prepare(
-      `UPDATE releases SET status = 'live', updated_at = ?
-       WHERE release_id = ? AND publication_name = ?
-         AND EXISTS (
-           SELECT 1 FROM release_events
-           WHERE release_id = ? AND type = 'release.live'
-         )
-         AND EXISTS (
-           SELECT 1 FROM idempotency
-           WHERE project_id = ? AND operation = ? AND idempotency_key = ?
-             AND request_digest = ? AND response_json = ? AND created_at = ?
-         )`,
-    ).bind(
-      now,
-      release.release_id,
-      publicationName,
-      release.release_id,
       release.project_id,
       reconciliationOperation(release.release_id),
       RECONCILIATION_KEY,
@@ -415,6 +460,7 @@ export async function completeReconciliation(
   return (
     (results[0]?.meta.changes ?? 0) === 1 &&
     (results[1]?.meta.changes ?? 0) === 1 &&
+    (results[2]?.meta.changes ?? 0) === 1 &&
     (results[3]?.meta.changes ?? 0) === 1
   );
 }
@@ -457,26 +503,228 @@ export async function requireRelease(
   return release;
 }
 
+/**
+ * Return the durable terminal fence for a release. A terminal event remains
+ * authoritative even if a legacy writer left the row status nonterminal.
+ */
+export async function hasTerminalReleaseOutcome(env: Env, releaseId: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT (
+       EXISTS (
+         SELECT 1 FROM releases
+         WHERE release_id = ? AND status IN ('live', 'failed', 'rejected')
+       )
+       OR EXISTS (
+         SELECT 1 FROM release_events
+         WHERE release_id = ?
+           AND type IN ('release.live', 'release.failed', 'release.rejected')
+       )
+     ) AS terminal_outcome`,
+  )
+    .bind(releaseId, releaseId)
+    .first<{ terminal_outcome: number }>();
+  return row?.terminal_outcome === 1;
+}
+
+export interface ReleaseTransitionOptions {
+  releaseId: string;
+  from: readonly ReleaseStatus[];
+  to: ReleaseStatus;
+  type: string;
+  detail?: Record<string, unknown>;
+  actorSubject?: string;
+  set?: {
+    preparedKey?: string;
+    preparedDigest?: string;
+    publicationName?: string | null;
+  };
+}
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => "?").join(", ");
+}
+
+async function transitionStateAfterFence(
+  env: Env,
+  releaseId: string,
+  status: ReleaseStatus,
+  type: string,
+): Promise<ReleaseTransitionResult> {
+  const row = await env.DB.prepare(
+    `SELECT status,
+       EXISTS (
+         SELECT 1 FROM release_events
+         WHERE release_id = ? AND type = ?
+       ) AS matching_event,
+       EXISTS (
+         SELECT 1 FROM release_events
+         WHERE release_id = ? AND type IN (${TERMINAL_RELEASE_EVENT_TYPES.map(() => "?").join(", ")})
+       ) AS terminal_event
+     FROM releases WHERE release_id = ?`,
+  )
+    .bind(releaseId, type, releaseId, ...TERMINAL_RELEASE_EVENT_TYPES, releaseId)
+    .first<{
+      status: ReleaseStatus;
+      matching_event: number;
+      terminal_event: number;
+    }>();
+  if (!row) return { state: "fenced" };
+  if (
+    row.matching_event === 1 &&
+    row.status === status &&
+    TERMINAL_RELEASE_EVENT_TYPES.includes(type as (typeof TERMINAL_RELEASE_EVENT_TYPES)[number])
+  ) {
+    return { state: "already_applied" };
+  }
+  if (
+    row.terminal_event === 1 ||
+    TERMINAL_RELEASE_STATUSES.some((terminal) => terminal === row.status)
+  ) {
+    return { state: "fenced" };
+  }
+  if (row.matching_event === 1 && row.status === status) {
+    return { state: "already_applied" };
+  }
+  return { state: "fenced" };
+}
+
+/**
+ * Apply one release state transition and its event as one conditional D1
+ * transaction. A terminal event fences every later nonterminal transition;
+ * replaying the exact event is an idempotent no-op.
+ */
+export async function transitionReleaseStatus(
+  env: Env,
+  options: ReleaseTransitionOptions,
+): Promise<ReleaseTransitionResult> {
+  if (options.from.length === 0) {
+    throw new ApiError(
+      500,
+      "release_transition_configuration_error",
+      "The release transition has no allowed predecessor state.",
+    );
+  }
+  if (options.type.length === 0) {
+    throw new ApiError(
+      500,
+      "release_transition_configuration_error",
+      "The release transition has no event type.",
+    );
+  }
+  const terminalStatus = Object.hasOwn(TERMINAL_EVENT_STATUS, options.type)
+    ? TERMINAL_EVENT_STATUS[options.type as keyof typeof TERMINAL_EVENT_STATUS]
+    : undefined;
+  if (terminalStatus !== undefined && terminalStatus !== options.to) {
+    throw new ApiError(
+      500,
+      "release_transition_configuration_error",
+      "The release transition event does not match its status.",
+    );
+  }
+
+  const now = new Date().toISOString();
+  const setClauses = ["status = ?", "updated_at = ?"];
+  const setValues: unknown[] = [options.to, now];
+  if (options.set?.preparedKey !== undefined) {
+    setClauses.push("prepared_key = ?");
+    setValues.push(options.set.preparedKey);
+  }
+  if (options.set?.preparedDigest !== undefined) {
+    setClauses.push("prepared_digest = ?");
+    setValues.push(options.set.preparedDigest);
+  }
+  if (options.set && Object.hasOwn(options.set, "publicationName")) {
+    setClauses.push("publication_name = ?");
+    setValues.push(options.set.publicationName ?? null);
+  }
+
+  const predecessorSql = placeholders(options.from.length);
+  const terminalEventSql = TERMINAL_RELEASE_EVENT_TYPES.map(() => "?").join(", ");
+  const updateSql = `UPDATE releases
+     SET ${setClauses.join(", ")}
+     WHERE release_id = ?
+       AND status IN (${predecessorSql})
+       AND NOT EXISTS (
+         SELECT 1 FROM release_events
+         WHERE release_id = releases.release_id
+           AND type IN (${terminalEventSql})
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM release_events
+         WHERE release_id = releases.release_id AND type = ?
+       )`;
+  const updateValues = [
+    ...setValues,
+    options.releaseId,
+    ...options.from,
+    ...TERMINAL_RELEASE_EVENT_TYPES,
+    options.type,
+  ];
+  const insertSql = `INSERT INTO release_events
+       (release_id, sequence, type, occurred_at, actor_subject, detail_json)
+     SELECT ?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1), ?, ?, ?, ?
+     WHERE changes() = 1`;
+  const results = await env.DB.batch([
+    env.DB.prepare(updateSql).bind(...updateValues),
+    env.DB.prepare(insertSql).bind(
+      options.releaseId,
+      options.releaseId,
+      options.type,
+      now,
+      options.actorSubject ?? null,
+      JSON.stringify(options.detail ?? {}),
+    ),
+  ]);
+  const updated = (results[0]?.meta.changes ?? 0) === 1;
+  const eventInserted = (results[1]?.meta.changes ?? 0) === 1;
+  if (updated && eventInserted) return { state: "applied" };
+  if (updated || eventInserted) {
+    throw new ApiError(
+      500,
+      "release_transition_persist_failed",
+      "The release transition did not persist its row and event together.",
+    );
+  }
+  return transitionStateAfterFence(env, options.releaseId, options.to, options.type);
+}
+
+const NONTERMINAL_PREDECESSORS: Record<
+  Exclude<ReleaseStatus, (typeof TERMINAL_RELEASE_STATUSES)[number]>,
+  readonly ReleaseStatus[]
+> = {
+  validating: ["queued"],
+  building: ["validating"],
+  prepared: ["validating", "building"],
+  awaiting_approval: ["prepared"],
+  publishing: ["prepared", "awaiting_approval"],
+  reconciling: ["publishing"],
+  queued: [],
+};
+
 export async function appendReleaseStatus(
   env: Env,
   releaseId: string,
-  status: string,
+  status: Exclude<ReleaseStatus, (typeof TERMINAL_RELEASE_STATUSES)[number]>,
   type: string,
   detail: Record<string, unknown> = {},
   actorSubject?: string,
-): Promise<void> {
-  const now = new Date().toISOString();
-  await env.DB.batch([
-    env.DB.prepare("UPDATE releases SET status = ?, updated_at = ? WHERE release_id = ?").bind(
-      status,
-      now,
-      releaseId,
-    ),
-    env.DB.prepare(
-      `INSERT INTO release_events (release_id, sequence, type, occurred_at, actor_subject, detail_json)
-         VALUES (?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1), ?, ?, ?, ?)`,
-    ).bind(releaseId, releaseId, type, now, actorSubject ?? null, JSON.stringify(detail)),
-  ]);
+): Promise<ReleaseTransitionResult> {
+  const from = NONTERMINAL_PREDECESSORS[status];
+  if (!from || from.length === 0) {
+    throw new ApiError(
+      500,
+      "release_transition_configuration_error",
+      `The release transition to ${status} is not configured.`,
+    );
+  }
+  return transitionReleaseStatus(env, {
+    releaseId,
+    from,
+    to: status,
+    type,
+    detail,
+    actorSubject,
+  });
 }
 
 export async function appendTerminalStatus(
@@ -486,22 +734,14 @@ export async function appendTerminalStatus(
   type: "release.live" | "release.failed" | "release.rejected",
   detail: Record<string, unknown> = {},
 ): Promise<boolean> {
-  const now = new Date().toISOString();
-  const results = await env.DB.batch([
-    env.DB.prepare(
-      `INSERT OR IGNORE INTO release_events (release_id, sequence, type, occurred_at, detail_json)
-         VALUES (?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1), ?, ?, ?)`,
-    ).bind(releaseId, releaseId, type, now, JSON.stringify(detail)),
-    env.DB.prepare(
-      `UPDATE releases SET status = ?, updated_at = ?
-       WHERE release_id = ?
-         AND EXISTS (
-           SELECT 1 FROM release_events
-           WHERE release_id = ? AND type = ?
-         )`,
-    ).bind(status, now, releaseId, releaseId, type),
-  ]);
-  return (results[0]?.meta.changes ?? 0) === 1;
+  const result = await transitionReleaseStatus(env, {
+    releaseId,
+    from: NONTERMINAL_RELEASE_STATUSES,
+    to: status,
+    type,
+    detail,
+  });
+  return result.state === "applied";
 }
 
 export async function idempotentResponse(

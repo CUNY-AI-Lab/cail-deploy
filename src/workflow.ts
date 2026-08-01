@@ -6,7 +6,15 @@ import { canonicalJson, sha256Hex } from "./domain/digests";
 import { ApiError, apiErrorSnapshot } from "./domain/errors";
 import type { Env, ReleaseWorkflowParams } from "./env";
 import { emitReleaseTerminal } from "./operational-events";
-import { appendReleaseStatus, appendTerminalStatus, getRevision, requireRelease } from "./storage";
+import {
+  appendReleaseStatus,
+  appendTerminalStatus,
+  getRevision,
+  hasTerminalReleaseOutcome,
+  requireRelease,
+  transitionReleaseStatus,
+} from "./storage";
+import type { ReleaseStatus, ReleaseTransitionResult } from "./storage";
 import { finalizeWorkflowFailure } from "./workflow-failure";
 
 interface PreparedEnvelope extends PreparedWorker {
@@ -26,14 +34,64 @@ function terminalFailureType(error: unknown): "artifact_integrity_failed" | "rel
     : "release_failed";
 }
 
+function isTransitionResult(value: unknown): value is ReleaseTransitionResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { state?: unknown }).state !== undefined &&
+    ["applied", "already_applied", "fenced"].includes((value as { state: string }).state)
+  );
+}
+
+/**
+ * Workflows retain completed step outputs across code revisions. The first
+ * release Workflow revision returned `undefined` from status steps, so a
+ * replay can have no transition result even though its D1 write completed.
+ * A legacy output is therefore resolved from authoritative D1 state; this
+ * read never repeats the old transition side effect.
+ */
+async function transitionAllowsProgress(
+  env: Env,
+  projectId: string,
+  releaseId: string,
+  output: unknown,
+  allowedLegacyStatuses: readonly ReleaseStatus[],
+): Promise<boolean> {
+  if (await hasTerminalReleaseOutcome(env, releaseId)) return false;
+  if (isTransitionResult(output)) return output.state !== "fenced";
+  const release = await requireRelease(env, projectId, releaseId);
+  return allowedLegacyStatuses.includes(release.status as ReleaseStatus);
+}
+
+function isPreparedStateFenced(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { outcome?: unknown }).outcome === "fenced"
+  );
+}
+
 export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowParams> {
   async run(event: WorkflowEvent<ReleaseWorkflowParams>, step: WorkflowStep): Promise<void> {
     const { projectId, releaseId, revisionId, requestId, logSubject, admittedAt } = event.payload;
     try {
-      await step.do("mark validating", () =>
+      const validating = await step.do("mark validating", () =>
         appendReleaseStatus(this.env, releaseId, "validating", "release.validating"),
       );
+      if (
+        !(await transitionAllowsProgress(this.env, projectId, releaseId, validating, [
+          "validating",
+          "building",
+          "prepared",
+          "awaiting_approval",
+          "publishing",
+          "reconciling",
+        ]))
+      )
+        return;
+      if (await hasTerminalReleaseOutcome(this.env, releaseId)) return;
       const artifact = await step.do("verify immutable revision", async () => {
+        if (await hasTerminalReleaseOutcome(this.env, releaseId)) return null;
         const revision = await getRevision(this.env, projectId, revisionId);
         if (!revision) throw new Error("Revision row is missing.");
         const object = await this.env.ARTIFACTS.get(revision.artifact_key);
@@ -43,11 +101,15 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
           throw artifactIntegrityFailure("Revision digest changed.");
         return artifactSchema.parse(JSON.parse(new TextDecoder().decode(bytes))) as Artifact;
       });
+      if (!artifact) return;
       if (artifact.requestedBindings.length > 0)
         throw new Error("Binding requests are not supported by this isolated slice.");
       const initialRelease = await requireRelease(this.env, projectId, releaseId);
       const preparedState = initialRelease.rollback_of_release_id
         ? await step.do("reuse retained rollback artifact", async () => {
+            if (await hasTerminalReleaseOutcome(this.env, releaseId)) {
+              return { outcome: "fenced" as const };
+            }
             const source = await requireRelease(
               this.env,
               projectId,
@@ -60,6 +122,9 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
             ) {
               throw new Error("Rollback prepared artifact is unavailable.");
             }
+            if (await hasTerminalReleaseOutcome(this.env, releaseId)) {
+              return { outcome: "fenced" as const };
+            }
             const retained = await this.env.ARTIFACTS.get(source.prepared_key);
             if (!retained) throw new Error("Rollback prepared artifact is missing.");
             const preparedJson = await retained.text();
@@ -67,13 +132,33 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
               throw artifactIntegrityFailure("Rollback prepared artifact digest changed.");
             }
             return {
+              outcome: "prepared" as const,
               preparedKey: source.prepared_key,
               preparedDigest: source.prepared_digest,
               preparedJson,
             };
           })
         : await step.do("bundle and retain worker", async () => {
-            await appendReleaseStatus(this.env, releaseId, "building", "release.building");
+            const building = await appendReleaseStatus(
+              this.env,
+              releaseId,
+              "building",
+              "release.building",
+            );
+            if (
+              !(await transitionAllowsProgress(this.env, projectId, releaseId, building, [
+                "building",
+                "prepared",
+                "awaiting_approval",
+                "publishing",
+                "reconciling",
+              ]))
+            ) {
+              return { outcome: "fenced" as const };
+            }
+            if (await hasTerminalReleaseOutcome(this.env, releaseId)) {
+              return { outcome: "fenced" as const };
+            }
             const prepared = await prepareAndSmokeWorker(artifact, this.env.LOADER);
             const envelope: PreparedEnvelope = {
               schemaVersion: "kale.prepared-worker.v1",
@@ -85,28 +170,57 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
             const preparedJson = canonicalJson(envelope);
             const preparedDigest = await sha256Hex(preparedJson);
             const preparedKey = `prepared/${projectId}/${releaseId}/${preparedDigest}.json`;
+            if (await hasTerminalReleaseOutcome(this.env, releaseId)) {
+              return { outcome: "fenced" as const };
+            }
             await this.env.ARTIFACTS.put(preparedKey, preparedJson, {
               customMetadata: { projectId, releaseId, revisionId, preparedDigest },
             });
-            return { preparedKey, preparedDigest, preparedJson };
+            return { outcome: "prepared" as const, preparedKey, preparedDigest, preparedJson };
           });
-      const { preparedKey, preparedDigest } = preparedState;
-      await step.do("record prepared artifact", async () => {
-        const now = new Date().toISOString();
-        await this.env.DB.batch([
-          this.env.DB.prepare(
-            "UPDATE releases SET status = 'prepared', prepared_key = ?, prepared_digest = ?, updated_at = ? WHERE release_id = ?",
-          ).bind(preparedKey, preparedDigest, now, releaseId),
-          this.env.DB.prepare(
-            `INSERT INTO release_events (release_id, sequence, type, occurred_at, detail_json)
-             VALUES (?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1), 'release.prepared', ?, ?)`,
-          ).bind(releaseId, releaseId, now, JSON.stringify({ preparedDigest })),
-        ]);
+      if (typeof preparedState !== "object" || preparedState === null) {
+        if (await hasTerminalReleaseOutcome(this.env, releaseId)) return;
+        await requireRelease(this.env, projectId, releaseId);
+        throw new Error("Prepared state is missing from the persisted Workflow output.");
+      }
+      if (isPreparedStateFenced(preparedState)) return;
+      // The previous bundle/reuse steps returned these fields without an
+      // `outcome`; preserve that cached shape while keeping current output
+      // types strict.
+      const { preparedKey, preparedDigest } = preparedState as {
+        preparedKey: string;
+        preparedDigest: string;
+      };
+      if (typeof preparedKey !== "string" || typeof preparedDigest !== "string") {
+        if (await hasTerminalReleaseOutcome(this.env, releaseId)) return;
+        await requireRelease(this.env, projectId, releaseId);
+        throw new Error("Prepared state is incomplete in the persisted Workflow output.");
+      }
+      const preparedRecorded = await step.do("record prepared artifact", async () => {
+        return transitionReleaseStatus(this.env, {
+          releaseId,
+          from: ["validating", "building"],
+          to: "prepared",
+          type: "release.prepared",
+          detail: { preparedDigest },
+          set: { preparedKey, preparedDigest },
+        });
       });
+      if (
+        !(await transitionAllowsProgress(this.env, projectId, releaseId, preparedRecorded, [
+          "prepared",
+          "awaiting_approval",
+          "publishing",
+          "reconciling",
+        ]))
+      ) {
+        return;
+      }
 
+      if (await hasTerminalReleaseOutcome(this.env, releaseId)) return;
       const release = await requireRelease(this.env, projectId, releaseId);
       if (release.approval === "required") {
-        await step.do("mark awaiting approval", () =>
+        const awaitingApproval = await step.do("mark awaiting approval", () =>
           appendReleaseStatus(
             this.env,
             releaseId,
@@ -114,6 +228,16 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
             "release.awaiting_approval",
           ),
         );
+        if (
+          !(await transitionAllowsProgress(this.env, projectId, releaseId, awaitingApproval, [
+            "awaiting_approval",
+            "publishing",
+            "reconciling",
+          ]))
+        ) {
+          return;
+        }
+        if (await hasTerminalReleaseOutcome(this.env, releaseId)) return;
         const approval = await step.waitForEvent<{
           decision: string;
           actorSubject: string;
@@ -136,7 +260,23 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
         "publish prepared worker",
         { retries: { limit: 0, delay: "1 second", backoff: "constant" } },
         async () => {
-          await appendReleaseStatus(this.env, releaseId, "publishing", "release.publishing");
+          const publishing = await appendReleaseStatus(
+            this.env,
+            releaseId,
+            "publishing",
+            "release.publishing",
+          );
+          if (
+            !(await transitionAllowsProgress(this.env, projectId, releaseId, publishing, [
+              "publishing",
+              "reconciling",
+            ]))
+          ) {
+            return { outcome: "fenced" as const };
+          }
+          if (await hasTerminalReleaseOutcome(this.env, releaseId)) {
+            return { outcome: "fenced" as const };
+          }
           const retained = await this.env.ARTIFACTS.get(preparedKey);
           if (!retained) throw new Error("Prepared artifact is missing.");
           const retainedJson = await retained.text();
@@ -156,23 +296,34 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
             }
             throw error;
           }
-          await this.env.DB.prepare("UPDATE releases SET publication_name = ? WHERE release_id = ?")
-            .bind(name, releaseId)
+          const publicationRecorded = await this.env.DB.prepare(
+            `UPDATE releases SET publication_name = ?, updated_at = ?
+             WHERE release_id = ? AND status = 'publishing'
+               AND NOT EXISTS (
+                 SELECT 1 FROM release_events
+                 WHERE release_id = releases.release_id
+                   AND type IN ('release.live', 'release.failed', 'release.rejected')
+               )`,
+          )
+            .bind(name, new Date().toISOString(), releaseId)
             .run();
+          if ((publicationRecorded.meta.changes ?? 0) !== 1) {
+            return { outcome: "fenced" as const };
+          }
           const terminal = await appendTerminalStatus(this.env, releaseId, "live", "release.live", {
             publicationName: name,
             revisionId,
           });
-          if (terminal)
-            emitReleaseTerminal(
-              this.env,
-              releaseId,
-              requestId,
-              logSubject,
-              admittedAt,
-              "ok",
-              "completed",
-            );
+          if (!terminal) return { outcome: "fenced" as const };
+          emitReleaseTerminal(
+            this.env,
+            releaseId,
+            requestId,
+            logSubject,
+            admittedAt,
+            "ok",
+            "completed",
+          );
           return { outcome: "live" as const };
         },
       );

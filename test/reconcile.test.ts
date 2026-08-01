@@ -576,6 +576,26 @@ describe("release reconciliation authority", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  test("rejects an event-only terminal mismatch before reading retained bytes", async () => {
+    const { db, env } = await fixture("reconciling");
+    db.sqlite.run("INSERT INTO release_events VALUES (?, 1, 'release.failed', ?, NULL, '{}')", [
+      releaseId,
+      "2026-07-23T00:00:01.000Z",
+    ]);
+    const artifactGet = mock(async () => null);
+    env.ARTIFACTS.get = artifactGet;
+    globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
+
+    await expect(
+      handleApiForPrincipal(reconcileRequest(), env, principal, requestId),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "release_not_reconcilable",
+    });
+    expect(artifactGet).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   test("conceals a cross-subject reconciliation as not found", async () => {
     const { env } = await fixture("publishing");
     const other: Principal = {
