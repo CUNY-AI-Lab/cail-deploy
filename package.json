@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "wrangler deploy --dry-run --outdir dist",
-    "check": "bun run check:fixture && bun run check:oauth-package && bun run check:mcp-packages && bun run check:log-package && bun run format:check && bun run lint && bun run typecheck && bun run test && bun run test:workerd && bun run test:release-workerd && bun run test:oauth",
+    "check": "bun run check:fixture && bun run check:oauth-package && bun run check:mcp-packages && bun run check:log-package && bun run format:check && bun run lint && bun run typecheck && bun run test && bun run test:workerd && bun run test:workerd:pool && bun run test:release-workerd && bun run test:oauth",
     "check:fixture": "bun scripts/check-fixture.ts",
     "check:log-package": "bun scripts/check-log-package.ts",
     "check:mcp-packages": "bun scripts/check-mcp-packages.ts",
@@ -18,7 +18,7 @@
     "test:oauth": "bun scripts/check-oauth-config.ts && bun scripts/check-oauth.ts",
     "test:release-workerd": "bun scripts/check-release-workerd.ts",
     "test:workerd": "bun scripts/check-workerd.ts",
-    "test:workerd:pool-known-drift": "vitest run --config vitest.workerd.config.ts",
+    "test:workerd:pool": "vitest run --config vitest.workerd.config.ts",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types"
   },
