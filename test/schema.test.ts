@@ -1,6 +1,12 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { RELEASE_INSERT_SQL } from "../src/api";
+import {
+  MAX_RELEASE_EVENT_COUNT,
+  MAX_RELEASE_EVENT_HISTORY_BYTES,
+  RELEASE_INSERT_SQL,
+  readReleaseEventHistory,
+} from "../src/api";
+import { apiErrorSnapshot } from "../src/domain/errors";
 import { CONSUME_CONSENT_NONCE_SQL } from "../src/oauth-consent";
 import {
   appendReleaseStatus,
@@ -20,6 +26,9 @@ class SqliteD1 {
         async first<T>() {
           return (db.prepare(query).get(...values) as T | null) ?? null;
         },
+        async all<T>() {
+          return { results: db.prepare(query).all(...values) as T[] };
+        },
       }),
     };
   }
@@ -37,6 +46,149 @@ class SqliteD1 {
 }
 
 describe("durable release invariants", () => {
+  test("bounds release event history by count and encoded bytes without truncation", async () => {
+    const db = new Database(":memory:");
+    db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
+    const releaseId = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const revisionId = `rev_sha256_${"b".repeat(64)}`;
+    const now = "2026-08-01T00:00:00.000Z";
+    db.run("INSERT INTO projects VALUES (?, ?, ?, ?)", [
+      projectId,
+      "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "test",
+      now,
+    ]);
+    db.run("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)", [
+      projectId,
+      revisionId,
+      "b".repeat(64),
+      1,
+      "key",
+      "ready",
+      now,
+    ]);
+    db.run(
+      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'required', 'queued', ?, ?, ?, ?, ?)",
+      [
+        releaseId,
+        projectId,
+        revisionId,
+        releaseId,
+        "11111111-1111-4111-8111-111111111111",
+        now,
+        now,
+        now,
+      ],
+    );
+    const insert = db.prepare(
+      "INSERT INTO release_events (release_id, sequence, type, occurred_at, actor_subject, detail_json) VALUES (?, ?, ?, ?, NULL, ?)",
+    );
+    db.transaction(() => {
+      for (let sequence = 1; sequence <= MAX_RELEASE_EVENT_COUNT; sequence += 1) {
+        insert.run(releaseId, sequence, "release.progress", now, "{}");
+      }
+    })();
+    const d1 = new SqliteD1(db) as unknown as Parameters<typeof readReleaseEventHistory>[0];
+    const exact = await readReleaseEventHistory(d1, releaseId);
+    expect(exact).toHaveLength(MAX_RELEASE_EVENT_COUNT);
+    expect(exact[0]?.sequence).toBe(1);
+    expect(exact.at(-1)?.sequence).toBe(MAX_RELEASE_EVENT_COUNT);
+
+    insert.run(releaseId, MAX_RELEASE_EVENT_COUNT + 1, "release.progress", now, "{}");
+    const countError = await readReleaseEventHistory(d1, releaseId).catch(
+      (error: unknown) => error,
+    );
+    expect(apiErrorSnapshot(countError)?.code).toBe("release_history_too_large");
+
+    db.run("DELETE FROM release_events WHERE release_id = ?", [releaseId]);
+    insert.run(
+      releaseId,
+      1,
+      "release.progress",
+      now,
+      JSON.stringify({ payload: "x".repeat(MAX_RELEASE_EVENT_HISTORY_BYTES) }),
+    );
+    const byteError = await readReleaseEventHistory(d1, releaseId).catch((error: unknown) => error);
+    expect(apiErrorSnapshot(byteError)?.code).toBe("release_history_too_large");
+  });
+
+  test("accepts nullable detail_json and counts multibyte detail bytes at the exact boundary", async () => {
+    const db = new Database(":memory:");
+    db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
+    const releaseId = "rel_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const projectId = "prj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const revisionId = `rev_sha256_${"c".repeat(64)}`;
+    const now = "2026-08-01T00:00:00.000Z";
+    db.run("INSERT INTO projects VALUES (?, ?, ?, ?)", [
+      projectId,
+      "cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "test",
+      now,
+    ]);
+    db.run("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)", [
+      projectId,
+      revisionId,
+      "c".repeat(64),
+      1,
+      "key-b",
+      "ready",
+      now,
+    ]);
+    db.run(
+      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'required', 'queued', ?, ?, ?, ?, ?)",
+      [
+        releaseId,
+        projectId,
+        revisionId,
+        releaseId,
+        "22222222-2222-4222-8222-222222222222",
+        now,
+        now,
+        now,
+      ],
+    );
+    const insert = db.prepare(
+      "INSERT INTO release_events (release_id, sequence, type, occurred_at, actor_subject, detail_json) VALUES (?, ?, ?, ?, NULL, ?)",
+    );
+    insert.run(releaseId, 1, "release.progress", now, null);
+    const d1 = new SqliteD1(db) as unknown as Parameters<typeof readReleaseEventHistory>[0];
+    expect(await readReleaseEventHistory(d1, releaseId)).toEqual([
+      {
+        sequence: 1,
+        type: "release.progress",
+        occurredAt: now,
+        actorSubject: null,
+        detail: null,
+      },
+    ]);
+
+    const encoder = new TextEncoder();
+    const typeBytes = encoder.encode("release.progress").byteLength;
+    const occurredBytes = encoder.encode(now).byteLength;
+    const detailFor = (length: number) => JSON.stringify({ payload: "é".repeat(length) });
+    let low = 0;
+    let high = MAX_RELEASE_EVENT_HISTORY_BYTES;
+    while (low < high) {
+      const candidate = Math.ceil((low + high) / 2);
+      const bytes = typeBytes + occurredBytes + encoder.encode(detailFor(candidate)).byteLength;
+      if (bytes <= MAX_RELEASE_EVENT_HISTORY_BYTES) low = candidate;
+      else high = candidate - 1;
+    }
+    const exactDetail = detailFor(low);
+    db.run("DELETE FROM release_events WHERE release_id = ?", [releaseId]);
+    insert.run(releaseId, 1, "release.progress", now, exactDetail);
+    const exact = await readReleaseEventHistory(d1, releaseId);
+    expect(exact[0]?.detail).toEqual({ payload: "é".repeat(low) });
+    expect(typeBytes + occurredBytes + encoder.encode(exactDetail).byteLength).toBe(
+      MAX_RELEASE_EVENT_HISTORY_BYTES,
+    );
+
+    insert.run(releaseId, 2, "release.progress", now, "{}");
+    const overflow = await readReleaseEventHistory(d1, releaseId).catch((error: unknown) => error);
+    expect(apiErrorSnapshot(overflow)?.code).toBe("release_history_too_large");
+  });
+
   test("production release insert matches the durable schema", async () => {
     const db = new Database(":memory:");
     db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());

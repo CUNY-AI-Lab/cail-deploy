@@ -1,7 +1,8 @@
-import { Server, type CallToolResult } from "@modelcontextprotocol/server";
+import { type CallToolResult, Server, type Tool } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ARTIFACT_MEDIA_TYPE, handleApiForPrincipal, MAX_ARTIFACT_BYTES } from "./api";
 import type { Principal } from "./auth";
+import { emitDeployDiagnostic, observeDetachedCleanup } from "./diagnostics";
 import {
   createProjectSchema,
   createReleaseSchema,
@@ -11,7 +12,6 @@ import {
 } from "./domain/contracts";
 import { parseContentDigest } from "./domain/digests";
 import { ApiError, apiErrorSnapshot, errorResponse } from "./domain/errors";
-import { emitDeployDiagnostic, observeDetachedCleanup } from "./diagnostics";
 import type { Env } from "./env";
 
 const idempotencyKeySchema = z
@@ -23,15 +23,23 @@ const projectIdSchema = z.string().regex(PROJECT_PATTERN);
 const releaseIdSchema = z.string().regex(RELEASE_PATTERN);
 export const MAX_ARTIFACT_BASE64_CHARS = Math.ceil(MAX_ARTIFACT_BYTES / 3) * 4;
 export const MAX_MCP_BODY_BYTES = MAX_ARTIFACT_BASE64_CHARS + 16 * 1024;
+export const MAX_MCP_RESPONSE_BYTES = MAX_MCP_BODY_BYTES;
+export const MAX_MCP_OPERATION_MS = 30_000;
+// Compatibility alias for existing response-reader callers; tool operations
+// use the single MAX_MCP_OPERATION_MS budget for dispatch and response reads.
+export const MAX_MCP_INTERNAL_RESPONSE_MS = MAX_MCP_OPERATION_MS;
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+const SHA256_CONTENT_DIGEST = /^sha-256=:[A-Za-z0-9+/]{43}=:$/u;
 const createProjectArgumentsSchema = createProjectSchema
   .extend({ idempotencyKey: idempotencyKeySchema })
   .strict();
 const uploadRevisionArgumentsSchema = z
   .object({
     projectId: projectIdSchema,
-    artifactBase64: z.string().min(1).max(MAX_ARTIFACT_BASE64_CHARS),
+    artifactBase64: z.string().min(1).max(MAX_ARTIFACT_BASE64_CHARS).regex(CANONICAL_BASE64),
     contentDigest: z
       .string()
+      .regex(SHA256_CONTENT_DIGEST)
       .refine(
         (value) => parseContentDigest(value)?.byteLength === 32,
         "Content-Digest must contain one SHA-256 digest.",
@@ -59,16 +67,54 @@ const rollbackReleaseArgumentsSchema = z
   })
   .strict();
 
-const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+function inputSchemaFor(
+  schema: z.ZodType,
+  override?: (generated: Record<string, unknown>) => void,
+): Tool["inputSchema"] {
+  const generated = z.toJSONSchema(schema, { target: "draft-2020-12" });
+  if (generated.type !== "object") {
+    throw new Error("MCP tool arguments must use an object JSON Schema.");
+  }
+  override?.(generated as Record<string, unknown>);
+  return generated as unknown as Tool["inputSchema"];
+}
 
-export const tools = [
-  ["kale.create_project", ["name", "idempotencyKey"]],
-  ["kale.upload_revision", ["projectId", "artifactBase64", "contentDigest"]],
-  ["kale.create_release", ["projectId", "revisionId", "target", "approval", "idempotencyKey"]],
-  ["kale.get_release", ["projectId", "releaseId"]],
-  ["kale.approve_release", ["projectId", "releaseId", "idempotencyKey"]],
-  ["kale.rollback_release", ["projectId", "releaseId", "approval", "idempotencyKey"]],
+function createProjectInputSchemaOverride(generated: Record<string, unknown>): void {
+  const properties = generated.properties;
+  if (typeof properties !== "object" || properties === null) {
+    throw new Error("MCP create-project schema must expose object properties.");
+  }
+  const name = (properties as Record<string, unknown>).name;
+  if (typeof name !== "object" || name === null) {
+    throw new Error("MCP create-project schema must expose a name property.");
+  }
+  // Zod trims before checking non-emptiness and the project contract bounds
+  // the trimmed value to 80 Unicode code points. JSON Schema's `pattern` uses
+  // the same ECMA-262 code-point regex model, so one closed expression mirrors
+  // both checks without advertising whitespace-only or overlong names.
+  (properties as Record<string, unknown>).name = {
+    ...(name as Record<string, unknown>),
+    pattern: "^\\s*(?:\\S|\\S[\\s\\S]{0,78}\\S)\\s*$",
+  };
+}
+
+const toolDefinitions = [
+  { name: "kale.create_project", schema: createProjectArgumentsSchema },
+  { name: "kale.upload_revision", schema: uploadRevisionArgumentsSchema },
+  { name: "kale.create_release", schema: createReleaseArgumentsSchema },
+  { name: "kale.get_release", schema: getReleaseArgumentsSchema },
+  { name: "kale.approve_release", schema: approveReleaseArgumentsSchema },
+  { name: "kale.rollback_release", schema: rollbackReleaseArgumentsSchema },
 ] as const;
+
+export const tools = toolDefinitions.map(({ name, schema }) => ({
+  name,
+  schema,
+  inputSchema: inputSchemaFor(
+    schema,
+    name === "kale.create_project" ? createProjectInputSchemaOverride : undefined,
+  ),
+}));
 
 function invalidToolArguments(): ApiError {
   return new ApiError(
@@ -114,8 +160,16 @@ function decodeArtifactBase64(value: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-function cancelMcpBody(reader: ReadableStreamDefaultReader<Uint8Array>, requestId: string): void {
-  observeDetachedCleanup(() => reader.cancel(), "mcp_body_cancel_failed", { requestId });
+function requestCancelled(requestId: string, cause: unknown): ApiError {
+  return new ApiError(499, "request_cancelled", "The request was cancelled.", { cause });
+}
+
+function cancelMcpBody(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  requestId: string,
+  reason?: unknown,
+): void {
+  observeDetachedCleanup(() => reader.cancel(reason), "mcp_body_cancel_failed", { requestId });
 }
 
 function releaseMcpBodyReader(
@@ -127,6 +181,38 @@ function releaseMcpBodyReader(
   } catch {
     emitDeployDiagnostic("mcp_body_release_failed", { requestId });
   }
+}
+
+async function readMcpChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+  requestId: string,
+  cancel: (reason?: unknown) => void,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) {
+    const error = requestCancelled(requestId, signal.reason);
+    cancel(signal.reason);
+    throw error;
+  }
+  return await new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+    let settled = false;
+    const finish = (continuation: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      continuation();
+    };
+    const onAbort = () => {
+      const error = requestCancelled(requestId, signal.reason);
+      cancel(signal.reason);
+      finish(() => reject(error));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void reader.read().then(
+      (result) => finish(() => resolve(result)),
+      (cause) => finish(() => reject(cause)),
+    );
+  });
 }
 
 export async function readMcpMessage(request: Request, requestId: string): Promise<unknown> {
@@ -149,16 +235,24 @@ export async function readMcpMessage(request: Request, requestId: string): Promi
     throw new ApiError(400, "invalid_mcp", "The MCP request body must be valid JSON.");
 
   const reader = request.body.getReader();
+  const signal = request.signal ?? new AbortController().signal;
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let cancellationStarted = false;
+  const cancel = (reason?: unknown) => {
+    if (cancellationStarted) return;
+    cancellationStarted = true;
+    cancelMcpBody(reader, requestId, reason);
+  };
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readMcpChunk(reader, signal, requestId, cancel);
       if (done) break;
       total += value.byteLength;
       if (total > MAX_MCP_BODY_BYTES) {
-        cancelMcpBody(reader, requestId);
-        throw tooLarge();
+        const error = tooLarge();
+        cancel(error);
+        throw error;
       }
       chunks.push(value);
     }
@@ -179,9 +273,225 @@ export async function readMcpMessage(request: Request, requestId: string): Promi
   }
 }
 
-async function mcpToolResult(response: Response, requestId: string): Promise<CallToolResult> {
-  const text = await response.text();
-  return { content: [{ type: "text", text }], isError: !response.ok };
+function cancelMcpResponse(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  requestId: string,
+  reason?: unknown,
+): void {
+  observeDetachedCleanup(() => reader.cancel(reason), "mcp_response_cancel_failed", { requestId });
+}
+
+function releaseMcpResponseReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  requestId: string,
+): void {
+  try {
+    reader.releaseLock();
+  } catch {
+    emitDeployDiagnostic("mcp_response_release_failed", { requestId });
+  }
+}
+
+export async function readMcpResponseText(
+  response: Response,
+  signal: AbortSignal,
+  requestId: string,
+  timeoutMs = MAX_MCP_INTERNAL_RESPONSE_MS,
+  externalDeadlineSignal?: AbortSignal,
+  externalDeadlineError?: ApiError,
+): Promise<string> {
+  if (!response.body) return "";
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > MAX_MCP_INTERNAL_RESPONSE_MS
+  ) {
+    throw new Error("MCP internal response timeout is outside its safe bounds.");
+  }
+  const reader = response.body.getReader();
+  const deadlineError =
+    externalDeadlineError ??
+    new ApiError(
+      504,
+      "mcp_operation_timeout",
+      "The MCP tool operation did not complete before its deadline.",
+    );
+  const deadlineController = externalDeadlineSignal ? undefined : new AbortController();
+  const timeoutHandle = deadlineController
+    ? setTimeout(() => deadlineController.abort(deadlineError), timeoutMs)
+    : undefined;
+  const readSignal = externalDeadlineSignal
+    ? AbortSignal.any([signal, externalDeadlineSignal])
+    : AbortSignal.any([signal, deadlineController?.signal ?? new AbortController().signal]);
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let total = 0;
+  let text = "";
+  let complete = false;
+  let cancellationStarted = false;
+  const cancel = (reason?: unknown) => {
+    if (cancellationStarted) return;
+    cancellationStarted = true;
+    cancelMcpResponse(reader, requestId, reason);
+  };
+  try {
+    while (true) {
+      const { done, value } = await readMcpChunk(reader, readSignal, requestId, cancel);
+      if (done) {
+        complete = true;
+        text += decoder.decode();
+        return text;
+      }
+      total += value.byteLength;
+      if (total > MAX_MCP_RESPONSE_BYTES) {
+        const error = new ApiError(
+          502,
+          "mcp_response_too_large",
+          "The MCP tool response exceeds the supported limit.",
+        );
+        cancel(error);
+        throw error;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch (error) {
+    if (!complete) cancel(error);
+    if (externalDeadlineSignal?.aborted && !signal.aborted) throw deadlineError;
+    if (!externalDeadlineSignal && deadlineController?.signal.aborted && !signal.aborted)
+      throw deadlineError;
+    throw error;
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    releaseMcpResponseReader(reader, requestId);
+  }
+}
+
+async function errorToolResult(error: unknown, requestId: string): Promise<CallToolResult> {
+  const text = await errorResponse(error, requestId).text();
+  return { content: [{ type: "text", text }], isError: true };
+}
+
+async function mcpToolResult(
+  response: Response,
+  requestId: string,
+  signal: AbortSignal,
+  timeoutMs = MAX_MCP_INTERNAL_RESPONSE_MS,
+  externalDeadlineSignal?: AbortSignal,
+  externalDeadlineError?: ApiError,
+): Promise<CallToolResult> {
+  try {
+    const text = await readMcpResponseText(
+      response,
+      signal,
+      requestId,
+      timeoutMs,
+      externalDeadlineSignal,
+      externalDeadlineError,
+    );
+    return { content: [{ type: "text", text }], isError: !response.ok };
+  } catch (error) {
+    return errorToolResult(error, requestId);
+  }
+}
+
+export function createMcpApiRequest(
+  requestUrl: string,
+  path: string,
+  method: "GET" | "POST",
+  headers: Headers,
+  body: BodyInit | undefined,
+  signal: AbortSignal,
+): Request {
+  return new Request(new URL(path, requestUrl), { method, headers, body, signal });
+}
+
+interface McpOperation {
+  callerSignal: AbortSignal;
+  deadlineSignal: AbortSignal;
+  operationSignal: AbortSignal;
+  deadlineError: ApiError;
+  deadlineAt: number;
+  timeoutHandle: ReturnType<typeof setTimeout>;
+}
+
+function operationTimeoutError(): ApiError {
+  return new ApiError(
+    504,
+    "mcp_operation_timeout",
+    "The MCP tool operation did not complete before its deadline.",
+  );
+}
+
+function createMcpOperation(callerSignal: AbortSignal, deadlineMs: number): McpOperation {
+  if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > MAX_MCP_OPERATION_MS) {
+    throw new Error("MCP operation deadline is outside its safe bounds.");
+  }
+  const deadlineController = new AbortController();
+  const deadlineError = operationTimeoutError();
+  const deadlineAt = Date.now() + deadlineMs;
+  const timeoutHandle = setTimeout(() => deadlineController.abort(deadlineError), deadlineMs);
+  const operationSignal = AbortSignal.any([callerSignal, deadlineController.signal]);
+  return {
+    callerSignal,
+    deadlineSignal: deadlineController.signal,
+    operationSignal,
+    deadlineError,
+    deadlineAt,
+    timeoutHandle,
+  };
+}
+
+function operationAbortError(operation: McpOperation, requestId: string): ApiError {
+  if (operation.deadlineSignal.aborted && !operation.callerSignal.aborted) {
+    return operation.deadlineError;
+  }
+  return requestCancelled(requestId, operation.callerSignal.reason);
+}
+
+function observeLateMcpResponse(response: Response, requestId: string, reason: unknown): void {
+  if (!response.body) return;
+  observeDetachedCleanup(() => response.body?.cancel(reason), "mcp_response_cancel_failed", {
+    requestId,
+  });
+}
+
+async function dispatchMcpApi(
+  dispatch: () => Promise<Response>,
+  operation: McpOperation,
+  requestId: string,
+): Promise<Response> {
+  const dispatchPromise = Promise.resolve().then(dispatch);
+  return await new Promise<Response>((resolve, reject) => {
+    let settled = false;
+    const finish = (continuation: () => void) => {
+      if (settled) return;
+      settled = true;
+      operation.operationSignal.removeEventListener("abort", onAbort);
+      continuation();
+    };
+    const onAbort = () => {
+      finish(() => reject(operationAbortError(operation, requestId)));
+    };
+    if (operation.operationSignal.aborted) {
+      onAbort();
+    } else {
+      operation.operationSignal.addEventListener("abort", onAbort, { once: true });
+    }
+    // Both continuations are attached immediately.  If cancellation wins,
+    // the late rejection is still observed and cannot become unhandled.
+    dispatchPromise.then(
+      (response) => {
+        if (settled) {
+          observeLateMcpResponse(response, requestId, operationAbortError(operation, requestId));
+          return;
+        }
+        finish(() => resolve(response));
+      },
+      (cause) => {
+        if (settled) return;
+        finish(() => reject(cause));
+      },
+    );
+  });
 }
 
 async function callKaleTool(
@@ -191,78 +501,108 @@ async function callKaleTool(
   env: Env,
   requestId: string,
   principal: Principal,
+  signal: AbortSignal,
+  operationDeadlineMs = MAX_MCP_OPERATION_MS,
 ): Promise<CallToolResult> {
-  const headers = new Headers();
-  let path: string;
-  let method: "GET" | "POST" = "POST";
-  let body: BodyInit | undefined;
+  if (signal.aborted) return errorToolResult(requestCancelled(requestId, signal.reason), requestId);
+  const operation = createMcpOperation(signal, operationDeadlineMs);
   try {
-    if (name === "kale.create_project") {
-      const args = parseToolArguments(createProjectArgumentsSchema, argumentsValue);
-      path = "/v1/projects";
-      headers.set("Idempotency-Key", args.idempotencyKey);
-      body = JSON.stringify({ name: args.name });
-    } else if (name === "kale.upload_revision") {
-      rejectOversizedArtifactArgument(argumentsValue);
-      const args = parseToolArguments(uploadRevisionArgumentsSchema, argumentsValue);
-      path = `/v1/projects/${args.projectId}/revisions`;
-      headers.set("Content-Type", ARTIFACT_MEDIA_TYPE);
-      headers.set("Content-Digest", args.contentDigest);
-      body = decodeArtifactBase64(args.artifactBase64);
-    } else if (name === "kale.create_release") {
-      const args = parseToolArguments(createReleaseArgumentsSchema, argumentsValue);
-      path = `/v1/projects/${args.projectId}/releases`;
-      headers.set("Idempotency-Key", args.idempotencyKey);
-      body = JSON.stringify({
-        revisionId: args.revisionId,
-        target: args.target,
-        approval: args.approval,
-      });
-    } else if (name === "kale.get_release") {
-      const args = parseToolArguments(getReleaseArgumentsSchema, argumentsValue);
-      path = `/v1/projects/${args.projectId}/releases/${args.releaseId}`;
-      method = "GET";
-    } else if (name === "kale.approve_release") {
-      const args = parseToolArguments(approveReleaseArgumentsSchema, argumentsValue);
-      path = `/v1/projects/${args.projectId}/releases/${args.releaseId}/approve`;
-      headers.set("Idempotency-Key", args.idempotencyKey);
-      body = JSON.stringify({ decision: "approved" });
-    } else if (name === "kale.rollback_release") {
-      const args = parseToolArguments(rollbackReleaseArgumentsSchema, argumentsValue);
-      path = `/v1/projects/${args.projectId}/releases/${args.releaseId}/rollback`;
-      headers.set("Idempotency-Key", args.idempotencyKey);
-      body = JSON.stringify({ approval: args.approval });
-    } else {
-      throw new ApiError(404, "mcp_tool_not_found", "The MCP tool was not found.");
+    if (operation.operationSignal.aborted)
+      return errorToolResult(operationAbortError(operation, requestId), requestId);
+    const headers = new Headers();
+    let path: string;
+    let method: "GET" | "POST" = "POST";
+    let body: BodyInit | undefined;
+    try {
+      if (name === "kale.create_project") {
+        const args = parseToolArguments(createProjectArgumentsSchema, argumentsValue);
+        path = "/v1/projects";
+        headers.set("Idempotency-Key", args.idempotencyKey);
+        body = JSON.stringify({ name: args.name });
+      } else if (name === "kale.upload_revision") {
+        rejectOversizedArtifactArgument(argumentsValue);
+        const args = parseToolArguments(uploadRevisionArgumentsSchema, argumentsValue);
+        path = `/v1/projects/${args.projectId}/revisions`;
+        headers.set("Content-Type", ARTIFACT_MEDIA_TYPE);
+        headers.set("Content-Digest", args.contentDigest);
+        body = decodeArtifactBase64(args.artifactBase64);
+      } else if (name === "kale.create_release") {
+        const args = parseToolArguments(createReleaseArgumentsSchema, argumentsValue);
+        path = `/v1/projects/${args.projectId}/releases`;
+        headers.set("Idempotency-Key", args.idempotencyKey);
+        body = JSON.stringify({
+          revisionId: args.revisionId,
+          target: args.target,
+          approval: args.approval,
+        });
+      } else if (name === "kale.get_release") {
+        const args = parseToolArguments(getReleaseArgumentsSchema, argumentsValue);
+        path = `/v1/projects/${args.projectId}/releases/${args.releaseId}`;
+        method = "GET";
+      } else if (name === "kale.approve_release") {
+        const args = parseToolArguments(approveReleaseArgumentsSchema, argumentsValue);
+        path = `/v1/projects/${args.projectId}/releases/${args.releaseId}/approve`;
+        headers.set("Idempotency-Key", args.idempotencyKey);
+        body = JSON.stringify({ decision: "approved" });
+      } else if (name === "kale.rollback_release") {
+        const args = parseToolArguments(rollbackReleaseArgumentsSchema, argumentsValue);
+        path = `/v1/projects/${args.projectId}/releases/${args.releaseId}/rollback`;
+        headers.set("Idempotency-Key", args.idempotencyKey);
+        body = JSON.stringify({ approval: args.approval });
+      } else {
+        throw new ApiError(404, "mcp_tool_not_found", "The MCP tool was not found.");
+      }
+    } catch (error) {
+      if (!apiErrorSnapshot(error)) throw error;
+      return errorToolResult(error, requestId);
     }
-  } catch (error) {
-    if (!apiErrorSnapshot(error)) throw error;
-    return mcpToolResult(errorResponse(error, requestId), requestId);
-  }
-  let response: Response;
-  try {
-    response = await handleApiForPrincipal(
-      new Request(new URL(path, requestUrl), { method, headers, body }),
-      env,
-      principal,
+    if (operation.operationSignal.aborted)
+      return errorToolResult(operationAbortError(operation, requestId), requestId);
+    let response: Response;
+    try {
+      response = await dispatchMcpApi(
+        () =>
+          handleApiForPrincipal(
+            createMcpApiRequest(requestUrl, path, method, headers, body, operation.operationSignal),
+            env,
+            principal,
+            requestId,
+          ),
+        operation,
+        requestId,
+      );
+    } catch (error) {
+      if (operation.callerSignal.aborted || operation.deadlineSignal.aborted) {
+        return errorToolResult(operationAbortError(operation, requestId), requestId);
+      }
+      response = errorResponse(error, requestId);
+    }
+    const remainingMs = operation.deadlineAt - Date.now();
+    if (remainingMs < 1) {
+      // The deadline timer may not have run yet if dispatch resolved after the
+      // clock deadline during a busy turn.  We still own this late response,
+      // so detach and cancel its body before returning the primary timeout.
+      observeLateMcpResponse(response, requestId, operation.deadlineError);
+      return errorToolResult(operation.deadlineError, requestId);
+    }
+    return mcpToolResult(
+      response,
       requestId,
+      operation.callerSignal,
+      remainingMs,
+      operation.deadlineSignal,
+      operation.deadlineError,
     );
-  } catch (error) {
-    response = errorResponse(error, requestId);
+  } finally {
+    clearTimeout(operation.timeoutHandle);
   }
-  return mcpToolResult(response, requestId);
 }
 
 function listedTools() {
-  return tools.map(([name, required]) => ({
-    name,
-    description: `Kale release operation ${name}.`,
-    inputSchema: {
-      type: "object" as const,
-      required: [...required],
-      additionalProperties: false,
-      properties: Object.fromEntries(required.map((key) => [key, { type: "string" }])),
-    },
+  return tools.map((tool) => ({
+    name: tool.name,
+    description: `Kale release operation ${tool.name}.`,
+    inputSchema: tool.inputSchema,
   }));
 }
 
@@ -284,6 +624,8 @@ export async function handleLegacyMcpMessage(
   env: Env,
   requestId: string,
   principal: Principal,
+  signal: AbortSignal,
+  operationDeadlineMs = MAX_MCP_OPERATION_MS,
 ): Promise<Response> {
   if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
     throw new ApiError(400, "invalid_mcp", "MCP requires a JSON-RPC 2.0 request object.");
@@ -323,13 +665,22 @@ export async function handleLegacyMcpMessage(
   if (typeof name !== "string") {
     return legacyToolResponse(
       message.id,
-      await mcpToolResult(errorResponse(invalidToolArguments(), requestId), requestId),
+      await errorToolResult(invalidToolArguments(), requestId),
       requestId,
     );
   }
   return legacyToolResponse(
     message.id,
-    await callKaleTool(name, message.params?.arguments, requestUrl, env, requestId, principal),
+    await callKaleTool(
+      name,
+      message.params?.arguments,
+      requestUrl,
+      env,
+      requestId,
+      principal,
+      signal,
+      operationDeadlineMs,
+    ),
     requestId,
   );
 }
@@ -339,6 +690,8 @@ export function createKaleMcpServer(
   env: Env,
   requestId: string,
   principal: Principal,
+  signal: AbortSignal,
+  operationDeadlineMs = MAX_MCP_OPERATION_MS,
 ): Server {
   const server = new Server(
     { name: "kale-release-control-plane", version: "0.1.0" },
@@ -356,6 +709,8 @@ export function createKaleMcpServer(
       env,
       requestId,
       principal,
+      signal,
+      operationDeadlineMs,
     ),
   );
   return server;

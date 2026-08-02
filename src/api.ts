@@ -1,6 +1,7 @@
 import { publicationTimeoutMs, publishWorker } from "./adapters/cloudflare/wfp";
-import { authenticate } from "./auth";
 import type { Principal } from "./auth";
+import { authenticate } from "./auth";
+import { emitDeployDiagnostic, observeDetachedCleanup } from "./diagnostics";
 import {
   approvalSchema,
   artifactSchema,
@@ -18,9 +19,7 @@ import {
   sha256Hex,
 } from "./domain/digests";
 import { ApiError, apiErrorSnapshot } from "./domain/errors";
-import { emitDeployDiagnostic, observeDetachedCleanup } from "./diagnostics";
-import type { Env } from "./env";
-import type { ReleaseWorkflowParams } from "./env";
+import type { Env, ReleaseWorkflowParams } from "./env";
 import {
   emitReleaseAdmission,
   emitReleaseTerminal,
@@ -31,15 +30,17 @@ import {
   completeReconciliation,
   getRevision,
   idempotentResponse,
+  type ReleaseRow,
   releaseReconciliationAuthority,
   requireOwnedProject,
   requireRelease,
-  type ReleaseRow,
 } from "./storage";
 import type { PreparedEnvelope } from "./workflow";
 
 const ARTIFACT_MEDIA_TYPE = "application/vnd.cuny.kale.artifact.v1+json";
 export const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
+export const MAX_RELEASE_EVENT_COUNT = 256;
+export const MAX_RELEASE_EVENT_HISTORY_BYTES = 1024 * 1024;
 const DEFAULT_PREVIEW_TIMEOUT_MS = 5_000;
 const MIN_PREVIEW_TIMEOUT_MS = 100;
 const MAX_PREVIEW_TIMEOUT_MS = 30_000;
@@ -510,6 +511,86 @@ async function startRelease(
   return Response.json(response, { status: 202 });
 }
 
+export interface ReleaseEventHistoryEntry {
+  sequence: number;
+  type: string;
+  occurredAt: string;
+  actorSubject: string | null;
+  detail: unknown;
+}
+
+export async function readReleaseEventHistory(
+  db: Env["DB"],
+  releaseId: string,
+): Promise<ReleaseEventHistoryEntry[]> {
+  const historySizeSql = `length(CAST(type AS BLOB))
+    + length(CAST(occurred_at AS BLOB))
+    + COALESCE(length(CAST(actor_subject AS BLOB)), 0)
+    + COALESCE(length(CAST(detail_json AS BLOB)), 0)`;
+  const summary = await db
+    .prepare(
+      `SELECT COUNT(*) AS event_count, COALESCE(SUM(${historySizeSql}), 0) AS event_bytes
+       FROM release_events WHERE release_id = ?`,
+    )
+    .bind(releaseId)
+    .first<{ event_count: number; event_bytes: number }>();
+  if (
+    !summary ||
+    !Number.isSafeInteger(summary.event_count) ||
+    !Number.isSafeInteger(summary.event_bytes) ||
+    summary.event_count < 0 ||
+    summary.event_bytes < 0 ||
+    summary.event_count > MAX_RELEASE_EVENT_COUNT ||
+    summary.event_bytes > MAX_RELEASE_EVENT_HISTORY_BYTES
+  ) {
+    throw new ApiError(
+      503,
+      "release_history_too_large",
+      "The release history exceeds the supported retrieval limit.",
+    );
+  }
+  const events = await db
+    .prepare(
+      `SELECT sequence, type, occurred_at, actor_subject, detail_json,
+            ${historySizeSql} AS event_bytes
+       FROM release_events WHERE release_id = ? ORDER BY sequence
+       LIMIT ?`,
+    )
+    .bind(releaseId, MAX_RELEASE_EVENT_COUNT + 1)
+    .all<{
+      sequence: number;
+      type: string;
+      occurred_at: string;
+      actor_subject: string | null;
+      detail_json: string | null;
+      event_bytes: number;
+    }>();
+  const observedBytes = events.results.reduce((total, event) => {
+    if (!Number.isSafeInteger(event.event_bytes) || event.event_bytes < 0) {
+      return Number.NaN;
+    }
+    return total + event.event_bytes;
+  }, 0);
+  if (
+    events.results.length > MAX_RELEASE_EVENT_COUNT ||
+    !Number.isSafeInteger(observedBytes) ||
+    observedBytes > MAX_RELEASE_EVENT_HISTORY_BYTES
+  ) {
+    throw new ApiError(
+      503,
+      "release_history_too_large",
+      "The release history exceeds the supported retrieval limit.",
+    );
+  }
+  return events.results.map((event) => ({
+    sequence: event.sequence,
+    type: event.type,
+    occurredAt: event.occurred_at,
+    actorSubject: event.actor_subject,
+    detail: event.detail_json === null ? null : (JSON.parse(event.detail_json) as unknown),
+  }));
+}
+
 async function getReleaseResponse(
   env: Env,
   subject: string,
@@ -518,26 +599,10 @@ async function getReleaseResponse(
 ): Promise<Response> {
   await requireOwnedProject(env, projectId, subject);
   const release = await requireRelease(env, projectId, releaseId);
-  const events = await env.DB.prepare(
-    "SELECT sequence, type, occurred_at, actor_subject, detail_json FROM release_events WHERE release_id = ? ORDER BY sequence",
-  )
-    .bind(releaseId)
-    .all<{
-      sequence: number;
-      type: string;
-      occurred_at: string;
-      actor_subject: string | null;
-      detail_json: string;
-    }>();
+  const events = await readReleaseEventHistory(env.DB, releaseId);
   return Response.json({
     ...releaseResponse(release),
-    events: events.results.map((event) => ({
-      sequence: event.sequence,
-      type: event.type,
-      occurredAt: event.occurred_at,
-      actorSubject: event.actor_subject,
-      detail: JSON.parse(event.detail_json) as unknown,
-    })),
+    events,
   });
 }
 

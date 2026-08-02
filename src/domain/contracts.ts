@@ -40,7 +40,18 @@ export const artifactSchema = z
     "Entrypoint must be present in files.",
   );
 
-export const createProjectSchema = z.object({ name: z.string().trim().min(1).max(80) }).strict();
+export const createProjectSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .refine(
+        (value) => Array.from(value).length <= 80,
+        "Project name must be at most 80 Unicode code points.",
+      ),
+  })
+  .strict();
 export const createReleaseSchema = z
   .object({
     revisionId: z.string().regex(REVISION_PATTERN),
