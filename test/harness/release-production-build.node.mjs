@@ -10,6 +10,8 @@ const PROVIDER_WORKER = "kale-release-control-plane-wfp-api-test";
 const PROVIDER_CONTROL = {
   "X-Kale-WfP-Test-Control": "local-e2e-control",
 };
+const INITIAL_REQUEST_ID = "11111111-1111-4111-8111-111111111111";
+const TEST_TIMEOUT_MS = 60_000;
 const root = new URL("../..", import.meta.url).pathname.replace(/\/$/u, "");
 
 function identityHeaders(jwt) {
@@ -17,12 +19,144 @@ function identityHeaders(jwt) {
 }
 
 async function discardResponseBody(response) {
-  if (response.body) await response.body.cancel();
+  if (!response.body) return;
+  try {
+    await response.body.cancel();
+  } catch {
+    // The harness closes the Worker after a failed assertion; cleanup is best effort.
+  }
+}
+
+async function assertStatusAndDiscard(response, expected, message) {
+  try {
+    assert.equal(response.status, expected, message);
+  } finally {
+    await discardResponseBody(response);
+  }
 }
 
 async function responseErrorCode(response) {
   const body = await response.json();
   return body?.error?.code;
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function releaseActionId(releaseId) {
+  const hex = releaseId.slice(4);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function readPreparedObject(env, preparedKey, preparedDigest) {
+  assert.equal(typeof preparedKey, "string");
+  assert.match(preparedKey, /^prepared\/prj_[0-9a-f]{32}\/rel_[0-9a-f]{32}\/[0-9a-f]{64}\.json$/u);
+  assert.equal(typeof preparedDigest, "string");
+  assert.match(preparedDigest, /^[0-9a-f]{64}$/u);
+  const object = await env.ARTIFACTS.get(preparedKey);
+  assert.ok(object, `prepared object ${preparedKey} was not retained in R2`);
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  const observedDigest = sha256Hex(bytes);
+  assert.equal(observedDigest, preparedDigest, "prepared bytes failed their D1 digest");
+  const envelope = JSON.parse(new TextDecoder().decode(bytes));
+  assert.equal(envelope.schemaVersion, "kale.prepared-worker.v1");
+  assert.equal(typeof envelope.projectId, "string");
+  assert.equal(typeof envelope.releaseId, "string");
+  assert.equal(typeof envelope.revisionId, "string");
+  assert.equal(typeof envelope.mainModule, "string");
+  assert.ok(envelope.modules && typeof envelope.modules === "object");
+  assert.ok(Object.keys(envelope.modules).length > 0);
+  assert.equal(typeof envelope.modules[envelope.mainModule], "string");
+  return { bytes, digest: observedDigest, envelope };
+}
+
+function moduleSha256(envelope) {
+  return Object.fromEntries(
+    Object.entries(envelope.modules).map(([name, source]) => {
+      assert.equal(typeof source, "string", `prepared module ${name} was not text`);
+      return [name, sha256Hex(source)];
+    }),
+  );
+}
+
+function parseFlattenedLogMessage(message) {
+  if (typeof message !== "string" || !message.trimStart().startsWith("{")) return null;
+  const fields = {};
+  for (const line of message.split("\n")) {
+    const match = line.trim().match(/^(?:'([^']+)'|([A-Za-z_][A-Za-z0-9_.-]*)): (.*?)(?:,)?$/u);
+    if (!match) continue;
+    const key = match[1] ?? match[2];
+    const raw = match[3];
+    if (raw.startsWith("'") && raw.endsWith("'")) {
+      fields[key] = raw.slice(1, -1);
+    } else if (/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/u.test(raw)) {
+      fields[key] = Number(raw);
+    } else {
+      fields[key] = raw;
+    }
+  }
+  return Object.hasOwn(fields, "event.name") ? fields : null;
+}
+
+function assertReleaseLogEvents(logs, releaseId) {
+  assert.ok(logs.length > 0, "the production-build harness emitted no runtime logs");
+  const events = logs
+    .map((log) => parseFlattenedLogMessage(log.message))
+    .filter((event) => event?.["cail.request.id"] === INITIAL_REQUEST_ID);
+  assert.equal(
+    events.length,
+    2,
+    "the initial release did not emit exactly two correlated action events",
+  );
+  assert.deepEqual(
+    events.map((event) => event["event.name"]),
+    ["cail.action.admitted", "cail.action.terminal"],
+  );
+
+  const common = {
+    "cail.action.id": releaseActionId(releaseId),
+    "cail.product.id": "kale-deploy",
+    "cail.request.id": INITIAL_REQUEST_ID,
+    "cail.principal.type": "anonymous",
+    "cail.schema.version": 2,
+    "cail.source.class": "platform",
+    "deployment.environment.name": "test",
+    "event.name": "cail.action.admitted",
+    "http.request.method": "POST",
+    "service.name": "kale-release-control-plane",
+    "service.namespace": "cuny-ai-lab",
+    "service.version": "uncommitted",
+    severity_number: 9,
+    severity_text: "INFO",
+    body: "Action admitted.",
+    timestamp: events[0].timestamp,
+    "url.template": "/v1/projects/{projectId}/releases",
+  };
+  const admitted = events[0];
+  const terminal = events[1];
+  assert.deepEqual(Object.keys(admitted).sort(), Object.keys(common).sort());
+  assert.deepEqual(admitted, common);
+  assert.match(admitted.timestamp, /^\d{4}-\d{2}-\d{2}T[^ ]+Z$/u);
+  assert.ok(Number.isFinite(Date.parse(admitted.timestamp)));
+
+  const terminalExpected = {
+    ...common,
+    "cail.operation.duration_ms": terminal["cail.operation.duration_ms"],
+    "cail.outcome": "ok",
+    "cail.outcome.reason": "completed",
+    "event.name": "cail.action.terminal",
+    body: "Action reached a terminal state.",
+    timestamp: terminal.timestamp,
+  };
+  assert.deepEqual(Object.keys(terminal).sort(), Object.keys(terminalExpected).sort());
+  assert.deepEqual(terminal, terminalExpected);
+  assert.match(terminal.timestamp, /^\d{4}-\d{2}-\d{2}T[^ ]+Z$/u);
+  assert.ok(Number.isFinite(Date.parse(terminal.timestamp)));
+  assert.ok(Date.parse(terminal.timestamp) >= Date.parse(admitted.timestamp));
+  assert.ok(Number.isSafeInteger(terminal["cail.operation.duration_ms"]));
+  assert.ok(terminal["cail.operation.duration_ms"] >= 0);
+  assert.ok(terminal["cail.operation.duration_ms"] < TEST_TIMEOUT_MS);
 }
 
 async function waitForRelease(worker, projectId, releaseId, jwt, expectedStatus) {
@@ -31,8 +165,8 @@ async function waitForRelease(worker, projectId, releaseId, jwt, expectedStatus)
     const response = await worker.fetch(`/v1/projects/${projectId}/releases/${releaseId}`, {
       headers: identityHeaders(jwt),
     });
-    assert.equal(response.status, 200, `release read returned ${response.status}`);
     observed = await response.json();
+    assert.equal(response.status, 200, `release read returned ${response.status}`);
     if (observed.status === expectedStatus) return observed;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -55,14 +189,14 @@ async function createAutomaticRelease(worker, projectId, revisionId, jwt, idempo
       approval: "automatic",
     }),
   });
-  assert.equal(response.status, 202, `automatic release returned ${response.status}`);
   const release = await response.json();
+  assert.equal(response.status, 202, `automatic release returned ${response.status}`);
   assert.match(release.releaseId, /^rel_[0-9a-f]{32}$/u);
   return release.releaseId;
 }
 
 test("actual Deploy production build preserves identity, artifact, Workflow, provider, and reset boundaries", {
-  timeout: 60_000,
+  timeout: TEST_TIMEOUT_MS,
 }, async (context) => {
   const issuer = await createTestIdentityIssuer();
   const ownerJwt = await issuer.mintIdentityJwt({
@@ -138,12 +272,10 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
       ],
     }),
   });
-  assert.equal(providerReset.status, 200, "provider fixture reset failed");
-  await discardResponseBody(providerReset);
+  await assertStatusAndDiscard(providerReset, 200, "provider fixture reset failed");
 
   const health = await deploy.fetch("/health");
-  assert.equal(health.status, 200, "identity-backed readiness failed");
-  await discardResponseBody(health);
+  await assertStatusAndDiscard(health, 200, "identity-backed readiness failed");
 
   const unauthenticated = await deploy.fetch("/v1/projects", {
     method: "POST",
@@ -153,8 +285,9 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
     },
     body: JSON.stringify({ name: "must not exist" }),
   });
+  const unauthenticatedCode = await responseErrorCode(unauthenticated);
   assert.equal(unauthenticated.status, 401);
-  assert.equal(await responseErrorCode(unauthenticated), "authentication_required");
+  assert.equal(unauthenticatedCode, "authentication_required");
 
   const wrongAudience = await deploy.fetch("/v1/projects", {
     method: "POST",
@@ -165,8 +298,9 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
     },
     body: JSON.stringify({ name: "must not exist either" }),
   });
+  const wrongAudienceCode = await responseErrorCode(wrongAudience);
   assert.equal(wrongAudience.status, 401);
-  assert.equal(await responseErrorCode(wrongAudience), "invalid_credential");
+  assert.equal(wrongAudienceCode, "invalid_credential");
 
   const projectResponse = await deploy.fetch("/v1/projects", {
     method: "POST",
@@ -177,8 +311,8 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
     },
     body: JSON.stringify({ name: "createTestHarness release fixture" }),
   });
-  assert.equal(projectResponse.status, 201, "project creation failed");
   const project = await projectResponse.json();
+  assert.equal(projectResponse.status, 201, "project creation failed");
   assert.match(project.projectId, /^prj_[0-9a-f]{32}$/u);
 
   const artifact = await readFile(
@@ -197,8 +331,9 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
     },
     body: artifact,
   });
+  const badDigestCode = await responseErrorCode(badDigestUpload);
   assert.equal(badDigestUpload.status, 400);
-  assert.equal(await responseErrorCode(badDigestUpload), "digest_mismatch");
+  assert.equal(badDigestCode, "digest_mismatch");
 
   const crossOwnerUpload = await deploy.fetch(revisionPath, {
     method: "POST",
@@ -209,8 +344,9 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
     },
     body: artifact,
   });
+  const crossOwnerCode = await responseErrorCode(crossOwnerUpload);
   assert.equal(crossOwnerUpload.status, 404);
-  assert.equal(await responseErrorCode(crossOwnerUpload), "project_not_found");
+  assert.equal(crossOwnerCode, "project_not_found");
 
   const revisionResponse = await deploy.fetch(revisionPath, {
     method: "POST",
@@ -221,8 +357,8 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
     },
     body: artifact,
   });
-  assert.equal(revisionResponse.status, 201, "revision upload failed");
   const revision = await revisionResponse.json();
+  assert.equal(revisionResponse.status, 201, "revision upload failed");
   assert.equal(revision.revisionId, `rev_sha256_${artifactDigest}`);
 
   const releaseResponse = await deploy.fetch(`/v1/projects/${project.projectId}/releases`, {
@@ -231,6 +367,7 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
       ...identityHeaders(ownerJwt),
       "Content-Type": "application/json",
       "Idempotency-Key": "harness-release",
+      "X-CAIL-Request-Id": INITIAL_REQUEST_ID,
     },
     body: JSON.stringify({
       revisionId: revision.revisionId,
@@ -238,8 +375,8 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
       approval: "required",
     }),
   });
-  assert.equal(releaseResponse.status, 202, "release admission failed");
   const release = await releaseResponse.json();
+  assert.equal(releaseResponse.status, 202, "release admission failed");
   const awaitingApproval = await waitForRelease(
     deploy,
     project.projectId,
@@ -259,13 +396,26 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
 
   const env = await deploy.getEnv();
   const durableRelease = await env.DB.prepare(
-    "SELECT operational_subject, status, prepared_digest FROM releases WHERE release_id = ?",
+    "SELECT release_id, project_id, revision_id, rollback_of_release_id, operational_subject, status, prepared_key, prepared_digest FROM releases WHERE release_id = ?",
   )
     .bind(release.releaseId)
     .first();
+  assert.equal(durableRelease.release_id, release.releaseId);
+  assert.equal(durableRelease.project_id, project.projectId);
+  assert.equal(durableRelease.revision_id, revision.revisionId);
+  assert.equal(durableRelease.rollback_of_release_id, null);
   assert.equal(durableRelease.operational_subject, null);
   assert.equal(durableRelease.status, "awaiting_approval");
+  assert.equal(typeof durableRelease.prepared_key, "string");
   assert.equal(typeof durableRelease.prepared_digest, "string");
+  const preparedAtApproval = await readPreparedObject(
+    env,
+    durableRelease.prepared_key,
+    durableRelease.prepared_digest,
+  );
+  assert.equal(preparedAtApproval.envelope.projectId, project.projectId);
+  assert.equal(preparedAtApproval.envelope.releaseId, release.releaseId);
+  assert.equal(preparedAtApproval.envelope.revisionId, revision.revisionId);
 
   const durableEvents = await env.DB.prepare(
     "SELECT sequence, type FROM release_events WHERE release_id = ? ORDER BY sequence",
@@ -305,8 +455,7 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
       body: JSON.stringify({ decision: "approved" }),
     },
   );
-  assert.equal(approvalResponse.status, 202, "release approval failed");
-  await discardResponseBody(approvalResponse);
+  await assertStatusAndDiscard(approvalResponse, 202, "release approval failed");
   await waitForRelease(deploy, project.projectId, release.releaseId, ownerJwt, "reconciling");
 
   const reconciliationPath = `/v1/projects/${project.projectId}/releases/${release.releaseId}/reconcile`;
@@ -323,18 +472,17 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
   const reconciliationStatuses = reconciliationResponses
     .map(({ status }) => status)
     .sort((left, right) => left - right);
+  await Promise.all(reconciliationResponses.map(discardResponseBody));
   assert.deepEqual(
     reconciliationStatuses,
     [409, 502],
     "concurrent reconciliation did not fence the in-flight authority request",
   );
-  await Promise.all(reconciliationResponses.map(discardResponseBody));
   const reconciliationResponse = await deploy.fetch(reconciliationPath, {
     method: "POST",
     headers: identityHeaders(ownerJwt),
   });
-  assert.equal(reconciliationResponse.status, 200, "reconciliation retry failed");
-  await discardResponseBody(reconciliationResponse);
+  await assertStatusAndDiscard(reconciliationResponse, 200, "reconciliation retry failed");
   await waitForRelease(deploy, project.projectId, release.releaseId, ownerJwt, "live");
 
   const secondArtifact = new TextEncoder().encode(
@@ -360,8 +508,8 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
     },
     body: secondArtifact,
   });
-  assert.equal(secondRevisionResponse.status, 201, "second revision upload failed");
   const secondRevision = await secondRevisionResponse.json();
+  assert.equal(secondRevisionResponse.status, 201, "second revision upload failed");
   assert.equal(secondRevision.revisionId, `rev_sha256_${secondArtifactDigest}`);
 
   const secondReleaseId = await createAutomaticRelease(
@@ -372,6 +520,26 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
     "harness-release-v2",
   );
   await waitForRelease(deploy, project.projectId, secondReleaseId, ownerJwt, "live");
+
+  const sourceBeforeRollback = await env.DB.prepare(
+    "SELECT release_id, project_id, revision_id, status, prepared_key, prepared_digest, rollback_of_release_id FROM releases WHERE release_id = ?",
+  )
+    .bind(release.releaseId)
+    .first();
+  assert.equal(sourceBeforeRollback.release_id, release.releaseId);
+  assert.equal(sourceBeforeRollback.project_id, project.projectId);
+  assert.equal(sourceBeforeRollback.revision_id, revision.revisionId);
+  assert.equal(sourceBeforeRollback.status, "live");
+  assert.equal(sourceBeforeRollback.rollback_of_release_id, null);
+  assert.equal(sourceBeforeRollback.prepared_key, durableRelease.prepared_key);
+  assert.equal(sourceBeforeRollback.prepared_digest, durableRelease.prepared_digest);
+  const sourcePreparedBeforeRollback = await readPreparedObject(
+    env,
+    sourceBeforeRollback.prepared_key,
+    sourceBeforeRollback.prepared_digest,
+  );
+  assert.deepEqual(sourcePreparedBeforeRollback.bytes, preparedAtApproval.bytes);
+  assert.deepEqual(sourcePreparedBeforeRollback.envelope, preparedAtApproval.envelope);
 
   const rollbackResponse = await deploy.fetch(
     `/v1/projects/${project.projectId}/releases/${release.releaseId}/rollback`,
@@ -385,10 +553,43 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
       body: JSON.stringify({ approval: "automatic" }),
     },
   );
-  assert.equal(rollbackResponse.status, 202, "rollback admission failed");
   const rollbackRelease = await rollbackResponse.json();
+  assert.equal(rollbackResponse.status, 202, "rollback admission failed");
   assert.equal(rollbackRelease.rollbackOfReleaseId, release.releaseId);
   await waitForRelease(deploy, project.projectId, rollbackRelease.releaseId, ownerJwt, "live");
+
+  const sourceAfterRollback = await env.DB.prepare(
+    "SELECT release_id, project_id, revision_id, status, prepared_key, prepared_digest, rollback_of_release_id FROM releases WHERE release_id = ?",
+  )
+    .bind(release.releaseId)
+    .first();
+  const rollbackRow = await env.DB.prepare(
+    "SELECT release_id, project_id, revision_id, status, prepared_key, prepared_digest, rollback_of_release_id FROM releases WHERE release_id = ?",
+  )
+    .bind(rollbackRelease.releaseId)
+    .first();
+  assert.equal(sourceAfterRollback.release_id, sourceBeforeRollback.release_id);
+  assert.equal(sourceAfterRollback.project_id, sourceBeforeRollback.project_id);
+  assert.equal(sourceAfterRollback.revision_id, sourceBeforeRollback.revision_id);
+  assert.equal(sourceAfterRollback.status, "live");
+  assert.equal(sourceAfterRollback.rollback_of_release_id, null);
+  assert.equal(sourceAfterRollback.prepared_key, sourceBeforeRollback.prepared_key);
+  assert.equal(sourceAfterRollback.prepared_digest, sourceBeforeRollback.prepared_digest);
+  assert.equal(rollbackRow.release_id, rollbackRelease.releaseId);
+  assert.equal(rollbackRow.project_id, project.projectId);
+  assert.equal(rollbackRow.revision_id, sourceBeforeRollback.revision_id);
+  assert.equal(rollbackRow.status, "live");
+  assert.equal(rollbackRow.rollback_of_release_id, sourceBeforeRollback.release_id);
+  assert.equal(rollbackRow.prepared_key, sourceBeforeRollback.prepared_key);
+  assert.equal(rollbackRow.prepared_digest, sourceBeforeRollback.prepared_digest);
+  const rollbackPrepared = await readPreparedObject(
+    env,
+    rollbackRow.prepared_key,
+    rollbackRow.prepared_digest,
+  );
+  assert.deepEqual(rollbackPrepared.bytes, sourcePreparedBeforeRollback.bytes);
+  assert.deepEqual(rollbackPrepared.envelope, sourcePreparedBeforeRollback.envelope);
+  const rollbackModuleSha256 = moduleSha256(sourcePreparedBeforeRollback.envelope);
 
   const responseBoundaryReleases = [];
   for (const mode of [
@@ -426,8 +627,8 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
   const providerStateResponse = await provider.fetch("/__control/state", {
     headers: PROVIDER_CONTROL,
   });
-  assert.equal(providerStateResponse.status, 200);
   const providerState = await providerStateResponse.json();
+  assert.equal(providerStateResponse.status, 200);
   assert.equal(providerState.errors.length, 0);
   assert.equal(providerState.observations.length, 12);
   assert.ok(
@@ -452,6 +653,18 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
       { responseStatus: 200, revisionId: revision.revisionId },
     ],
     "provider publication sequence did not preserve reconciliation, v2, and rollback",
+  );
+  const rollbackObservation = providerState.observations[4];
+  assert.equal(rollbackObservation.revisionId, rollbackRow.revision_id);
+  assert.equal(rollbackObservation.mainModule, sourcePreparedBeforeRollback.envelope.mainModule);
+  assert.deepEqual(
+    rollbackObservation.moduleNames,
+    Object.keys(sourcePreparedBeforeRollback.envelope.modules).sort(),
+  );
+  assert.deepEqual(
+    rollbackObservation.moduleSha256,
+    rollbackModuleSha256,
+    "rollback publication did not use the exact retained prepared module bytes",
   );
   assert.deepEqual(
     providerState.observations.slice(5).map(({ responseMode }) => responseMode),
@@ -503,7 +716,9 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
     reconcilingReleases: 6,
   });
 
-  const runtimeLogs = JSON.stringify(harness.getLogs());
+  const logs = harness.getLogs();
+  const runtimeLogs = JSON.stringify(logs);
+  assertReleaseLogEvents(logs, release.releaseId);
   assert.equal(runtimeLogs.includes(ownerJwt), false, "runtime logs captured the identity JWT");
   assert.equal(
     runtimeLogs.includes(TEST_SUBJECTS.alice),
@@ -526,8 +741,9 @@ test("actual Deploy production build preserves identity, artifact, Workflow, pro
   const resetProviderState = await provider.fetch("/__control/state", {
     headers: PROVIDER_CONTROL,
   });
+  const resetState = await resetProviderState.json();
   assert.equal(resetProviderState.status, 200);
-  assert.deepEqual(await resetProviderState.json(), {
+  assert.deepEqual(resetState, {
     errors: [],
     observations: [],
     responseModes: [],
