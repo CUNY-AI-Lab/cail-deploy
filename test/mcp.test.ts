@@ -77,6 +77,7 @@ function modernRequest(
   method: string,
   params: Record<string, unknown>,
   headers: Record<string, string> = {},
+  signal?: AbortSignal,
 ): Request {
   return new Request("https://deploy.invalid/mcp", {
     method: "POST",
@@ -103,6 +104,7 @@ function modernRequest(
         },
       },
     }),
+    signal,
   });
 }
 
@@ -883,6 +885,174 @@ describe("MCP tool argument boundary", () => {
     controller.abort(reason);
     expect(request.signal.aborted).toBe(true);
     expect(request.signal.reason).toBe(reason);
+  });
+
+  test("keeps a claimless legacy tools/call correlated when the adapter request is aborted", async () => {
+    const controller = new AbortController();
+    const requestBody = new ReadableStream<Uint8Array>({
+      start(streamController) {
+        streamController.enqueue(
+          new TextEncoder().encode(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: "legacy-adapter-abort",
+              method: "tools/call",
+              params: {
+                name: "kale.get_release",
+                arguments: validToolArguments["kale.get_release"],
+              },
+            }),
+          ),
+        );
+        streamController.close();
+      },
+    });
+    const request = new Request("https://deploy.invalid/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: requestBody,
+      duplex: "half",
+      signal: controller.signal,
+    } as RequestInit);
+    const lateError = new Error("PRIVATE_LEGACY_ADAPTER_LATE_REJECTION");
+    let effectCalls = 0;
+    let lateRejected = false;
+    let resolveDispatchStarted!: () => void;
+    const dispatchStarted = new Promise<void>((resolve) => {
+      resolveDispatchStarted = resolve;
+    });
+    const env = {
+      DB: {
+        prepare() {
+          return {
+            bind() {
+              return {
+                first: () => {
+                  effectCalls += 1;
+                  resolveDispatchStarted();
+                  return new Promise<never>((_, reject) => {
+                    setTimeout(() => {
+                      lateRejected = true;
+                      reject(lateError);
+                    }, 35);
+                  });
+                },
+              };
+            },
+          };
+        },
+      },
+    } as unknown as Env;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const pending = handleMcpWithPrincipal(request, env, requestId, principal);
+      await Promise.race([
+        dispatchStarted,
+        Bun.sleep(100).then(() => {
+          throw new Error("legacy adapter dispatch did not start");
+        }),
+      ]);
+      expect(effectCalls).toBe(1);
+      expect(requestBody.locked).toBe(false);
+
+      const reason = new Error("caller stopped claimless legacy adapter request");
+      controller.abort(reason);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(requestBody.locked).toBe(false);
+      const payload = (await response.json()) as {
+        jsonrpc: string;
+        id: unknown;
+        result: { content: [{ text: string }]; isError: boolean };
+      };
+      expect(payload.jsonrpc).toBe("2.0");
+      expect(payload.id).toBe("legacy-adapter-abort");
+      expect(payload.result.isError).toBe(true);
+      expect(JSON.parse(payload.result.content[0].text)).toEqual({
+        error: {
+          code: "request_cancelled",
+          message: "The request was cancelled.",
+          requestId,
+        },
+      });
+
+      await Bun.sleep(50);
+      expect(lateRejected).toBe(true);
+      expect(effectCalls).toBe(1);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("closes the modern HTTP exchange when an adapter request is aborted", async () => {
+    const controller = new AbortController();
+    const request = modernRequest(
+      "tools/call",
+      {
+        name: "kale.get_release",
+        arguments: validToolArguments["kale.get_release"],
+      },
+      { "Mcp-Name": "kale.get_release" },
+      controller.signal,
+    );
+    const lateError = new Error("PRIVATE_MODERN_ADAPTER_LATE_REJECTION");
+    let effectCalls = 0;
+    let lateRejected = false;
+    let resolveDispatchStarted!: () => void;
+    const dispatchStarted = new Promise<void>((resolve) => {
+      resolveDispatchStarted = resolve;
+    });
+    const env = {
+      DB: {
+        prepare() {
+          return {
+            bind() {
+              return {
+                first: () => {
+                  effectCalls += 1;
+                  resolveDispatchStarted();
+                  return new Promise<never>((_, reject) => {
+                    setTimeout(() => {
+                      lateRejected = true;
+                      reject(lateError);
+                    }, 35);
+                  });
+                },
+              };
+            },
+          };
+        },
+      },
+    } as unknown as Env;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const pending = handleMcpWithPrincipal(request, env, requestId, principal);
+      await dispatchStarted;
+      expect(effectCalls).toBe(1);
+      expect(request.body?.locked).toBe(false);
+
+      controller.abort(new Error("caller stopped modern adapter request"));
+      const response = await pending;
+      expect(response.status).toBe(499);
+      expect(response.body).toBeNull();
+      expect(request.body?.locked).toBe(false);
+
+      await Bun.sleep(50);
+      expect(lateRejected).toBe(true);
+      expect(effectCalls).toBe(1);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   test("races a hung legacy API dispatch against caller abort and observes its late rejection", async () => {

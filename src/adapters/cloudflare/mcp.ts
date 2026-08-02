@@ -34,10 +34,17 @@ export async function handleMcpWithPrincipal(
     signal: request.signal,
   });
   if (await isLegacyRequest(transportRequest, parsedBody)) {
-    return handleLegacyMcpMessage(parsedBody, request.url, env, requestId, principal);
+    return handleLegacyMcpMessage(
+      parsedBody,
+      request.url,
+      env,
+      requestId,
+      principal,
+      request.signal,
+    );
   }
   const handler = createMcpHandler(
-    () => createKaleMcpServer(request.url, env, requestId, principal),
+    () => createKaleMcpServer(request.url, env, requestId, principal, request.signal),
     {
       route: "/mcp",
       legacy: "reject",

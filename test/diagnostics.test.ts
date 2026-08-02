@@ -74,4 +74,39 @@ describe("bounded cleanup diagnostics", () => {
       console.error = originalConsoleError;
     }
   });
+
+  test("uses fixed privacy-safe vocabulary for MCP response cleanup failures", async () => {
+    const diagnostics: unknown[] = [];
+    const originalConsoleError = console.error;
+    console.error = (diagnostic: unknown) => {
+      diagnostics.push(diagnostic);
+    };
+    try {
+      observeDetachedCleanup(
+        () => Promise.reject(new Error("PRIVATE_RESPONSE_CANCEL_CLEANUP_CAUSE")),
+        "mcp_response_cancel_failed",
+        { requestId },
+      );
+      emitDeployDiagnostic("mcp_response_release_failed", { requestId });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(diagnostics).toEqual([
+        {
+          event: "deploy.mcp.response.body_release_failed",
+          error: "body_release_failed",
+          requestId,
+        },
+        {
+          event: "deploy.mcp.response.body_cancel_failed",
+          error: "body_cancel_failed",
+          requestId,
+        },
+      ]);
+      const encoded = JSON.stringify(diagnostics);
+      expect(encoded).not.toContain("PRIVATE_RESPONSE_CANCEL_CLEANUP_CAUSE");
+      expect(encoded.length).toBeLessThan(300);
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
 });

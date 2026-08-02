@@ -1,6 +1,8 @@
 export type DeployDiagnostic =
   | "mcp_body_cancel_failed"
   | "mcp_body_release_failed"
+  | "mcp_response_cancel_failed"
+  | "mcp_response_release_failed"
   | "reconcile_claim_release_failed"
   | "request_body_cancel_failed"
   | "request_body_release_failed"
@@ -16,6 +18,14 @@ const diagnosticVocabulary: Record<DeployDiagnostic, { event: string; error: str
   },
   mcp_body_release_failed: {
     event: "deploy.mcp.request.body_release_failed",
+    error: "body_release_failed",
+  },
+  mcp_response_cancel_failed: {
+    event: "deploy.mcp.response.body_cancel_failed",
+    error: "body_cancel_failed",
+  },
+  mcp_response_release_failed: {
+    event: "deploy.mcp.response.body_release_failed",
     error: "body_release_failed",
   },
   reconcile_claim_release_failed: {
