@@ -14,7 +14,7 @@ describe("CI acceptance authority", () => {
     expect(workflow).toContain(
       "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
     );
-    expect(workflow).toContain("bun-version: 1.3.5");
+    expect(workflow).toContain("bun-version: 1.3.14");
     expect(workflow).toContain("bun install --frozen-lockfile");
   });
 

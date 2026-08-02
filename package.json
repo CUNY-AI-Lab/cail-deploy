@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "scripts": {
     "build": "wrangler deploy --dry-run --outdir dist",
     "check": "bun run check:fixture && bun run check:oauth-package && bun run check:mcp-packages && bun run check:log-package && bun run format:check && bun run lint && bun run typecheck && bun run test && bun run test:workerd && bun run test:harness && bun run test:workerd:pool && bun run test:release-workerd && bun run test:oauth",
