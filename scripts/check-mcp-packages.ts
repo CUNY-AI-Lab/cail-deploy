@@ -6,6 +6,11 @@ import {
 
 const expected = {
   dependencies: {
+    "@hono/node-server": {
+      version: "2.0.12",
+      integrity:
+        "sha512-eWpQYr67tqJLeaSUl0Q+TquuYfUdTibpOJlUMV2FfUP7+KqCC5TufnwnlXL6mobZBJbGAYRd7ZvEBDCbLInjhg==",
+    },
     "@modelcontextprotocol/client": {
       version: "2.0.0",
       integrity:
@@ -61,6 +66,13 @@ for (const dependencyKind of ["dependencies", "devDependencies"] as const) {
   }
 }
 
+const honoLockKeys = Object.keys(lock.packages).filter(
+  (name) => name === "@hono/node-server" || name.endsWith("/@hono/node-server"),
+);
+if (honoLockKeys.length !== 1 || honoLockKeys[0] !== "@hono/node-server") {
+  throw new Error("@hono/node-server must have one root lock selection");
+}
+
 const agentsReceipt = compatibility.packages.agents;
 if (
   agentsReceipt?.accepted !== expected.dependencies.agents.version ||
@@ -77,5 +89,5 @@ if (
 }
 
 console.log(
-  `MCP package pins and lock integrities passed: agents@0.20.1, MCP SDK v2.0.0, peer SDK@1.30.0; frozen 2025-06-18 client uses peer SDK@1.30.0; Cloudflare toolchain receipt passed: Wrangler ${toolchain.wranglerVersion}, pool ${toolchain.poolVersion}`,
+  `MCP package pins and lock integrities passed: agents@0.20.1, MCP SDK v2.0.0, peer SDK@1.30.0, Hono node-server@2.0.12; frozen 2025-06-18 client uses peer SDK@1.30.0; Cloudflare toolchain receipt passed: Wrangler ${toolchain.wranglerVersion}, pool ${toolchain.poolVersion}`,
 );
