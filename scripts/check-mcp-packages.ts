@@ -1,3 +1,8 @@
+import {
+  verifyCloudflareToolchainReceipt,
+  type CloudflareCompatibilityReceipt,
+} from "./cloudflare-toolchain-receipt";
+
 const expected = {
   dependencies: {
     "@modelcontextprotocol/client": {
@@ -37,18 +42,11 @@ const packageJson = (await Bun.file(new URL("package.json", root)).json()) as {
   devDependencies: Record<string, string>;
 };
 const lock = await Bun.file(new URL("bun.lock", root)).text();
-const compatibility = (await Bun.file(new URL("cloudflare-compatibility.json", root)).json()) as {
-  packages: Record<
-    string,
-    {
-      accepted?: string;
-      npmIntegritySha512?: string;
-      peerPins?: Record<string, string>;
-      legacyClientPin?: string;
-      boundary?: string;
-    }
-  >;
-};
+const compatibility = (await Bun.file(
+  new URL("cloudflare-compatibility.json", root),
+).json()) as CloudflareCompatibilityReceipt;
+
+const toolchain = verifyCloudflareToolchainReceipt(packageJson, lock, compatibility);
 
 for (const dependencyKind of ["dependencies", "devDependencies"] as const) {
   for (const [name, receipt] of Object.entries(expected[dependencyKind])) {
@@ -85,5 +83,5 @@ if (
 }
 
 console.log(
-  "MCP package pins and lock integrities passed: agents@0.20.1, MCP SDK v2.0.0, peer SDK@1.30.0, legacy client SDK@1.29.0",
+  `MCP package pins and lock integrities passed: agents@0.20.1, MCP SDK v2.0.0, peer SDK@1.30.0, legacy client SDK@1.29.0; Cloudflare toolchain receipt passed: Wrangler ${toolchain.wranglerVersion}, pool ${toolchain.poolVersion}`,
 );

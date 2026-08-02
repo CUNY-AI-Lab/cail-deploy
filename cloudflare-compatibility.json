@@ -46,17 +46,17 @@
       "candidate": null,
       "maturity": "experimental",
       "boundary": "src/adapters/cloudflare/worker-bundler.ts",
-      "conformance": "scripts/check-workerd.ts passes with Wrangler 4.113.0 and a real local workerd Worker Loader binding",
-      "poolCompatibility": "Verified 2026-08-01 in @cloudflare/vitest-pool-workers 0.18.7 through the repository's canonical wrangler.workerd-test.jsonc configuration. The earlier gojs error came from bypassing that configuration with an incomplete inline Miniflare setup; gojs is not an npm dependency of this package.",
+      "conformance": "scripts/check-workerd.ts passes with Wrangler 4.115.0 and a real local workerd Worker Loader binding",
+      "poolCompatibility": "Verified 2026-08-02 in @cloudflare/vitest-pool-workers 0.19.0 through the repository's canonical wrangler.workerd-test.jsonc configuration. The earlier gojs error came from bypassing that configuration with an incomplete inline Miniflare setup; gojs is not an npm dependency of this package.",
       "rollback": "Repin the previous exact version and republish only after adapter conformance and isolated canary pass. Prepared releases remain deployable without rebuilding."
     },
     "@cloudflare/vitest-pool-workers": {
-      "tested": "0.18.7",
+      "tested": "0.19.0",
       "maturity": "beta",
-      "poolCompatibility": "Verified 2026-08-01 with @cloudflare/worker-bundler 0.2.2 through cloudflareTest({ wrangler: { configPath: 'wrangler.workerd-test.jsonc' } }); the 3-file, 11-test pool lane passes from a frozen-lockfile clean install without a gojs npm package."
+      "poolCompatibility": "Verified 2026-08-02 with @cloudflare/worker-bundler 0.2.2 through cloudflareTest({ wrangler: { configPath: 'wrangler.workerd-test.jsonc' } }); the 3-file, 11-test pool lane passes from a frozen-lockfile clean install without a gojs npm package."
     },
     "@cloudflare/workers-types": { "accepted": "5.20260722.1" },
-    "wrangler": { "accepted": "4.113.0" }
+    "wrangler": { "accepted": "4.115.0" }
   },
   "platform": {
     "compatibilityDate": "2026-07-22",

@@ -175,7 +175,7 @@
     "Workbench handoff evidence SHA-256 10727ed030b66817c66e98c7b925aa72fdb6ba170cc348d57047c974e38bae00 proves only the accepted same-subject 253-byte immutable revision upload and no failed-approval replay; it created no Workbench-originated release, Workflow, WfP publication, or rollback.",
     "Release rel_c89f11cfed88418192d4a6a9b0d858e4, Workflow version 96ff3fe0-b094-4ceb-b6fc-27bd7e8b090c, WfP publication kp-ki-20260722223510-ecade68e-68704fe50228, and rollback release rel_63d94b684fad45c9abab4b0b9121506b are component-owned Deploy evidence and are not a continuation of the Workbench handoff.",
     "Cloudflare Workflow binding approval delivery completed after about five minutes; no first-slice latency SLO requires a second delivery adapter.",
-    "@cloudflare/vitest-pool-workers 0.18.7 cannot load @cloudflare/worker-bundler 0.2.2 gojs WASM; the top-level gate uses Wrangler 4.113.0 local workerd with the real Worker Loader instead.",
+    "@cloudflare/vitest-pool-workers 0.19.0 loads @cloudflare/worker-bundler 0.2.2 gojs WASM through the canonical wrangler.workerd-test.jsonc configuration; the top-level gate uses Wrangler 4.115.0 local workerd with the real Worker Loader.",
     "Rejected undeployed experiment c83ea4d9520fdb94c8c338d596145598048a9b29 is preserved on local branch rejected-workflow-rest-c83 and is not part of the accepted runtime.",
     "All Cloudflare component data was destroyed only after accepted immutable sanitized evidence had been preserved elsewhere; no production or unrelated resource was deleted."
   ]
