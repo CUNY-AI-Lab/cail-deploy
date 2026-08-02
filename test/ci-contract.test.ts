@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 
 const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+const biome = JSON.parse(await readFile(new URL("../biome.json", import.meta.url), "utf8")) as {
+  files?: { includes?: unknown };
+};
 
 describe("CI acceptance authority", () => {
   test("pins the current official checkout and Bun setup actions", () => {
@@ -20,5 +23,9 @@ describe("CI acceptance authority", () => {
     expect(workflow).toContain("run: bun run build");
     expect(workflow).not.toContain("bun test test/*.test.ts");
     expect(workflow).not.toContain("bun run typecheck");
+  });
+
+  test("keeps generated Wrangler and build output outside source-quality gates", () => {
+    expect(biome.files?.includes).toEqual(["**", "!fixtures", "!!**/.wrangler", "!!**/dist"]);
   });
 });

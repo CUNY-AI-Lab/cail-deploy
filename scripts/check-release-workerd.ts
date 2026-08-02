@@ -57,6 +57,22 @@ async function errorCode(response: Response): Promise<string | undefined> {
   return body.error?.code;
 }
 
+async function cancelResponseBody(response: Response): Promise<void> {
+  if (!response.body) return;
+  try {
+    await response.body.cancel();
+  } catch {
+    // The local HTTP client may have already closed the body while the
+    // Worker was settling; there is no useful payload left to inspect.
+  }
+}
+
+async function requireStatus(response: Response, expected: number, message: string): Promise<void> {
+  if (response.status === expected) return;
+  await cancelResponseBody(response);
+  throw new Error(message);
+}
+
 async function availablePort(): Promise<number> {
   const socket = Bun.listen({
     hostname: "127.0.0.1",
@@ -92,7 +108,7 @@ async function waitForRelease(
     const response = await fetch(`${baseUrl}/v1/projects/${projectId}/releases/${releaseId}`, {
       headers: identityHeaders(jwt),
     });
-    assert(response.status === 200, `release read returned ${response.status}`);
+    await requireStatus(response, 200, `release read returned ${response.status}`);
     observed = (await response.json()) as typeof observed;
     if (observed?.status === expectedStatus) return observed;
     await Bun.sleep(100);
@@ -122,7 +138,7 @@ async function createAutomaticRelease(
       approval: "automatic",
     }),
   });
-  assert(response.status === 202, `automatic release returned ${response.status}`);
+  await requireStatus(response, 202, `automatic release returned ${response.status}`);
   const release = (await response.json()) as { releaseId?: string };
   assert(typeof release.releaseId === "string", "automatic release response omitted its id");
   return release.releaseId;
@@ -176,6 +192,7 @@ for (let attempt = 0; attempt < 150; attempt += 1) {
     const response = await fetch(`${providerBaseUrl}/__control/state`, {
       headers: providerControl,
     });
+    await cancelResponseBody(response);
     if (response.ok) {
       providerReady = true;
       break;
@@ -213,6 +230,7 @@ const resetProvider = await fetch(`${providerBaseUrl}/__control/reset`, {
     ],
   }),
 });
+await cancelResponseBody(resetProvider);
 assert(resetProvider.status === 200, "WfP provider contract reset failed");
 
 await run(
@@ -301,6 +319,7 @@ try {
   for (let attempt = 0; attempt < 150; attempt += 1) {
     try {
       const response = await fetch(`${baseUrl}/health`);
+      await cancelResponseBody(response);
       if (response.ok) {
         ready = true;
         break;
@@ -321,9 +340,9 @@ try {
     },
     body: JSON.stringify({ name: "must not exist" }),
   });
+  const unauthenticatedCode = await errorCode(unauthenticatedProject);
   assert(
-    unauthenticatedProject.status === 401 &&
-      (await errorCode(unauthenticatedProject)) === "authentication_required",
+    unauthenticatedProject.status === 401 && unauthenticatedCode === "authentication_required",
     "missing identity did not fail closed",
   );
 
@@ -336,9 +355,9 @@ try {
     },
     body: JSON.stringify({ name: "must not exist either" }),
   });
+  const wrongAudienceCode = await errorCode(wrongAudienceProject);
   assert(
-    wrongAudienceProject.status === 401 &&
-      (await errorCode(wrongAudienceProject)) === "invalid_credential",
+    wrongAudienceProject.status === 401 && wrongAudienceCode === "invalid_credential",
     "wrong-audience identity did not fail closed",
   );
 
@@ -351,7 +370,7 @@ try {
     },
     body: JSON.stringify({ name: "Release workerd fixture" }),
   });
-  assert(projectResponse.status === 201, `project creation returned ${projectResponse.status}`);
+  await requireStatus(projectResponse, 201, `project creation returned ${projectResponse.status}`);
   const project = (await projectResponse.json()) as { projectId?: string };
   assert(
     typeof project.projectId === "string" && /^prj_[0-9a-f]{32}$/u.test(project.projectId),
@@ -374,8 +393,9 @@ try {
     },
     body: artifact,
   });
+  const badDigestCode = await errorCode(badDigestResponse);
   assert(
-    badDigestResponse.status === 400 && (await errorCode(badDigestResponse)) === "digest_mismatch",
+    badDigestResponse.status === 400 && badDigestCode === "digest_mismatch",
     "wrong artifact digest reached durable revision state",
   );
 
@@ -388,8 +408,9 @@ try {
     },
     body: artifact,
   });
+  const crossOwnerCode = await errorCode(crossOwnerUpload);
   assert(
-    crossOwnerUpload.status === 404 && (await errorCode(crossOwnerUpload)) === "project_not_found",
+    crossOwnerUpload.status === 404 && crossOwnerCode === "project_not_found",
     "a different signed subject crossed the project boundary",
   );
 
@@ -402,7 +423,7 @@ try {
     },
     body: artifact,
   });
-  assert(revisionResponse.status === 201, `revision upload returned ${revisionResponse.status}`);
+  await requireStatus(revisionResponse, 201, `revision upload returned ${revisionResponse.status}`);
   const revision = (await revisionResponse.json()) as { revisionId?: string };
   assert(
     revision.revisionId === `rev_sha256_${artifactDigest}`,
@@ -423,7 +444,7 @@ try {
       approval: "required",
     }),
   });
-  assert(releaseResponse.status === 202, `release creation returned ${releaseResponse.status}`);
+  await requireStatus(releaseResponse, 202, `release creation returned ${releaseResponse.status}`);
   const release = (await releaseResponse.json()) as { releaseId?: string; status?: string };
   assert(
     typeof release.releaseId === "string" &&
@@ -510,6 +531,7 @@ try {
       body: JSON.stringify({ decision: "approved" }),
     },
   );
+  await cancelResponseBody(approvalResponse);
   assert(approvalResponse.status === 202, `release approval returned ${approvalResponse.status}`);
   try {
     await waitForRelease(baseUrl, project.projectId, release.releaseId, ownerJwt, "reconciling");
@@ -540,6 +562,7 @@ try {
   const reconciliationStatuses = reconciliationResponses
     .map((response) => response.status)
     .sort((left, right) => left - right);
+  await Promise.all(reconciliationResponses.map(cancelResponseBody));
   assert(
     reconciliationStatuses[0] === 200 && reconciliationStatuses[1] === 409,
     `concurrent reconciliation did not produce one authority winner: ${reconciliationStatuses.join(",")}`,
@@ -571,8 +594,9 @@ try {
     },
     body: secondArtifact,
   });
-  assert(
-    secondRevisionResponse.status === 201,
+  await requireStatus(
+    secondRevisionResponse,
+    201,
     `second revision upload returned ${secondRevisionResponse.status}`,
   );
   const secondRevision = (await secondRevisionResponse.json()) as {
@@ -599,8 +623,9 @@ try {
       }),
     },
   );
-  assert(
-    secondReleaseResponse.status === 202,
+  await requireStatus(
+    secondReleaseResponse,
+    202,
     `second release returned ${secondReleaseResponse.status}`,
   );
   const secondRelease = (await secondReleaseResponse.json()) as {
@@ -621,7 +646,11 @@ try {
       body: JSON.stringify({ approval: "automatic" }),
     },
   );
-  assert(rollbackResponse.status === 202, `rollback release returned ${rollbackResponse.status}`);
+  await requireStatus(
+    rollbackResponse,
+    202,
+    `rollback release returned ${rollbackResponse.status}`,
+  );
   const rollbackRelease = (await rollbackResponse.json()) as {
     releaseId?: string;
     rollbackOfReleaseId?: string;
@@ -677,7 +706,7 @@ try {
   const providerResponse = await fetch(`${providerBaseUrl}/__control/state`, {
     headers: providerControl,
   });
-  assert(providerResponse.status === 200, "provider observations were unavailable");
+  await requireStatus(providerResponse, 200, "provider observations were unavailable");
   const providerState = (await providerResponse.json()) as {
     observations?: Array<{
       call: number;

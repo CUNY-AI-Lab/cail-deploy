@@ -53,6 +53,18 @@ async function state(env: Env): Promise<ControlState> {
   );
 }
 
+async function rejectWithState(
+  env: Env,
+  message: string,
+  status: number,
+  code: number,
+): Promise<Response> {
+  const current = await state(env);
+  current.errors.push(message);
+  await env.STATE.put(STATE_KEY, JSON.stringify(current));
+  return json(providerEnvelope(false, null, [{ code, message }]), status);
+}
+
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -109,17 +121,10 @@ async function control(request: Request, env: Env): Promise<Response> {
 
 async function publish(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const current = await state(env);
-  const reject = async (message: string, status: number, code: number): Promise<Response> => {
-    current.errors.push(message);
-    await env.STATE.put(STATE_KEY, JSON.stringify(current));
-    return json(providerEnvelope(false, null, [{ code, message }]), status);
-  };
   const match = url.pathname.match(API_PATTERN);
   if (!match?.[1] || !match[2] || !match[3]) {
-    return reject(`unexpected URL ${request.method} ${request.url}`, 404, 7003);
+    return rejectWithState(env, `unexpected URL ${request.method} ${request.url}`, 404, 7003);
   }
-  const call = current.observations.length + 1;
   const authorizationAccepted =
     request.headers.get("authorization") === "Bearer local-contract-token";
   if (
@@ -130,7 +135,8 @@ async function publish(request: Request, env: Env): Promise<Response> {
     !/^kp-integration-local-e2e-[0-9a-f]{12}$/u.test(match[3]) ||
     !authorizationAccepted
   ) {
-    return reject(
+    return rejectWithState(
+      env,
       `invalid request ${request.method} ${request.url} auth=${String(request.headers.get("authorization"))}`,
       403,
       10000,
@@ -138,6 +144,13 @@ async function publish(request: Request, env: Env): Promise<Response> {
   }
 
   const form = await request.formData();
+  const current = await state(env);
+  const call = current.observations.length + 1;
+  const reject = async (message: string, status: number, code: number): Promise<Response> => {
+    current.errors.push(message);
+    await env.STATE.put(STATE_KEY, JSON.stringify(current));
+    return json(providerEnvelope(false, null, [{ code, message }]), status);
+  };
   const metadataPart = form.get("metadata");
   if (
     !metadataPart ||
