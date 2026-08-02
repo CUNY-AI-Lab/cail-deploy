@@ -34,9 +34,7 @@
   "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "kale-release-control-plane" }],
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "6bd78902a86d4736812a077a7351dad1" }],
   "worker_loaders": [{ "binding": "LOADER" }],
-  "dispatch_namespaces": [
-    { "binding": "DISPATCHER", "namespace": "kale-release-control-plane" }
-  ],
+  "dispatch_namespaces": [{ "binding": "DISPATCHER", "namespace": "kale-release-control-plane" }],
   "workflows": [
     {
       "name": "kale-release-control-plane",
