@@ -1,3 +1,4 @@
+import lock from "../bun.lock";
 import {
   verifyCloudflareToolchainReceipt,
   type CloudflareCompatibilityReceipt,
@@ -41,7 +42,6 @@ const packageJson = (await Bun.file(new URL("package.json", root)).json()) as {
   dependencies: Record<string, string>;
   devDependencies: Record<string, string>;
 };
-const lock = await Bun.file(new URL("bun.lock", root)).text();
 const compatibility = (await Bun.file(
   new URL("cloudflare-compatibility.json", root),
 ).json()) as CloudflareCompatibilityReceipt;
@@ -60,7 +60,8 @@ for (const dependencyKind of ["dependencies", "devDependencies"] as const) {
     if (installed.version !== receipt.version) {
       throw new Error(`${name} installed version drifted from ${receipt.version}`);
     }
-    if (!lock.includes(receipt.integrity)) {
+    const lockRecord = lock.packages[name];
+    if (!Array.isArray(lockRecord) || lockRecord[3] !== receipt.integrity) {
       throw new Error(`${name} lock integrity drifted`);
     }
   }

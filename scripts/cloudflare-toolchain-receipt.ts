@@ -13,6 +13,18 @@ export interface CloudflareCompatibilityReceipt {
   packages: Record<string, CloudflarePackageReceipt | undefined>;
 }
 
+export interface CloudflareLockfile {
+  lockfileVersion: number;
+  configVersion: number;
+  workspaces: Record<string, CloudflareLockfileImporter>;
+  packages: Record<string, unknown>;
+}
+
+export interface CloudflareLockfileImporter {
+  dependencies?: Record<string, unknown>;
+  devDependencies?: Record<string, unknown>;
+}
+
 interface PackageManifest {
   dependencies?: Record<string, unknown>;
   devDependencies?: Record<string, unknown>;
@@ -31,178 +43,58 @@ function pinnedVersion(value: unknown, label: string): string {
   return value;
 }
 
-function hasExactLockRecord(lock: string, packageName: string, version: string): boolean {
-  return lock.includes(`"${packageName}": ["${packageName}@${version}"`);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-interface LockEntry {
-  key: string;
-  valueStart: number;
-}
-
-function skipWhitespace(source: string, start: number): number {
-  let index = start;
-  while (index < source.length && /\s/u.test(source[index] ?? "")) {
-    index += 1;
+function parseLockfile(lock: unknown): CloudflareLockfile {
+  if (!isRecord(lock) || lock.lockfileVersion !== 1 || lock.configVersion !== 1) {
+    throw new Error("Cloudflare bun.lock schema drifted");
   }
-  return index;
-}
-
-function stringEnd(source: string, start: number): number {
-  if (source[start] !== '"') {
-    throw new Error("Cloudflare lockfile string is malformed");
+  if (!isRecord(lock.workspaces)) {
+    throw new Error("Cloudflare bun.lock root importer drifted");
   }
-  let escaped = false;
-  for (let index = start + 1; index < source.length; index += 1) {
-    const character = source[index];
-    if (escaped) {
-      escaped = false;
-    } else if (character === "\\") {
-      escaped = true;
-    } else if (character === '"') {
-      return index;
+  const rootImporter = lock.workspaces[""];
+  if (!isRecord(rootImporter)) {
+    throw new Error("Cloudflare bun.lock root importer drifted");
+  }
+  for (const section of ["dependencies", "devDependencies"] as const) {
+    const value = rootImporter[section];
+    if (value !== undefined && !isRecord(value)) {
+      throw new Error(`Cloudflare bun.lock ${section} importer drifted`);
     }
   }
-  throw new Error("Cloudflare lockfile string is unterminated");
+  if (!isRecord(lock.packages)) {
+    throw new Error("Cloudflare bun.lock package records drifted");
+  }
+  return lock as unknown as CloudflareLockfile;
 }
 
-function parseString(source: string, start: number): { value: string; end: number } {
-  const end = stringEnd(source, start);
-  let value: unknown;
-  try {
-    value = JSON.parse(source.slice(start, end + 1));
-  } catch {
-    throw new Error("Cloudflare lockfile string is malformed");
-  }
-  if (typeof value !== "string") {
-    throw new Error("Cloudflare lockfile string is malformed");
-  }
-  return { value, end: end + 1 };
-}
-
-function matchingEnd(source: string, start: number): number {
-  const opening = source[start];
-  if (opening !== "{" && opening !== "[") {
-    throw new Error("Cloudflare lockfile object is malformed");
-  }
-  const expectedClosings = new Map([
-    ["{", "}"],
-    ["[", "]"],
-  ]);
-  const stack = [opening];
-  for (let index = start + 1; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === '"') {
-      index = stringEnd(source, index);
-    } else if (character === "{" || character === "[") {
-      stack.push(character);
-    } else if (character === "}" || character === "]") {
-      if (expectedClosings.get(stack[stack.length - 1]) !== character) {
-        throw new Error("Cloudflare lockfile object is malformed");
-      }
-      stack.pop();
-      if (stack.length === 0) {
-        return index;
-      }
-    }
-  }
-  throw new Error("Cloudflare lockfile object is unterminated");
-}
-
-function valueEnd(source: string, start: number): number {
-  const character = source[start];
-  if (character === '"') {
-    return parseString(source, start).end;
-  }
-  if (character === "{" || character === "[") {
-    return matchingEnd(source, start) + 1;
-  }
-  let index = start;
-  while (index < source.length && !/[\s,}\]]/u.test(source[index] ?? "")) {
-    index += 1;
-  }
-  if (index === start) {
-    throw new Error("Cloudflare lockfile value is malformed");
-  }
-  return index;
-}
-
-function objectEntries(source: string, start: number): { end: number; entries: LockEntry[] } {
-  if (source[start] !== "{") {
-    throw new Error("Cloudflare lockfile object is malformed");
-  }
-  const end = matchingEnd(source, start);
-  const entries: LockEntry[] = [];
-  let index = skipWhitespace(source, start + 1);
-  while (index < end) {
-    const key = parseString(source, index);
-    index = skipWhitespace(source, key.end);
-    if (source[index] !== ":") {
-      throw new Error("Cloudflare lockfile entry is malformed");
-    }
-    const valueStart = skipWhitespace(source, index + 1);
-    index = valueEnd(source, valueStart);
-    entries.push({ key: key.value, valueStart });
-    index = skipWhitespace(source, index);
-    if (index === end) {
-      break;
-    }
-    if (source[index] !== ",") {
-      throw new Error("Cloudflare lockfile entry is malformed");
-    }
-    index = skipWhitespace(source, index + 1);
-  }
-  return { end, entries };
-}
-
-function uniqueObjectEntry(
-  source: string,
-  entries: LockEntry[],
-  key: string,
-  label: string,
-): LockEntry {
-  const matches = entries.filter((entry) => entry.key === key);
-  if (matches.length !== 1 || source[matches[0]?.valueStart ?? -1] !== "{") {
-    throw new Error(`Cloudflare ${label} lockfile entry is missing or ambiguous`);
-  }
-  return matches[0] as LockEntry;
+function hasExactLockRecord(
+  lock: CloudflareLockfile,
+  packageName: string,
+  version: string,
+): boolean {
+  const record = lock.packages[packageName];
+  return Array.isArray(record) && record[0] === `${packageName}@${version}`;
 }
 
 function hasExactRootImporterEntry(
-  lock: string,
+  lock: CloudflareLockfile,
   packageName: string,
-  section: string,
+  section: keyof CloudflareLockfileImporter,
   version: string,
 ): boolean {
-  try {
-    const rootStart = skipWhitespace(lock, 0);
-    const root = objectEntries(lock, rootStart);
-    if (skipWhitespace(lock, root.end + 1) !== lock.length) {
-      return false;
-    }
-    const workspaces = uniqueObjectEntry(lock, root.entries, "workspaces", "workspaces");
-    const workspaceEntries = objectEntries(lock, workspaces.valueStart).entries;
-    const importer = uniqueObjectEntry(lock, workspaceEntries, "", "root workspace importer");
-    const importerEntries = objectEntries(lock, importer.valueStart).entries;
-    const dependencySection = uniqueObjectEntry(lock, importerEntries, section, section);
-    const packageMatches = objectEntries(lock, dependencySection.valueStart).entries.filter(
-      (entry) => entry.key === packageName,
-    );
-    if (packageMatches.length !== 1) {
-      return false;
-    }
-    const value = parseString(lock, packageMatches[0]?.valueStart ?? -1).value;
-    return value === version;
-  } catch {
-    return false;
-  }
+  const dependencies = lock.workspaces[""][section];
+  return isRecord(dependencies) && dependencies[packageName] === version;
 }
 
 export function verifyCloudflareToolchainReceipt(
   packageManifest: PackageManifest,
-  lock: string,
+  lock: unknown,
   compatibility: CloudflareCompatibilityReceipt,
 ): CloudflareToolchainPins {
+  const parsedLock = parseLockfile(lock);
   const bundlerVersion = pinnedVersion(
     packageManifest.dependencies?.["@cloudflare/worker-bundler"],
     "worker-bundler",
@@ -218,7 +110,7 @@ export function verifyCloudflareToolchainReceipt(
     ["@cloudflare/vitest-pool-workers", poolVersion],
     ["wrangler", wranglerVersion],
   ] as const) {
-    if (!hasExactLockRecord(lock, packageName, version)) {
+    if (!hasExactLockRecord(parsedLock, packageName, version)) {
       throw new Error(`Cloudflare ${packageName} package/lock authority drifted`);
     }
   }
@@ -228,7 +120,7 @@ export function verifyCloudflareToolchainReceipt(
     ["@cloudflare/vitest-pool-workers", "devDependencies", poolVersion],
     ["wrangler", "devDependencies", wranglerVersion],
   ] as const) {
-    if (!hasExactRootImporterEntry(lock, packageName, section, version)) {
+    if (!hasExactRootImporterEntry(parsedLock, packageName, section, version)) {
       throw new Error(`Cloudflare ${packageName} root importer authority drifted`);
     }
   }
