@@ -3,7 +3,6 @@ export interface CloudflarePackageReceipt {
   boundary?: unknown;
   tested?: unknown;
   conformance?: unknown;
-  legacyClientPin?: unknown;
   npmIntegritySha512?: unknown;
   poolCompatibility?: unknown;
   peerPins?: Record<string, string>;

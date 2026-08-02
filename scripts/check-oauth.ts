@@ -7,8 +7,8 @@ import {
   Client as ModernClient,
   StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
-import { Client } from "@modelcontextprotocol/sdk-legacy/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk-legacy/client/streamableHttp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   createTestIdentityIssuer,
   TEST_OPERATIONAL_SUBJECTS,
@@ -816,7 +816,7 @@ try {
       {
         gate: "oauth-mcp-local-workerd",
         provider: "@cloudflare/workers-oauth-provider@0.5.0",
-        standardClient: "@modelcontextprotocol/sdk@1.29.0",
+        standardClient: "@modelcontextprotocol/sdk@1.30.0",
         modernClient: "@modelcontextprotocol/client@2.0.0",
         protocolVersions: ["2025-06-18", "2026-07-28"],
         tools: listed.tools.map((tool) => tool.name),

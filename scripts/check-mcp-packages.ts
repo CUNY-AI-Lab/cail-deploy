@@ -28,12 +28,6 @@ const expected = {
       integrity:
         "sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==",
     },
-    "@modelcontextprotocol/sdk-legacy": {
-      declared: "npm:@modelcontextprotocol/sdk@1.29.0",
-      version: "1.29.0",
-      integrity:
-        "sha512-zo37mZA9hJWpULgkRpowewez1y6ML5GsXJPY8FI0tBBCd77HEvza4jDqRKOXgHNn867PVGCyTdzqpz0izu5ZjQ==",
-    },
   },
 } as const;
 
@@ -72,7 +66,6 @@ if (
   agentsReceipt?.accepted !== expected.dependencies.agents.version ||
   `sha512-${agentsReceipt.npmIntegritySha512}` !== expected.dependencies.agents.integrity ||
   agentsReceipt.boundary !== "src/adapters/cloudflare/mcp.ts" ||
-  agentsReceipt.legacyClientPin !== "@modelcontextprotocol/sdk@1.29.0" ||
   JSON.stringify(agentsReceipt.peerPins) !==
     JSON.stringify({
       "@modelcontextprotocol/client": "2.0.0",
@@ -84,5 +77,5 @@ if (
 }
 
 console.log(
-  `MCP package pins and lock integrities passed: agents@0.20.1, MCP SDK v2.0.0, peer SDK@1.30.0, legacy client SDK@1.29.0; Cloudflare toolchain receipt passed: Wrangler ${toolchain.wranglerVersion}, pool ${toolchain.poolVersion}`,
+  `MCP package pins and lock integrities passed: agents@0.20.1, MCP SDK v2.0.0, peer SDK@1.30.0; frozen 2025-06-18 client uses peer SDK@1.30.0; Cloudflare toolchain receipt passed: Wrangler ${toolchain.wranglerVersion}, pool ${toolchain.poolVersion}`,
 );

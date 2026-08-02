@@ -45,7 +45,7 @@ The public surface is frozen in `contract/oauth-mcp-v1.json`:
 
 The exact provider pin is `@cloudflare/workers-oauth-provider@0.5.0`, source `b4bc502c3421f2bc8a61760fb84790f09d0fa529`, npm tarball SHA-256 `097c5955e8eb6092575a008d9e3b960fc945b48c8fb26ae252bedd9482bdce11`. Its default refresh-token TTL is 30 days and dynamic-registration TTL is 90 days. These are test-only protocol records in `OAUTH_KV`; D1 project/revision/release state does not depend on them.
 
-The MCP transport pins are `agents@0.20.1`, `@modelcontextprotocol/server@2.0.0`, and `@modelcontextprotocol/client@2.0.0`. `@modelcontextprotocol/sdk@1.30.0` satisfies the Agents peer pin; the frozen lane is exercised with the repository's previous `@modelcontextprotocol/sdk@1.29.0` client through the test-only `@modelcontextprotocol/sdk-legacy` alias. Cloudflare-specific MCP transport imports remain isolated in `src/adapters/cloudflare/mcp.ts`; the shared tool dispatcher does not depend on Cloudflare Agents.
+The MCP transport pins are `agents@0.20.1`, `@modelcontextprotocol/server@2.0.0`, and `@modelcontextprotocol/client@2.0.0`. `@modelcontextprotocol/sdk@1.30.0` satisfies the Agents peer pin and exercises the frozen `2025-06-18` client lane; no separate v1 SDK alias is installed. Cloudflare-specific MCP transport imports remain isolated in `src/adapters/cloudflare/mcp.ts`; the shared tool dispatcher does not depend on Cloudflare Agents.
 
 ## Artifact
 

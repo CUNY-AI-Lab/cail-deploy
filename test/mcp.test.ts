@@ -3,8 +3,8 @@ import {
   Client as ModernClient,
   StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
-import { Client } from "@modelcontextprotocol/sdk-legacy/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk-legacy/client/streamableHttp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import Ajv2020 from "ajv/dist/2020.js";
 import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
 import type { Principal } from "../src/auth";

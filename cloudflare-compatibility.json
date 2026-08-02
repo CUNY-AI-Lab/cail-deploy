@@ -34,10 +34,9 @@
         "@modelcontextprotocol/server": "2.0.0",
         "@modelcontextprotocol/sdk": "1.30.0"
       },
-      "legacyClientPin": "@modelcontextprotocol/sdk@1.29.0",
       "maturity": "0.x volatile adapter over an MCP 2026-07-28 release candidate",
       "boundary": "src/adapters/cloudflare/mcp.ts",
-      "conformance": "scripts/check-oauth.ts proves authenticated legacy 2025-06-18 and modern 2026-07-28 clients against the real provider in local Wrangler workerd; test/mcp.test.ts freezes tool schemas, bounded parsing, errors, routing headers, Host, and Origin behavior",
+      "conformance": "scripts/check-oauth.ts proves authenticated frozen 2025-06-18 and modern 2026-07-28 clients against the real provider in local Wrangler workerd using the exact Agents peer @modelcontextprotocol/sdk@1.30.0 for the frozen client; test/mcp.test.ts freezes tool schemas, bounded parsing, errors, routing headers, Host, and Origin behavior",
       "replacement": "Repin only after the package-integrity gate, both client lanes, and bundle measurement pass. The shared Kale tool dispatcher and OAuth Principal contract do not depend on Agents classes.",
       "rollback": "Remove the modern handler branch and its package pins while retaining the frozen legacy adapter; D1 ownership, R2 bytes, OAuth grants, bindings, and ingress are unchanged."
     },
