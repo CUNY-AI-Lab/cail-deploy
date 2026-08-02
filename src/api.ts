@@ -28,6 +28,7 @@ import {
 import {
   acquireReconciliationAuthority,
   completeReconciliation,
+  getOwnedRevision,
   getRevision,
   idempotentResponse,
   type ReleaseRow,
@@ -35,6 +36,7 @@ import {
   requireOwnedProject,
   requireRelease,
 } from "./storage";
+import type { RevisionRow } from "./storage";
 import type { PreparedEnvelope } from "./workflow";
 
 const ARTIFACT_MEDIA_TYPE = "application/vnd.cuny.kale.artifact.v1+json";
@@ -347,24 +349,8 @@ async function uploadRevision(
   const revisionId = `rev_sha256_${digest}`;
   const existing = await getRevision(env, projectId, revisionId);
   if (existing) {
-    if (!(await env.ARTIFACTS.head(existing.artifact_key))) {
-      throw new ApiError(
-        409,
-        "artifact_store_inconsistent",
-        "The immutable revision record exists but its artifact is missing.",
-      );
-    }
-    return Response.json(
-      {
-        projectId,
-        revisionId,
-        artifactDigest: digest,
-        artifactBytes: existing.artifact_bytes,
-        status: existing.status,
-        createdAt: existing.created_at,
-      },
-      { status: 200 },
-    );
+    await requireConsistentRevisionArtifact(env, existing);
+    return Response.json(revisionResponse(existing), { status: 200 });
   }
 
   const artifactKey = `revisions/${projectId}/${revisionId}.json`;
@@ -373,22 +359,101 @@ async function uploadRevision(
     customMetadata: { projectId, revisionId, artifactDigest: digest },
   });
   const createdAt = new Date().toISOString();
-  await env.DB.prepare(
-    "INSERT INTO revisions (project_id, revision_id, artifact_digest, artifact_bytes, artifact_key, status, created_at) VALUES (?, ?, ?, ?, ?, 'ready', ?)",
+  const insert = await env.DB.prepare(
+    "INSERT OR IGNORE INTO revisions (project_id, revision_id, artifact_digest, artifact_bytes, artifact_key, status, created_at) VALUES (?, ?, ?, ?, ?, 'ready', ?)",
   )
     .bind(projectId, revisionId, digest, bytes.byteLength, artifactKey, createdAt)
     .run();
+  if ((insert.meta.changes ?? 0) !== 1) {
+    const winner = await getRevision(env, projectId, revisionId);
+    if (!winner) {
+      throw new ApiError(
+        409,
+        "artifact_store_inconsistent",
+        "The immutable revision could not be confirmed after a concurrent upload.",
+      );
+    }
+    await requireConsistentRevisionArtifact(env, winner);
+    return Response.json(revisionResponse(winner), { status: 200 });
+  }
   return Response.json(
-    {
-      projectId,
-      revisionId,
-      artifactDigest: digest,
-      artifactBytes: bytes.byteLength,
+    revisionResponse({
+      project_id: projectId,
+      revision_id: revisionId,
+      artifact_digest: digest,
+      artifact_bytes: bytes.byteLength,
+      artifact_key: artifactKey,
       status: "ready",
-      createdAt,
-    },
+      created_at: createdAt,
+    }),
     { status: 201 },
   );
+}
+
+function revisionResponse(revision: RevisionRow): {
+  projectId: string;
+  revisionId: string;
+  artifactDigest: string;
+  artifactBytes: number;
+  status: "ready" | "failed";
+  createdAt: string;
+} {
+  return {
+    projectId: revision.project_id,
+    revisionId: revision.revision_id,
+    artifactDigest: revision.artifact_digest,
+    artifactBytes: revision.artifact_bytes,
+    status: revision.status,
+    createdAt: revision.created_at,
+  };
+}
+
+async function requireConsistentRevisionArtifact(env: Env, revision: RevisionRow): Promise<void> {
+  const expectedKey = `revisions/${revision.project_id}/${revision.revision_id}.json`;
+  if (
+    !/^[0-9a-f]{64}$/u.test(revision.artifact_digest) ||
+    revision.revision_id !== `rev_sha256_${revision.artifact_digest}` ||
+    revision.status !== "ready" ||
+    revision.artifact_key !== expectedKey
+  ) {
+    throw new ApiError(
+      409,
+      "artifact_store_inconsistent",
+      "The immutable revision record and artifact store do not agree.",
+    );
+  }
+  const artifact = await env.ARTIFACTS.head(expectedKey);
+  const checksum = artifact?.checksums.sha256;
+  if (
+    !artifact ||
+    artifact.key !== expectedKey ||
+    artifact.size !== revision.artifact_bytes ||
+    artifact.customMetadata?.projectId !== revision.project_id ||
+    artifact.customMetadata?.revisionId !== revision.revision_id ||
+    artifact.customMetadata?.artifactDigest !== revision.artifact_digest ||
+    !checksum ||
+    bytesToHex(new Uint8Array(checksum)) !== revision.artifact_digest
+  ) {
+    throw new ApiError(
+      409,
+      "artifact_store_inconsistent",
+      "The immutable revision record and artifact store do not agree.",
+    );
+  }
+}
+
+async function getRevisionResponse(
+  env: Env,
+  subject: string,
+  projectId: string,
+  revisionId: string,
+): Promise<Response> {
+  const revision = await getOwnedRevision(env, projectId, revisionId, subject);
+  if (!revision) {
+    throw new ApiError(404, "revision_not_found", "The revision was not found.");
+  }
+  await requireConsistentRevisionArtifact(env, revision);
+  return Response.json(revisionResponse(revision));
 }
 
 async function startRelease(
@@ -429,8 +494,8 @@ async function startRelease(
     );
   }
   const revision = await getRevision(env, projectId, revisionId);
-  if (revision?.status !== "ready")
-    throw new ApiError(404, "revision_not_found", "The revision was not found.");
+  if (!revision) throw new ApiError(404, "revision_not_found", "The revision was not found.");
+  await requireConsistentRevisionArtifact(env, revision);
 
   const key = requiredIdempotencyKey(request);
   const requestShape = { revisionId, target, approval, rollbackOfReleaseId };
@@ -902,6 +967,12 @@ export async function handleApiForPrincipal(
   const revisionMatch = url.pathname.match(/^\/v1\/projects\/(prj_[0-9a-f]{32})\/revisions$/u);
   if (request.method === "POST" && revisionMatch?.[1])
     return uploadRevision(request, env, principal.subject, revisionMatch[1], requestId);
+
+  const revisionItemMatch = url.pathname.match(
+    /^\/v1\/projects\/(prj_[0-9a-f]{32})\/revisions\/(rev_sha256_[0-9a-f]{64})$/u,
+  );
+  if (request.method === "GET" && revisionItemMatch?.[1] && revisionItemMatch[2])
+    return getRevisionResponse(env, principal.subject, revisionItemMatch[1], revisionItemMatch[2]);
 
   const previewMatch = url.pathname.match(/^\/v1\/projects\/(prj_[0-9a-f]{32})\/preview$/u);
   if (request.method === "GET" && previewMatch?.[1])

@@ -16,6 +16,7 @@ Clients propagate correlation through `X-CAIL-Request-Id`, which must be a UUID.
 
 - `POST /v1/projects` with `Idempotency-Key` and `{"name":"Example"}` returns `201` and `{projectId,name,createdAt}`.
 - `POST /v1/projects/{projectId}/revisions` accepts exact artifact JSON bytes as `application/vnd.cuny.kale.artifact.v1+json`. `Content-Digest` is required as `sha-256=:<base64>:`. It returns `201`, or `200` for the same retained revision.
+- `GET /v1/projects/{projectId}/revisions/{revisionId}` returns owner-scoped immutable revision metadata only after the D1 row and R2 key, byte count, custom metadata, and SHA-256 checksum agree. Missing and cross-owner revisions share the same `404 revision_not_found`; inconsistent retained state returns `409 artifact_store_inconsistent`. It never returns artifact bytes.
 - `POST /v1/projects/{projectId}/releases` with `Idempotency-Key` and `{revisionId,target,approval}` returns `202`.
 - `GET /v1/projects/{projectId}/releases/{releaseId}` returns the release and ordered events.
 - `POST /v1/projects/{projectId}/releases/{releaseId}/approve` with `Idempotency-Key` and `{decision:"approved"}` returns `202`.

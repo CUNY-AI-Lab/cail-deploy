@@ -284,7 +284,7 @@ describe("release Workflow recovery", () => {
             revision_id: revisionId,
             artifact_digest: "c".repeat(64),
             artifact_bytes: 1,
-            artifact_key: "revisions/fixture.json",
+            artifact_key: `revisions/${projectId}/${revisionId}.json`,
             status: "ready",
             created_at: params.admittedAt,
           };
@@ -321,12 +321,25 @@ describe("release Workflow recovery", () => {
 
     const get = mock(async () => ({ id: releaseId }));
     const create = mock(async () => ({ id: releaseId }));
+    const artifactKey = `revisions/${projectId}/${revisionId}.json`;
+    const artifactChecksum = Uint8Array.from({ length: 32 }, () => 0xcc).buffer;
+    const head = mock(async () => ({
+      key: artifactKey,
+      size: 1,
+      checksums: { sha256: artifactChecksum },
+      customMetadata: {
+        projectId,
+        revisionId,
+        artifactDigest: "c".repeat(64),
+      },
+    }));
     const env = {
       DB: {
         prepare(sql: string) {
           return new Statement(sql);
         },
       },
+      ARTIFACTS: { head },
       RELEASE_WORKFLOW: { get, create },
       ALLOW_PRODUCTION_TARGET: "0",
     } as unknown as Env;
@@ -344,6 +357,7 @@ describe("release Workflow recovery", () => {
 
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(response);
+    expect(head).toHaveBeenCalledWith(artifactKey);
     expect(create).toHaveBeenCalledWith({
       id: releaseId,
       params,

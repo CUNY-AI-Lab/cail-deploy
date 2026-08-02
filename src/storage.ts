@@ -489,6 +489,22 @@ export async function getRevision(
     .first<RevisionRow>();
 }
 
+export async function getOwnedRevision(
+  env: Env,
+  projectId: string,
+  revisionId: string,
+  subject: string,
+): Promise<RevisionRow | null> {
+  return env.DB.prepare(
+    `SELECT r.*
+       FROM revisions AS r
+       INNER JOIN projects AS p ON p.project_id = r.project_id
+      WHERE r.project_id = ? AND r.revision_id = ? AND p.owner_subject = ?`,
+  )
+    .bind(projectId, revisionId, subject)
+    .first<RevisionRow>();
+}
+
 export async function requireRelease(
   env: Env,
   projectId: string,
