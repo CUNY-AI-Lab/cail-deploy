@@ -1,0 +1,50 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Staging-trust fleet deployment: identity verification is pinned to the
+  // staging issuer lane, so CAIL_ENVIRONMENT is honestly "staging". The
+  // canonical-issuer production classification arrives with the identity
+  // cutover, not before.
+  "name": "kale-release-control-plane",
+  "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "vars": {
+    "AUTH_MODE": "cail-jwt",
+    "CAIL_ENVIRONMENT": "staging",
+    "SERVICE_AUDIENCE": "cail:deploy",
+    "SERVICE_RELEASE": "112d5c83a041a5b3f5bc8f46d2af863780a3165f",
+    "PUBLIC_BASE_URL": "https://kale-release-control-plane.ailab-452.workers.dev",
+    "CAIL_IDENTITY_ISSUER": "https://tools.cuny.qzz.io/cail-sso",
+    "RUN_ID": "staging",
+    "WFP_ACCOUNT_ID": "452c33847cf5cb1e46f391fca32fd1b5",
+    "WFP_NAMESPACE": "kale-release-control-plane"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kale-release-control-plane",
+      "database_id": "4e83d80e-e130-41ed-9691-76afd7154a62",
+      "migrations_dir": "schema"
+    }
+  ],
+  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "kale-release-control-plane" }],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "6bd78902a86d4736812a077a7351dad1" }],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "dispatch_namespaces": [
+    { "binding": "DISPATCHER", "namespace": "kale-release-control-plane" }
+  ],
+  "workflows": [
+    {
+      "name": "kale-release-control-plane",
+      "binding": "RELEASE_WORKFLOW",
+      "class_name": "ReleaseWorkflow"
+    }
+  ]
+  // CAIL_IDENTITY_JWKS is a deployment secret (staging public JWKS).
+  // CLOUDFLARE_API_TOKEN (the isolated WfP publisher token) is a deployment
+  // secret provisioned separately; publication is unavailable until it is set.
+}
