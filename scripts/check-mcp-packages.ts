@@ -60,7 +60,14 @@ for (const dependencyKind of ["dependencies", "devDependencies"] as const) {
       throw new Error(`${name} installed version drifted from ${receipt.version}`);
     }
     const lockRecord = lock.packages[name];
-    if (!Array.isArray(lockRecord) || lockRecord[3] !== receipt.integrity) {
+    if (
+      !Array.isArray(lockRecord) ||
+      lockRecord[0] !== `${name}@${receipt.version}` ||
+      lockRecord[1] !== ""
+    ) {
+      throw new Error(`${name} lock package/version/source drifted`);
+    }
+    if (lockRecord[3] !== receipt.integrity) {
       throw new Error(`${name} lock integrity drifted`);
     }
   }
