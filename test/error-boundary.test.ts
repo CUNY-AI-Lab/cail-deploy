@@ -61,6 +61,7 @@ function rejectingEnv(rejection: () => unknown): Env {
   };
   return {
     AUTH_MODE: "test",
+    CAIL_ENVIRONMENT: "test",
     TEST_PRINCIPALS_JSON: JSON.stringify({ reviewer: TEST_SUBJECTS.alice }),
     SERVICE_AUDIENCE: "https://deploy.invalid",
     DB: {

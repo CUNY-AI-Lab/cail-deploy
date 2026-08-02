@@ -267,6 +267,8 @@ const worker = Bun.spawn(
     "--var",
     "AUTH_MODE:cail-jwt",
     "--var",
+    "CAIL_ENVIRONMENT:test",
+    "--var",
     "SERVICE_AUDIENCE:cail:deploy",
     "--var",
     `CAIL_IDENTITY_ISSUER:${issuer.issuer}`,

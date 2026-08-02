@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { OAuthProvider, type OAuthProviderOptions } from "@cloudflare/workers-oauth-provider";
 import { ApiError, errorResponse } from "../../domain/errors";
-import type { Env, OAuthHelpersLike } from "../../env";
+import { readLoggingContext, type Env, type OAuthHelpersLike } from "../../env";
 import { workerHandler } from "../../handler";
 import { handleOAuthAuthorize } from "../../oauth-consent";
 import {
@@ -116,8 +116,23 @@ export const oauthWorkerHandler = {
     let requestId: string = crypto.randomUUID();
     try {
       requestId = requestIdForRequest(request);
+      const path = new URL(request.url).pathname;
+      const operationalPath =
+        path !== "/health" &&
+        (path === "/mcp" ||
+          path.startsWith("/v1/") ||
+          path.startsWith("/api/oauth/") ||
+          path.startsWith("/oauth/") ||
+          path.startsWith("/.well-known/"));
+      if (operationalPath && !readLoggingContext(env)) {
+        throw new ApiError(
+          503,
+          "logging_configuration_error",
+          "Operational logging configuration is unavailable.",
+        );
+      }
       if (
-        new URL(request.url).pathname === "/mcp" &&
+        path === "/mcp" &&
         request.headers.has("Authorization") &&
         request.headers.has("X-CAIL-Identity-JWT")
       ) {

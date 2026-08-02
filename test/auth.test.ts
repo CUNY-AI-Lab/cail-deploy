@@ -15,7 +15,12 @@ import { operationalLogSubject } from "../src/operational-events";
 const audience = "cail:deploy";
 
 function env(overrides: Partial<Env>): Env {
-  return { AUTH_MODE: "cail-jwt", SERVICE_AUDIENCE: audience, ...overrides } as Env;
+  return {
+    AUTH_MODE: "cail-jwt",
+    CAIL_ENVIRONMENT: "test",
+    SERVICE_AUDIENCE: audience,
+    ...overrides,
+  } as Env;
 }
 
 describe("CAIL identity boundary", () => {

@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { Env } from "../src/env";
+import { readLoggingContext, type Env } from "../src/env";
 import { emitReleaseAdmission, emitReleaseTerminal } from "../src/operational-events";
 
 const releaseId = "rel_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa";
 const operationalSubject = `cail-v1-${"b".repeat(32)}`;
 const env = {
   AUTH_MODE: "test",
+  CAIL_ENVIRONMENT: "test",
   SERVICE_RELEASE: "8baede9",
 } as Env;
 
@@ -96,5 +97,46 @@ describe("release operational event contract", () => {
         "cail-log: event_contract_error",
       ]);
     }
+  });
+
+  test("joins a production event with exact resource and correlation fields", () => {
+    const productionEnv = { ...env, CAIL_ENVIRONMENT: "production" } as Env;
+    const requestId = "11111111-1111-4111-8111-111111111111";
+    const { records, diagnostics } = captureEvents(() => {
+      emitReleaseAdmission(productionEnv, releaseId, requestId, operationalSubject);
+    });
+
+    expect(diagnostics).toEqual([]);
+    expect(records).toEqual([
+      expect.objectContaining({
+        "event.name": "cail.action.admitted",
+        "cail.action.id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "cail.product.id": "kale-deploy",
+        "cail.request.id": requestId,
+        "service.name": "kale-release-control-plane",
+        "service.version": "8baede9",
+        "deployment.environment.name": "production",
+        "cail.principal.type": "user",
+      }),
+    ]);
+  });
+
+  test.each([
+    undefined,
+    "",
+    "development",
+    "unknown",
+    "Production",
+    " production",
+    "production ",
+    " test",
+  ])("rejects missing or non-canonical environment %s without emitting", (environment) => {
+    const invalidEnv = { ...env, CAIL_ENVIRONMENT: environment } as unknown as Env;
+    expect(readLoggingContext(invalidEnv)).toBeNull();
+    const { records, diagnostics } = captureEvents(() => {
+      emitReleaseAdmission(invalidEnv, releaseId, "11111111-1111-4111-8111-111111111111");
+    });
+    expect(records).toEqual([]);
+    expect(diagnostics).toEqual([]);
   });
 });

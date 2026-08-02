@@ -8,6 +8,7 @@
   "observability": { "enabled": true },
   "vars": {
     "AUTH_MODE": "test",
+    "CAIL_ENVIRONMENT": "test",
     "SERVICE_AUDIENCE": "cail:deploy",
     "PUBLIC_BASE_URL": "http://127.0.0.1:8787",
     "RUN_ID": "local-test",
@@ -16,6 +17,13 @@
     "WFP_PUBLISH_TIMEOUT_MS": "30000",
     "PREVIEW_TIMEOUT_MS": "5000",
     "TEST_PRINCIPALS_JSON": "{\"test-owner-a\":\"cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"test-owner-b\":\"cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"
+  },
+  "env": {
+    "production": {
+      "vars": {
+        "CAIL_ENVIRONMENT": "production"
+      }
+    }
   },
   "d1_databases": [
     {
