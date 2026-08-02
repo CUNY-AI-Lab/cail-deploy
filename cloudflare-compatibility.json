@@ -43,6 +43,7 @@
     },
     "@cloudflare/worker-bundler": {
       "tested": "0.2.2",
+      "npmIntegritySha512": "qvgXpu+eh32kY10nR3sFSg+DodnmSTDbAxrDm5V5DJxW/t98uFvgC5t45msHNoWJHLbiTqpb/FGw4o+1h881mg==",
       "candidate": null,
       "maturity": "experimental",
       "boundary": "src/adapters/cloudflare/worker-bundler.ts",
@@ -52,11 +53,15 @@
     },
     "@cloudflare/vitest-pool-workers": {
       "tested": "0.19.0",
+      "npmIntegritySha512": "6t6zs1YBoAo9jJVpA8pTxPWYEY3c/ai07MWZYJ4vkUc5cyW9PHfMB6tFhDsRg7eLS+i26NMuB3aUOlBKdRiwhw==",
       "maturity": "beta",
       "poolCompatibility": "Verified 2026-08-02 with @cloudflare/worker-bundler 0.2.2 through cloudflareTest({ wrangler: { configPath: 'wrangler.workerd-test.jsonc' } }); the 3-file, 11-test pool lane passes from a frozen-lockfile clean install without a gojs npm package."
     },
     "@cloudflare/workers-types": { "accepted": "5.20260722.1" },
-    "wrangler": { "accepted": "4.115.0" }
+    "wrangler": {
+      "accepted": "4.115.0",
+      "npmIntegritySha512": "+upG2VW66M1sjb43yzgUZ6Ss8iYpJ6+7F3U4GF8TY5EYd+08sYdS54d24AEwCnhuef3J9KlSPusqiqR9WYy1UA=="
+    }
   },
   "platform": {
     "compatibilityDate": "2026-07-22",

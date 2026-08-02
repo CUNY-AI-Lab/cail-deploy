@@ -79,6 +79,21 @@ function hasExactLockRecord(
   return Array.isArray(record) && record[0] === `${packageName}@${version}`;
 }
 
+function hasExactLockIntegrity(
+  lock: CloudflareLockfile,
+  packageName: string,
+  receipt: CloudflarePackageReceipt | undefined,
+): boolean {
+  const record = lock.packages[packageName];
+  const integrity = receipt?.npmIntegritySha512;
+  return (
+    Array.isArray(record) &&
+    typeof integrity === "string" &&
+    integrity.length > 0 &&
+    record[3] === `sha512-${integrity}`
+  );
+}
+
 function hasExactRootImporterEntry(
   lock: CloudflareLockfile,
   packageName: string,
@@ -128,6 +143,15 @@ export function verifyCloudflareToolchainReceipt(
   const workerBundlerReceipt = compatibility.packages?.["@cloudflare/worker-bundler"];
   const poolReceipt = compatibility.packages?.["@cloudflare/vitest-pool-workers"];
   const wranglerReceipt = compatibility.packages?.wrangler;
+  for (const [packageName, receipt] of [
+    ["@cloudflare/worker-bundler", workerBundlerReceipt],
+    ["@cloudflare/vitest-pool-workers", poolReceipt],
+    ["wrangler", wranglerReceipt],
+  ] as const) {
+    if (!hasExactLockIntegrity(parsedLock, packageName, receipt)) {
+      throw new Error(`Cloudflare ${packageName} package/lock integrity authority drifted`);
+    }
+  }
   if (workerBundlerReceipt?.tested !== bundlerVersion) {
     throw new Error("Cloudflare Worker Bundler compatibility receipt drifted");
   }

@@ -137,6 +137,18 @@ describe("Cloudflare toolchain compatibility receipt", () => {
         verifyCloudflareToolchainReceipt(packageManifest, fixture, compatibility),
       ).toThrow(`Cloudflare ${packageName} package/lock authority drifted`);
     });
+
+    test(`rejects a stale ${packageName} package integrity`, () => {
+      const fixture = driftedLock();
+      const record = fixture.packages[packageName];
+      if (!Array.isArray(record)) {
+        throw new Error(`expected package record for ${packageName}`);
+      }
+      record[3] = "sha512-INTENTIONALLY-WRONG";
+      expect(() =>
+        verifyCloudflareToolchainReceipt(packageManifest, fixture, compatibility),
+      ).toThrow(`Cloudflare ${packageName} package/lock integrity authority drifted`);
+    });
   }
 
   for (const field of ["lockfileVersion", "configVersion"] as const) {
