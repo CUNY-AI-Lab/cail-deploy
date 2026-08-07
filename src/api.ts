@@ -769,6 +769,28 @@ async function approveRelease(
     ).bind(projectId, `approve:${releaseId}`, key, requestDigest, JSON.stringify(response), now),
   ]);
   if ((approvalResults[0]?.meta.changes ?? 0) !== 1) {
+    // Two callers can both observe an empty idempotency record before either
+    // approval transaction commits. The compare-and-set above correctly lets
+    // only one caller accept the approval, but the loser must re-read the
+    // committed record so a concurrent retry with the same key remains
+    // idempotent instead of surfacing a spurious conflict.
+    const concurrentReplay = await idempotentResponse(
+      env,
+      projectId,
+      `approve:${releaseId}`,
+      key,
+      requestDigest,
+    );
+    if (concurrentReplay) {
+      const currentRelease = await requireRelease(env, projectId, releaseId);
+      if (
+        currentRelease.status === "awaiting_approval" &&
+        currentRelease.approved_by_subject === subject
+      ) {
+        await sendApprovalEvent(env, currentRelease, subject);
+      }
+      return Response.json(concurrentReplay, { status: 200 });
+    }
     throw new ApiError(
       409,
       "release_approval_already_accepted",
