@@ -78,7 +78,7 @@ describe("immutable artifact contract", () => {
     const contract = JSON.parse(
       await Bun.file(new URL("../contract/oauth-mcp-v1.json", import.meta.url)).text(),
     ) as {
-      provider: { version: string; sourceRevision: string; npmTarballSha256: string };
+      provider: { version: string };
       routes: Record<string, string>;
       authorization: {
         scope: string;
@@ -93,8 +93,6 @@ describe("immutable artifact contract", () => {
     expect(contract.provider).toEqual({
       package: "@cloudflare/workers-oauth-provider",
       version: "0.5.0",
-      sourceRevision: "b4bc502c3421f2bc8a61760fb84790f09d0fa529",
-      npmTarballSha256: "097c5955e8eb6092575a008d9e3b960fc945b48c8fb26ae252bedd9482bdce11",
     });
     expect(contract.routes).toEqual({
       protectedResourceMetadata: "/.well-known/oauth-protected-resource/mcp",

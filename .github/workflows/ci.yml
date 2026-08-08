@@ -28,9 +28,6 @@ jobs:
       - name: Build Worker
         run: bun run build
 
-# What this does and does not cover.
-#
-# CI runs the repository's complete self-contained acceptance gate: fixture and
-# package authorities, format/lint/types, Bun tests, local Worker
-# Loader/Workflow/WfP lifecycle, OAuth/MCP, and a Wrangler dry build. Fleet-wide
-# source-head and composed-system authority remains kale-integration's job.
+# CI runs the repository's complete self-contained gate: fixture and package
+# checks, format/lint/types, Bun tests, local Worker Loader/Workflow/WfP
+# lifecycle, OAuth/MCP, and a Wrangler dry build.

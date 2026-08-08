@@ -9,7 +9,7 @@ import { trustedIdentityIssuers } from "../src/identity-issuers";
 // Deploy is pinned to the reviewed historical Identity 4.6.0, whose config
 // boundary is the synchronous `parseIdentityConfig`. The allowlist semantics
 // exercised here are the same ones the Identity 5 consumers rely on.
-const RUN_ISSUER = "https://ki-20260722223510-ecade68e.identity.invalid/cail-sso";
+const RUN_ISSUER = "https://run.identity.invalid/cail-sso";
 const DEFAULTS = [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER];
 const JWKS = JSON.stringify({ keys: [] });
 

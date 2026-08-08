@@ -4,10 +4,8 @@ import { validatedOAuthPublicBaseUrl } from "../src/adapters/cloudflare/oauth-or
 describe("OAuth public origin boundary", () => {
   test("accepts exact HTTPS deployment and loopback HTTP test origins", () => {
     expect(
-      validatedOAuthPublicBaseUrl(
-        "https://ki-20260722223510-ecade68e-deploy.ailab-452.workers.dev",
-      ),
-    ).toBe("https://ki-20260722223510-ecade68e-deploy.ailab-452.workers.dev");
+      validatedOAuthPublicBaseUrl("https://kale-release-control-plane.ailab-452.workers.dev"),
+    ).toBe("https://kale-release-control-plane.ailab-452.workers.dev");
     expect(validatedOAuthPublicBaseUrl("http://127.0.0.1:49152")).toBe("http://127.0.0.1:49152");
     expect(validatedOAuthPublicBaseUrl("http://localhost:8787")).toBe("http://localhost:8787");
   });

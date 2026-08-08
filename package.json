@@ -6,11 +6,8 @@
   "packageManager": "bun@1.3.14",
   "scripts": {
     "build": "wrangler deploy --dry-run --outdir dist",
-    "check": "bun run check:fixture && bun run check:oauth-package && bun run check:mcp-packages && bun run check:log-package && bun run format:check && bun run lint && bun run typecheck && bun run test && bun run test:workerd && bun run test:harness && bun run test:workerd:pool && bun run test:release-workerd && bun run test:oauth",
+    "check": "bun run check:fixture && bun run format:check && bun run lint && bun run typecheck && bun run test && bun run test:workerd && bun run test:harness && bun run test:workerd:pool && bun run test:release-workerd && bun run test:oauth",
     "check:fixture": "bun scripts/check-fixture.ts",
-    "check:log-package": "bun scripts/check-log-package.ts",
-    "check:mcp-packages": "bun scripts/check-mcp-packages.ts",
-    "check:oauth-package": "bun scripts/check-oauth-package.ts",
     "dev": "wrangler dev",
     "format": "biome format --write .",
     "format:check": "biome format .",

@@ -51,6 +51,6 @@ GitHub, repository ownership, webhooks, check runs, installation tokens, PATs, e
 
 ## Recovery and rollback
 
-D1 is authoritative for ownership and release history, and R2 holds replay bytes. The isolated stack can be exported with `wrangler d1 export` and `wrangler r2 object get` for named keys. OAuth provider state is non-authoritative, test-only KV data; deleting it revokes clients and sessions without stranding projects, releases, or artifacts. Safe teardown uses only exact names and provider IDs in `resources/manifest.json`.
+D1 is authoritative for ownership and release history, and R2 holds replay bytes. The isolated stack can be exported with `wrangler d1 export` and `wrangler r2 object get` for named keys. OAuth provider state is non-authoritative, test-only KV data; deleting it revokes clients and sessions without stranding projects, releases, or artifacts.
 
 Release-history reads are complete-or-error. Deploy checks a 256-event and 1 MiB encoded-field budget before materializing rows, then rechecks a sentinel-limited result so concurrent append cannot silently turn a complete history into a truncated one. Histories outside either budget return `release_history_too_large`.

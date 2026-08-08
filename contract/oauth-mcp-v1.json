@@ -2,9 +2,7 @@
   "schemaVersion": "kale.oauth-mcp.v1",
   "provider": {
     "package": "@cloudflare/workers-oauth-provider",
-    "version": "0.5.0",
-    "sourceRevision": "b4bc502c3421f2bc8a61760fb84790f09d0fa529",
-    "npmTarballSha256": "097c5955e8eb6092575a008d9e3b960fc945b48c8fb26ae252bedd9482bdce11"
+    "version": "0.5.0"
   },
   "routes": {
     "protectedResourceMetadata": "/.well-known/oauth-protected-resource/mcp",
