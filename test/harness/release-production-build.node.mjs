@@ -100,7 +100,7 @@ function parseFlattenedLogMessage(message) {
 }
 
 function assertReleaseLogEvents(logs, releaseId) {
-  assert.ok(logs.length > 0, "the production-build harness emitted no runtime logs");
+  assert.ok(logs.length > 0, "the local build harness emitted no runtime logs");
   const events = logs
     .map((log) => parseFlattenedLogMessage(log.message))
     .filter((event) => event?.["cail.request.id"] === INITIAL_REQUEST_ID);
@@ -195,7 +195,7 @@ async function createAutomaticRelease(worker, projectId, revisionId, jwt, idempo
   return release.releaseId;
 }
 
-test("actual Deploy production build preserves identity, artifact, Workflow, provider, and reset boundaries", {
+test("actual Deploy local integration preserves identity, artifact, Workflow, provider, and reset boundaries", {
   timeout: TEST_TIMEOUT_MS,
 }, async (context) => {
   const issuer = await createTestIdentityIssuer();

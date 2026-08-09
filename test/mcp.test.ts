@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import {
   Client as ModernClient,
   StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
@@ -28,6 +29,7 @@ const principal: Principal = {
 
 const clients: Client[] = [];
 const modernClients: ModernClient[] = [];
+const validContentDigest = `sha-256=:${Buffer.alloc(32).toString("base64")}:`;
 
 afterEach(async () => {
   await Promise.all([
@@ -113,7 +115,7 @@ const validToolArguments = {
   "kale.upload_revision": {
     projectId: "prj_22222222222222222222222222222222",
     artifactBase64: "e30=",
-    contentDigest: "sha-256=:+3Ef2SMBqe9arjRcw9oGQI59KRuODN/x1ENMIW5FnoI=:",
+    contentDigest: validContentDigest,
   },
   "kale.create_release": {
     projectId: "prj_22222222222222222222222222222222",
@@ -336,7 +338,7 @@ describe("MCP tool argument boundary", () => {
     const client = await standardClientAgainst(env);
     const uploadBase = {
       projectId: "prj_22222222222222222222222222222222",
-      contentDigest: "sha-256=:+3Ef2SMBqe9arjRcw9oGQI59KRuODN/x1ENMIW5FnoI=:",
+      contentDigest: validContentDigest,
     };
 
     for (const request of [
@@ -484,7 +486,7 @@ describe("MCP tool argument boundary", () => {
               arguments: {
                 projectId: "prj_22222222222222222222222222222222",
                 artifactBase64: "A".repeat(MAX_ARTIFACT_BASE64_CHARS + 1),
-                contentDigest: "sha-256=:+3Ef2SMBqe9arjRcw9oGQI59KRuODN/x1ENMIW5FnoI=:",
+                contentDigest: validContentDigest,
               },
             },
           }),
@@ -542,7 +544,7 @@ describe("MCP tool argument boundary", () => {
               arguments: {
                 projectId: "prj_22222222222222222222222222222222",
                 artifactBase64: "A".repeat(MAX_ARTIFACT_BASE64_CHARS),
-                contentDigest: "sha-256=:+3Ef2SMBqe9arjRcw9oGQI59KRuODN/x1ENMIW5FnoI=:",
+                contentDigest: validContentDigest,
               },
             },
           }),

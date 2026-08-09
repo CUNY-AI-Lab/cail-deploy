@@ -17,7 +17,7 @@ const process = Bun.spawn(
     "--port",
     String(port),
   ],
-  { stdout: "pipe", stderr: "pipe" },
+  { stdout: "ignore", stderr: "ignore" },
 );
 
 let lastError: unknown;
@@ -25,8 +25,7 @@ try {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/`);
-      if (!response.ok)
-        throw new Error(`workerd returned ${response.status}: ${await response.text()}`);
+      if (!response.ok) throw new Error(`workerd health check returned status ${response.status}`);
       const result = (await response.json()) as {
         mainModule?: string;
         moduleCount?: number;
@@ -72,9 +71,7 @@ try {
     }
   }
   if (lastError) {
-    const stdout = await new Response(process.stdout).text();
-    const stderr = await new Response(process.stderr).text();
-    throw new Error(`${String(lastError)}\n${stdout}\n${stderr}`);
+    throw new Error(`Workerd gate failed: ${String(lastError)}`);
   }
 } finally {
   process.kill();
