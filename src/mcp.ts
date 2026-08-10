@@ -42,7 +42,7 @@ const uploadRevisionArgumentsSchema = z
       .regex(SHA256_CONTENT_DIGEST)
       .refine(
         (value) => parseContentDigest(value)?.byteLength === 32,
-        "Content-Digest must contain one SHA-256 digest.",
+        "The Content-Digest header must contain one SHA-256 digest.",
       ),
   })
   .strict();
@@ -120,7 +120,7 @@ function invalidToolArguments(): ApiError {
   return new ApiError(
     400,
     "invalid_mcp_arguments",
-    "The MCP tool arguments do not match the tool contract.",
+    "The tool arguments don't match what the tool expects.",
   );
 }
 
@@ -216,8 +216,7 @@ async function readMcpChunk(
 }
 
 export async function readMcpMessage(request: Request, requestId: string): Promise<unknown> {
-  const tooLarge = () =>
-    new ApiError(413, "mcp_request_too_large", "The MCP request body exceeds the supported limit.");
+  const tooLarge = () => new ApiError(413, "mcp_request_too_large", "The request is too large.");
   const declaredLength = request.headers.get("Content-Length");
   if (
     declaredLength !== null &&
@@ -231,8 +230,7 @@ export async function readMcpMessage(request: Request, requestId: string): Promi
     }
     throw tooLarge();
   }
-  if (!request.body)
-    throw new ApiError(400, "invalid_mcp", "The MCP request body must be valid JSON.");
+  if (!request.body) throw new ApiError(400, "invalid_mcp", "The request body must be valid JSON.");
 
   const reader = request.body.getReader();
   const signal = request.signal ?? new AbortController().signal;
@@ -269,7 +267,7 @@ export async function readMcpMessage(request: Request, requestId: string): Promi
   try {
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
   } catch (cause) {
-    throw new ApiError(400, "invalid_mcp", "The MCP request body must be valid JSON.", { cause });
+    throw new ApiError(400, "invalid_mcp", "The request body must be valid JSON.", { cause });
   }
 }
 
@@ -311,11 +309,7 @@ export async function readMcpResponseText(
   const reader = response.body.getReader();
   const deadlineError =
     externalDeadlineError ??
-    new ApiError(
-      504,
-      "mcp_operation_timeout",
-      "The MCP tool operation did not complete before its deadline.",
-    );
+    new ApiError(504, "mcp_operation_timeout", "That took too long. Try again.");
   const deadlineController = externalDeadlineSignal ? undefined : new AbortController();
   const timeoutHandle = deadlineController
     ? setTimeout(() => deadlineController.abort(deadlineError), timeoutMs)
@@ -346,7 +340,7 @@ export async function readMcpResponseText(
         const error = new ApiError(
           502,
           "mcp_response_too_large",
-          "The MCP tool response exceeds the supported limit.",
+          "The response is too large to return.",
         );
         cancel(error);
         throw error;
@@ -414,11 +408,7 @@ interface McpOperation {
 }
 
 function operationTimeoutError(): ApiError {
-  return new ApiError(
-    504,
-    "mcp_operation_timeout",
-    "The MCP tool operation did not complete before its deadline.",
-  );
+  return new ApiError(504, "mcp_operation_timeout", "That took too long. Try again.");
 }
 
 function createMcpOperation(callerSignal: AbortSignal, deadlineMs: number): McpOperation {
@@ -550,7 +540,7 @@ async function callKaleTool(
         headers.set("Idempotency-Key", args.idempotencyKey);
         body = JSON.stringify({ approval: args.approval });
       } else {
-        throw new ApiError(404, "mcp_tool_not_found", "The MCP tool was not found.");
+        throw new ApiError(404, "mcp_tool_not_found", "That tool doesn't exist.");
       }
     } catch (error) {
       if (!apiErrorSnapshot(error)) throw error;
@@ -598,10 +588,19 @@ async function callKaleTool(
   }
 }
 
+const TOOL_DESCRIPTIONS: Record<(typeof toolDefinitions)[number]["name"], string> = {
+  "kale.create_project": "Create a project.",
+  "kale.upload_revision": "Upload a new version of your app.",
+  "kale.create_release": "Publish a version.",
+  "kale.get_release": "Check on a release.",
+  "kale.approve_release": "Approve a release.",
+  "kale.rollback_release": "Roll back to an earlier version.",
+};
+
 function listedTools() {
   return tools.map((tool) => ({
     name: tool.name,
-    description: `Kale release operation ${tool.name}.`,
+    description: TOOL_DESCRIPTIONS[tool.name],
     inputSchema: tool.inputSchema,
   }));
 }
@@ -628,7 +627,7 @@ export async function handleLegacyMcpMessage(
   operationDeadlineMs = MAX_MCP_OPERATION_MS,
 ): Promise<Response> {
   if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
-    throw new ApiError(400, "invalid_mcp", "MCP requires a JSON-RPC 2.0 request object.");
+    throw new ApiError(400, "invalid_mcp", "The request must be a JSON-RPC 2.0 object.");
   }
   const message = parsedBody as {
     jsonrpc?: string;
@@ -637,7 +636,7 @@ export async function handleLegacyMcpMessage(
     params?: Record<string, unknown>;
   };
   if (message.jsonrpc !== "2.0")
-    throw new ApiError(400, "invalid_mcp", "MCP requires JSON-RPC 2.0.");
+    throw new ApiError(400, "invalid_mcp", "The request must use JSON-RPC 2.0.");
   if (message.method === "initialize") {
     return Response.json({
       jsonrpc: "2.0",
@@ -645,7 +644,7 @@ export async function handleLegacyMcpMessage(
       result: {
         protocolVersion: "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "kale-release-control-plane", version: "0.1.0" },
+        serverInfo: { name: "Kale Deploy", version: "0.1.0" },
       },
     });
   }
@@ -660,7 +659,7 @@ export async function handleLegacyMcpMessage(
     return new Response(null, { status: 202 });
   }
   if (message.method !== "tools/call")
-    throw new ApiError(400, "unknown_mcp_method", "The MCP method is not supported.");
+    throw new ApiError(400, "unknown_mcp_method", "That method isn't supported.");
   const name = message.params?.name;
   if (typeof name !== "string") {
     return legacyToolResponse(
@@ -694,7 +693,7 @@ export function createKaleMcpServer(
   operationDeadlineMs = MAX_MCP_OPERATION_MS,
 ): Server {
   const server = new Server(
-    { name: "kale-release-control-plane", version: "0.1.0" },
+    { name: "Kale Deploy", version: "0.1.0" },
     {
       capabilities: { tools: {} },
       supportedProtocolVersions: ["2026-07-28", "2025-06-18"],

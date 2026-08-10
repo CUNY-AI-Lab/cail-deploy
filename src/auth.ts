@@ -46,15 +46,11 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
   const identityJwt = request.headers.get("X-CAIL-Identity-JWT");
   const authorization = request.headers.get("Authorization");
   if (identityJwt && authorization) {
-    throw new ApiError(
-      401,
-      "credential_ambiguity",
-      "Provide exactly one accepted identity credential.",
-    );
+    throw new ApiError(401, "credential_ambiguity", "Send one sign-in credential, not two.");
   }
   if (env.AUTH_MODE === "cail-jwt") {
     if (!identityJwt || identityJwt.includes(",")) {
-      throw new ApiError(401, "authentication_required", "One CAIL identity JWT is required.");
+      throw new ApiError(401, "authentication_required", "You need to sign in.");
     }
     const config = parseIdentityConfig({
       jwks: env.CAIL_IDENTITY_JWKS,
@@ -67,7 +63,7 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
       throw new ApiError(
         503,
         "identity_not_configured",
-        "CAIL identity verification is not configured.",
+        "Sign-in is unavailable right now. Try again shortly.",
       );
     }
     // Two operator errors, both reported as unavailable rather than as a bad
@@ -81,7 +77,7 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
       throw new ApiError(
         503,
         "identity_not_configured",
-        "CAIL identity verification is not configured.",
+        "Sign-in is unavailable right now. Try again shortly.",
       );
     }
     const identity = await verifyIdentityJwt(identityJwt, config.jwks, {
@@ -89,7 +85,7 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
       allowedIssuers: [config.issuer],
     });
     if (!identity)
-      throw new ApiError(401, "invalid_credential", "The CAIL identity JWT is invalid.");
+      throw new ApiError(401, "invalid_credential", "Your sign-in isn't valid. Sign in again.");
     return {
       subject: identity.subject,
       operationalSubject: identity.operationalSubject,
@@ -100,7 +96,7 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
     throw new ApiError(
       503,
       "identity_not_configured",
-      "CAIL identity verification is not configured.",
+      "Sign-in is unavailable right now. Try again shortly.",
     );
   }
   if (identityJwt)

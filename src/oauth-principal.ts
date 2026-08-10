@@ -56,7 +56,10 @@ export function insufficientScopeResponse(
   requestId: string,
 ): Response {
   return Response.json(
-    { error: "insufficient_scope", error_description: "The cail:deploy scope is required." },
+    {
+      error: "insufficient_scope",
+      error_description: "This app doesn't have permission to deploy.",
+    },
     {
       status: 403,
       headers: {

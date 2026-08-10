@@ -30,7 +30,7 @@ function requireAuthorizationRequest(
     throw new ApiError(
       400,
       "invalid_authorization_request",
-      "Authorization requires code flow, S256 PKCE, the cail:deploy scope, and the exact MCP resource.",
+      "This sign-in link isn't valid. Start again from your app.",
     );
   }
   return request;
@@ -48,7 +48,7 @@ async function parseAuthorizationRequest(
     throw new ApiError(
       400,
       "invalid_authorization_request",
-      "The OAuth authorization request is invalid.",
+      "This sign-in request isn't valid. Start again from your app.",
     );
   }
 }
@@ -78,12 +78,23 @@ function escapeHtml(value: string): string {
   });
 }
 
+const CONSENT_PAGE_STYLE = `
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#fafcf8;color:#333;font-family:'Inter',ui-sans-serif,system-ui,sans-serif}
+main{max-width:420px;width:100%;margin:24px;padding:32px;background:#fff;border:1px solid #e5e7eb;border-radius:12px}
+h1{margin:0 0 12px;font-family:'Outfit',ui-sans-serif,system-ui,sans-serif;font-size:1.35rem;font-weight:600}
+p{margin:0 0 24px;line-height:1.5}
+form{display:flex;gap:12px}
+button{font:inherit;padding:10px 24px;border-radius:999px;cursor:pointer}
+button[value=approve]{background:#3b73e6;border:1px solid #3b73e6;color:#fff}
+button[value=deny]{background:transparent;border:1px solid #d1d5db;color:#333}
+`.trim();
+
 function consentPage(requestUrl: string, clientName: string, nonce: string): Response {
   const html = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Authorize Kale Deploy</title></head>
-<body><main><h1>Connect ${escapeHtml(clientName)}?</h1><p>Allow this client to use <code>${OAUTH_REQUIRED_SCOPE}</code> for Kale Deploy.</p>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Kale Deploy — approve access</title><style>${CONSENT_PAGE_STYLE}</style></head>
+<body><main><h1>Let ${escapeHtml(clientName)} deploy your projects?</h1><p>This app will be able to create projects and publish releases for you.</p>
 <form method="post" action="${escapeHtml(requestUrl)}"><input type="hidden" name="consentNonce" value="${escapeHtml(nonce)}">
-<button type="submit" name="decision" value="approve">Approve</button><button type="submit" name="decision" value="deny">Deny</button></form></main></body></html>`;
+<button type="submit" name="decision" value="approve">Allow</button><button type="submit" name="decision" value="deny">Cancel</button></form></main></body></html>`;
   return new Response(html, {
     status: 200,
     headers: {
@@ -102,7 +113,11 @@ async function requireClient(
 ): Promise<{ clientId: string; clientName?: string }> {
   const client = await helpers.lookupClient(request.clientId);
   if (!client || !client.redirectUris.includes(request.redirectUri)) {
-    throw new ApiError(400, "invalid_oauth_client", "The OAuth client or redirect URI is invalid.");
+    throw new ApiError(
+      400,
+      "invalid_oauth_client",
+      "This app isn't registered correctly. Start again from your app.",
+    );
   }
   return client;
 }
@@ -117,11 +132,7 @@ export async function handleOAuthAuthorize(
   }
   const principal = await authenticate(request, env);
   if (principal.authentication !== "cail-identity-jwt") {
-    throw new ApiError(
-      401,
-      "authentication_required",
-      "A verified CAIL identity JWT is required for OAuth consent.",
-    );
+    throw new ApiError(401, "authentication_required", "Sign in before approving access.");
   }
   const authorization = await parseAuthorizationRequest(request, env, helpers);
   const client = await requireClient(helpers, authorization);
@@ -135,21 +146,25 @@ export async function handleOAuthAuthorize(
     )
       .bind(nonce, principal.subject, authorization.clientId, digest, expiresAt)
       .run();
-    return consentPage(request.url, client.clientName ?? "your MCP client", nonce);
+    return consentPage(request.url, client.clientName ?? "the app you're using", nonce);
   }
 
   if (request.headers.get("Origin") !== new URL(request.url).origin) {
     throw new ApiError(
       403,
       "invalid_consent_origin",
-      "OAuth consent must be submitted same-origin.",
+      "This approval didn't come from the approval page. Start again from your app.",
     );
   }
   const form = await request.formData();
   const nonce = form.get("consentNonce");
   const decision = form.get("decision");
   if (typeof nonce !== "string" || (decision !== "approve" && decision !== "deny")) {
-    throw new ApiError(400, "invalid_consent", "The OAuth consent decision is incomplete.");
+    throw new ApiError(
+      400,
+      "invalid_consent",
+      "The approval form was incomplete. Start again from your app.",
+    );
   }
   const consumedAt = new Date().toISOString();
   const result = await env.DB.prepare(CONSUME_CONSENT_NONCE_SQL)
@@ -159,7 +174,7 @@ export async function handleOAuthAuthorize(
     throw new ApiError(
       409,
       "consent_not_accepted",
-      "The OAuth consent nonce is invalid, expired, changed, or already used.",
+      "This approval page expired. Start again from your app.",
     );
   }
 

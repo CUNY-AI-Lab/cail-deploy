@@ -116,7 +116,7 @@ describe("Cloudflare volatile boundaries", () => {
     expect(captured).toMatchObject({
       status: 502,
       code: "publication_ambiguous",
-      message: "Workers for Platforms did not return a publication result.",
+      message: "We could not confirm whether this release published. Check back shortly.",
     });
     expect((captured as Error).cause).toBeInstanceOf(DOMException);
     expect(((captured as Error).cause as DOMException).name).toBe("TimeoutError");
@@ -201,7 +201,7 @@ describe("Cloudflare volatile boundaries", () => {
       await expect(publishWithResponse(Response.json(envelope))).rejects.toMatchObject({
         status: 502,
         code: "publication_ambiguous",
-        message: "Workers for Platforms returned an indeterminate publication result.",
+        message: "We could not confirm whether this release published. Check back shortly.",
       });
     }
     await expect(
@@ -276,7 +276,7 @@ describe("Cloudflare volatile boundaries", () => {
         const startedAt = performance.now();
         await expect(publishWithResponse(responseWithReader(503, reader))).rejects.toMatchObject({
           code: "publication_ambiguous",
-          message: "Workers for Platforms did not accept the prepared publication.",
+          message: "We could not publish this release.",
         });
         expect(performance.now() - startedAt).toBeLessThan(100);
         expect(cancels).toBe(1);
@@ -316,7 +316,7 @@ describe("Cloudflare volatile boundaries", () => {
     await Bun.sleep(0);
     expect(captured).toMatchObject({
       code: "publication_ambiguous",
-      message: "Workers for Platforms returned an indeterminate publication result.",
+      message: "We could not confirm whether this release published. Check back shortly.",
     });
     expect((captured as Error).cause).toBe(primary);
     expect(cancels).toBe(1);
@@ -372,7 +372,7 @@ describe("Cloudflare volatile boundaries", () => {
     ).rejects.toMatchObject({
       status: 503,
       code: "approval_delivery_failed",
-      message: "The approval was saved but Workflow delivery must be retried.",
+      message: "We saved your approval but couldn't finish applying it. Try again.",
       cause: providerFailure,
     });
     expect(sendEvent).toHaveBeenCalledWith({

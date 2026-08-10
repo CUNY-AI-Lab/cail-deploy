@@ -31,7 +31,7 @@ describe("CAIL identity boundary", () => {
     );
     expect(() =>
       operationalLogSubject(TEST_SUBJECTS.alice, TEST_SUBJECTS.alice.replace(/^cail-/, "cail-v1-")),
-    ).toThrow("distinct operational pseudonym");
+    ).toThrow("This service isn't available right now.");
   });
 
   test("refuses an issuer outside the allowlist as an operator error", async () => {
@@ -203,7 +203,7 @@ describe("CAIL identity boundary", () => {
     expect(await response.json()).toEqual({
       error: {
         code: "invalid_credential",
-        message: "The CAIL identity JWT is invalid.",
+        message: "Your sign-in isn't valid. Sign in again.",
         requestId,
       },
     });

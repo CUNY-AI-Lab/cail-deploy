@@ -41,7 +41,7 @@ try {
     };
     if (
       body.error?.code !== "oauth_not_configured" ||
-      body.error.message !== "OAuth public metadata is not configured." ||
+      body.error.message !== "Sign-in is unavailable right now. Try again shortly." ||
       body.error.requestId !== requestId ||
       body.error.stack !== undefined
     ) {

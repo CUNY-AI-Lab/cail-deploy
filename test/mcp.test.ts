@@ -178,10 +178,18 @@ describe("MCP tool argument boundary", () => {
     const client = await modernClientAgainst({} as Env);
 
     expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
+    const toolDescriptions: Record<string, string> = {
+      "kale.create_project": "Create a project.",
+      "kale.upload_revision": "Upload a new version of your app.",
+      "kale.create_release": "Publish a version.",
+      "kale.get_release": "Check on a release.",
+      "kale.approve_release": "Approve a release.",
+      "kale.rollback_release": "Roll back to an earlier version.",
+    };
     expect((await client.listTools()).tools).toEqual(
       tools.map((tool) => ({
         name: tool.name,
-        description: `Kale release operation ${tool.name}.`,
+        description: toolDescriptions[tool.name],
         inputSchema: tool.inputSchema,
       })),
     );
@@ -194,7 +202,7 @@ describe("MCP tool argument boundary", () => {
     expect(JSON.parse(toolText(invalid))).toEqual({
       error: {
         code: "invalid_mcp_arguments",
-        message: "The MCP tool arguments do not match the tool contract.",
+        message: "The tool arguments don't match what the tool expects.",
         requestId,
       },
     });
@@ -448,7 +456,7 @@ describe("MCP tool argument boundary", () => {
       expect(JSON.parse(text)).toEqual({
         error: {
           code: "invalid_mcp_arguments",
-          message: "The MCP tool arguments do not match the tool contract.",
+          message: "The tool arguments don't match what the tool expects.",
           requestId,
         },
       });
@@ -504,7 +512,7 @@ describe("MCP tool argument boundary", () => {
       expect(JSON.parse(result.result.content[0].text)).toEqual({
         error: {
           code: "invalid_mcp_arguments",
-          message: "The MCP tool arguments do not match the tool contract.",
+          message: "The tool arguments don't match what the tool expects.",
           requestId,
         },
       });
@@ -782,7 +790,7 @@ describe("MCP tool argument boundary", () => {
     expect(apiErrorSnapshot(error)).toEqual({
       status: 502,
       code: "mcp_response_too_large",
-      message: "The MCP tool response exceeds the supported limit.",
+      message: "The response is too large to return.",
     });
     await Bun.sleep(0);
     expect(cancelCount).toBe(1);
@@ -864,7 +872,7 @@ describe("MCP tool argument boundary", () => {
     expect(apiErrorSnapshot(error)).toEqual({
       status: 504,
       code: "mcp_operation_timeout",
-      message: "The MCP tool operation did not complete before its deadline.",
+      message: "That took too long. Try again.",
     });
     await Bun.sleep(0);
     expect(cancelCount).toBe(1);
@@ -1147,7 +1155,7 @@ describe("MCP tool argument boundary", () => {
     expect(JSON.parse(payload.result.content[0].text)).toEqual({
       error: {
         code: "mcp_operation_timeout",
-        message: "The MCP tool operation did not complete before its deadline.",
+        message: "That took too long. Try again.",
         requestId,
       },
     });
@@ -1249,7 +1257,7 @@ describe("MCP tool argument boundary", () => {
       expect(JSON.parse(payload.result.content[0].text)).toEqual({
         error: {
           code: "mcp_operation_timeout",
-          message: "The MCP tool operation did not complete before its deadline.",
+          message: "That took too long. Try again.",
           requestId,
         },
       });
