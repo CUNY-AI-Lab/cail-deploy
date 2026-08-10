@@ -223,7 +223,7 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
           PUBLIC_BASE_URL: "http://127.0.0.1:8787",
           CAIL_IDENTITY_ISSUER: issuer.issuer,
           CAIL_IDENTITY_JWKS: issuer.jwksJson,
-          CAIL_TRUSTED_IDENTITY_ISSUERS: issuer.issuer,
+          CAIL_TRUSTED_IDENTITY_ISSUER: issuer.issuer,
           RUN_ID: "integration-local-e2e",
           WFP_ACCOUNT_ID: "integration-account",
           WFP_NAMESPACE: "integration-namespace",

@@ -1,0 +1,5 @@
+[install]
+registry = "https://registry.npmjs.org"
+
+[install.scopes]
+"@cuny-ai-lab" = { url = "https://npm.pkg.github.com", token = "$NODE_AUTH_TOKEN" }

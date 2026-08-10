@@ -86,7 +86,7 @@ export async function ensureWorkflowInstance(
       throw new ApiError(
         503,
         "workflow_start_failed",
-        "We saved your release but couldn't start it. Check back shortly.",
+        "We saved your release but couldn't start it. Check the release status first, then reuse the same Idempotency-Key if you need to retry.",
         {
           cause: new AggregateError(
             [createCause, recoveryCause],
@@ -816,7 +816,7 @@ export async function sendApprovalEvent(
     throw new ApiError(
       503,
       "approval_delivery_failed",
-      "We saved your approval but couldn't finish applying it. Try again.",
+      "We saved your approval but couldn't finish applying it. Check the release status first, then reuse the same Idempotency-Key if you need to retry.",
       { cause },
     );
   }
@@ -861,7 +861,7 @@ async function reconcileRelease(
     throw new ApiError(
       503,
       "reconciliation_authority_unavailable",
-      "Something went wrong processing this release. Try again.",
+      "We could not start reconciliation. Check the release status before trying reconcile again.",
       { cause },
     );
   }
@@ -887,7 +887,7 @@ async function reconcileRelease(
     throw new ApiError(
       409,
       "release_reconciliation_in_progress",
-      "This release is already being processed. Try again in a moment.",
+      "This release is already being processed. Check its status in a moment.",
     );
   }
 
@@ -928,7 +928,7 @@ async function reconcileRelease(
       throw new ApiError(
         503,
         "reconciliation_persist_failed",
-        "Something went wrong processing this release. Try again.",
+        "The release may have published, but we could not save its status. Check the release status before trying reconcile again.",
         { cause },
       );
     }
@@ -936,7 +936,7 @@ async function reconcileRelease(
       throw new ApiError(
         409,
         "release_reconciliation_raced",
-        "This release is already being processed. Try again in a moment.",
+        "This release is already being processed. Check its status in a moment.",
       );
     }
     emitReleaseTerminal(
@@ -953,7 +953,7 @@ async function reconcileRelease(
       throw new ApiError(
         409,
         "release_reconciliation_raced",
-        "This release is already being processed. Try again in a moment.",
+        "This release is already being processed. Check its status in a moment.",
       );
     }
     return Response.json(releaseResponse(current));

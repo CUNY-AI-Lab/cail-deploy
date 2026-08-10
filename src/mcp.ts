@@ -309,7 +309,11 @@ export async function readMcpResponseText(
   const reader = response.body.getReader();
   const deadlineError =
     externalDeadlineError ??
-    new ApiError(504, "mcp_operation_timeout", "That took too long. Try again.");
+    new ApiError(
+      504,
+      "mcp_operation_timeout",
+      "That took too long. For release writes, check the release status first, then reuse the same Idempotency-Key if you need to retry.",
+    );
   const deadlineController = externalDeadlineSignal ? undefined : new AbortController();
   const timeoutHandle = deadlineController
     ? setTimeout(() => deadlineController.abort(deadlineError), timeoutMs)
@@ -408,7 +412,11 @@ interface McpOperation {
 }
 
 function operationTimeoutError(): ApiError {
-  return new ApiError(504, "mcp_operation_timeout", "That took too long. Try again.");
+  return new ApiError(
+    504,
+    "mcp_operation_timeout",
+    "That took too long. For release writes, check the release status first, then reuse the same Idempotency-Key if you need to retry.",
+  );
 }
 
 function createMcpOperation(callerSignal: AbortSignal, deadlineMs: number): McpOperation {

@@ -57,9 +57,9 @@ describe("CAIL identity boundary", () => {
   });
 
   test("reports an unusable key set as unavailable rather than a bad credential", async () => {
-    // 4.6.0 treats an empty or duplicate-`kid` key set as a token concern, so
-    // every user saw 401 during a bad JWKS rotation while peer services
-    // correctly reported 503. A caller cannot fix an operator error.
+    // Identity 5.2.2 treats an empty or duplicate-`kid` key set as a config
+    // error, so every user gets 503 during a bad JWKS rotation. A caller cannot
+    // fix an operator error.
     const issuer = await createTestIdentityIssuer();
     const token = await issuer.mintIdentityJwt({
       audience,

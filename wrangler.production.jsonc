@@ -1,9 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  // Staging-trust fleet deployment: identity verification is pinned to the
-  // staging issuer lane, so CAIL_ENVIRONMENT is honestly "staging". The
-  // canonical-issuer production classification arrives with the identity
-  // cutover, not before.
+  // This fleet uses the standalone CAIL Doorway issuer. CAIL_ENVIRONMENT stays
+  // "staging" for resource identity and is independent of the exact issuer URL.
   "name": "kale-release-control-plane",
   "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
   "main": "src/index.ts",
@@ -17,7 +15,7 @@
     "CAIL_ENVIRONMENT": "staging",
     "SERVICE_AUDIENCE": "cail:deploy",
     "PUBLIC_BASE_URL": "https://kale-release-control-plane.ailab-452.workers.dev",
-    "CAIL_IDENTITY_ISSUER": "https://tools.cuny.qzz.io/cail-sso",
+    "CAIL_IDENTITY_ISSUER": "https://cail-doorway.ailab-452.workers.dev/cail-sso",
     "RUN_ID": "staging",
     "WFP_ACCOUNT_ID": "452c33847cf5cb1e46f391fca32fd1b5",
     "WFP_NAMESPACE": "kale-release-control-plane"
@@ -41,7 +39,7 @@
       "class_name": "ReleaseWorkflow"
     }
   ]
-  // CAIL_IDENTITY_JWKS is a deployment secret (staging public JWKS).
+  // CAIL_IDENTITY_JWKS is a deployment secret (standalone Doorway public JWKS).
   // CLOUDFLARE_API_TOKEN (the isolated WfP publisher token) is a deployment
   // secret provisioned separately; publication is unavailable until it is set.
 }

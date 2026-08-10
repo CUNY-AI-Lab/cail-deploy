@@ -872,7 +872,8 @@ describe("MCP tool argument boundary", () => {
     expect(apiErrorSnapshot(error)).toEqual({
       status: 504,
       code: "mcp_operation_timeout",
-      message: "That took too long. Try again.",
+      message:
+        "That took too long. For release writes, check the release status first, then reuse the same Idempotency-Key if you need to retry.",
     });
     await Bun.sleep(0);
     expect(cancelCount).toBe(1);
@@ -1155,7 +1156,8 @@ describe("MCP tool argument boundary", () => {
     expect(JSON.parse(payload.result.content[0].text)).toEqual({
       error: {
         code: "mcp_operation_timeout",
-        message: "That took too long. Try again.",
+        message:
+          "That took too long. For release writes, check the release status first, then reuse the same Idempotency-Key if you need to retry.",
         requestId,
       },
     });
@@ -1257,7 +1259,8 @@ describe("MCP tool argument boundary", () => {
       expect(JSON.parse(payload.result.content[0].text)).toEqual({
         error: {
           code: "mcp_operation_timeout",
-          message: "That took too long. Try again.",
+          message:
+            "That took too long. For release writes, check the release status first, then reuse the same Idempotency-Key if you need to retry.",
           requestId,
         },
       });

@@ -126,7 +126,8 @@ describe("release Workflow recovery", () => {
     expect(apiErrorSnapshot(captured)).toEqual({
       status: 503,
       code: "workflow_start_failed",
-      message: "We saved your release but couldn't start it. Check back shortly.",
+      message:
+        "We saved your release but couldn't start it. Check the release status first, then reuse the same Idempotency-Key if you need to retry.",
     });
     const cause = (captured as Error).cause;
     expect(cause).toBeInstanceOf(AggregateError);
@@ -179,7 +180,8 @@ describe("release Workflow recovery", () => {
     expect(apiErrorSnapshot(captured)).toEqual({
       status: 503,
       code: "workflow_start_failed",
-      message: "We saved your release but couldn't start it. Check back shortly.",
+      message:
+        "We saved your release but couldn't start it. Check the release status first, then reuse the same Idempotency-Key if you need to retry.",
     });
     const cause = (captured as Error).cause as AggregateError;
     expect(cause).toBeInstanceOf(AggregateError);

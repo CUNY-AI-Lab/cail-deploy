@@ -1,4 +1,4 @@
-import { CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER } from "@cuny-ai-lab/cail-identity";
+import { CAIL_CANONICAL_ISSUER } from "@cuny-ai-lab/cail-identity";
 
 /**
  * The issuers this deployment is allowed to be configured with.
@@ -10,30 +10,21 @@ import { CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER } from "@cuny-ai-lab/cail-id
  * point issuer and JWKS at an attacker pair and this service would verify
  * tokens minted by it.
  *
- * The first fix pinned the list to the two canonical CAIL issuers in code. That
+ * The first fix pinned the list to the canonical CAIL issuer in code. That
  * closed the tautology and broke something real: an isolated run mints tokens
  * from its own run-scoped issuer with its own JWKS, and had no way left to say
  * so. This surfaced on the Gateway, whose practice deployment rejected every
  * fixture JWT while its API-key path kept working. No test caught it there or
  * here, because the tests were written to agree with the change.
  *
- * The shape here is the ordinary one for a resource server that accepts more
- * than one issuer: an explicit trusted-issuer allowlist supplied as
- * configuration, scoped to the environment the deployment belongs to. Spring's
- * `JwtIssuerAuthenticationManagerResolver` is the same idea — a map whose keys
- * are the allowed issuers — and RFC 8725 is the underlying requirement to check
- * `iss` against a trusted set rather than believing the claim.
- *
  * Two properties are deliberate:
  *
- *   - **Production is locked by default.** Declaring nothing yields the two
- *     canonical CAIL issuers, so a deployment cannot be pointed somewhere else
+ *   - **Production is locked by default.** Declaring nothing yields the
+ *     canonical CAIL issuer, so a deployment cannot be pointed somewhere else
  *     by omission. Trusting anything else takes a deliberate, auditable line of
  *     configuration.
- *   - **An environment trusts only its own issuers.** The practice run declares
- *     its run-scoped issuer and nothing else, rather than adding it alongside
- *     production. A lower environment that also trusted the production issuer
- *     would be one JWKS change away from accepting production identities.
+ *   - **An environment trusts only its own issuer.** The practice run declares
+ *     its run-scoped issuer instead of production. Issuer unions are rejected.
  *
  * Malformed configuration yields an empty list, which the primitive rejects as
  * `issuer_unsupported`. Falling back to the default would silently move the
@@ -41,13 +32,14 @@ import { CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER } from "@cuny-ai-lab/cail-id
  */
 
 export interface IdentityIssuerEnv {
-  /** Comma-separated exact issuers. Absent means the canonical CAIL pair. */
-  CAIL_TRUSTED_IDENTITY_ISSUERS?: string;
+  /** One exact issuer. Absent means the canonical CAIL issuer. */
+  CAIL_TRUSTED_IDENTITY_ISSUER?: string;
 }
 
-const DEFAULT_TRUSTED_ISSUERS: readonly string[] = [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER];
+const DEFAULT_TRUSTED_ISSUERS: readonly string[] = [CAIL_CANONICAL_ISSUER];
 
 function isExactIssuer(value: string): boolean {
+  if (value.includes(",")) return false;
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -73,7 +65,7 @@ function isExactIssuer(value: string): boolean {
 }
 
 export function trustedIdentityIssuers(env: IdentityIssuerEnv): readonly string[] {
-  const raw = env.CAIL_TRUSTED_IDENTITY_ISSUERS;
+  const raw = env.CAIL_TRUSTED_IDENTITY_ISSUER;
   // Absent means "not configured": take the canonical defaults. Present but
   // empty is a different statement and must not be read as absent — a template
   // that renders a missing value as "" would otherwise silently restore trust in
@@ -83,9 +75,5 @@ export function trustedIdentityIssuers(env: IdentityIssuerEnv): readonly string[
   const declared = raw.trim();
   if (declared === "") return [];
 
-  const entries = declared.split(",").map((entry) => entry.trim());
-  if (entries.some((entry) => !isExactIssuer(entry))) return [];
-
-  const unique = [...new Set(entries)];
-  return unique.length === entries.length ? unique : [];
+  return isExactIssuer(declared) ? [declared] : [];
 }

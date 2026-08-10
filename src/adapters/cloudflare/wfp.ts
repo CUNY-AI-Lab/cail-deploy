@@ -12,7 +12,7 @@ function ambiguousResult(cause?: unknown): ApiError {
   return new ApiError(
     502,
     "publication_ambiguous",
-    "We could not confirm whether this release published. Check back shortly.",
+    "We could not confirm whether this release published. Check the release status. If it is still publishing, use the reconcile action.",
     cause === undefined ? undefined : { cause },
   );
 }
@@ -208,7 +208,7 @@ export async function publishWorker(
     throw new ApiError(
       502,
       "publication_ambiguous",
-      "We could not confirm whether this release published. Check back shortly.",
+      "We could not confirm whether this release published. Check the release status. If it is still publishing, use the reconcile action.",
       { cause },
     );
   }
