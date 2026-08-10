@@ -86,7 +86,7 @@ export async function ensureWorkflowInstance(
       throw new ApiError(
         503,
         "workflow_start_failed",
-        "We saved your release but couldn't start it. Check back shortly.",
+        "We saved your release but couldn't start it. Check the release status first, then reuse the same Idempotency-Key if you need to retry.",
         {
           cause: new AggregateError(
             [createCause, recoveryCause],
@@ -816,7 +816,7 @@ export async function sendApprovalEvent(
     throw new ApiError(
       503,
       "approval_delivery_failed",
-      "We saved your approval but couldn't finish applying it. Try again.",
+      "We saved your approval but couldn't finish applying it. Check the release status first, then reuse the same Idempotency-Key if you need to retry.",
       { cause },
     );
   }

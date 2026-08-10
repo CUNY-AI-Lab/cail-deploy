@@ -21,7 +21,7 @@
   "dependencies": {
     "@cloudflare/worker-bundler": "0.2.2",
     "@cloudflare/workers-oauth-provider": "0.5.0",
-    "@cuny-ai-lab/cail-identity": "file:vendor/cuny-ai-lab-cail-identity-4.6.0.tgz",
+    "@cuny-ai-lab/cail-identity": "5.2.2",
     "@cuny-ai-lab/cail-log": "file:vendor/cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz",
     "@hono/node-server": "2.0.12",
     "@modelcontextprotocol/client": "2.0.0",

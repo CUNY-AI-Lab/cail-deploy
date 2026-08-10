@@ -1,20 +1,21 @@
-import { describe, expect, test } from "bun:test";
-import {
-  CAIL_CANONICAL_ISSUER,
-  CAIL_STAGING_ISSUER,
-  parseIdentityConfig,
-} from "@cuny-ai-lab/cail-identity";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { CAIL_CANONICAL_ISSUER, loadIdentityVerifierConfig } from "@cuny-ai-lab/cail-identity";
+import { createTestIdentityIssuer } from "@cuny-ai-lab/cail-identity/testing";
 import { trustedIdentityIssuers } from "../src/identity-issuers";
 
-// Deploy is pinned to the reviewed historical Identity 4.6.0, whose config
-// boundary is the synchronous `parseIdentityConfig`. The allowlist semantics
-// exercised here are the same ones the Identity 5 consumers rely on.
+// The allowlist is the authority passed to Identity 5.2.2's verifier-config
+// loader.
 const RUN_ISSUER = "https://run.identity.invalid/cail-sso";
-const DEFAULTS = [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER];
-const JWKS = JSON.stringify({ keys: [] });
+const DEFAULTS = [CAIL_CANONICAL_ISSUER];
+const AUDIENCE = "cail:deploy";
+let jwks: string;
+
+beforeAll(async () => {
+  jwks = (await createTestIdentityIssuer({ issuer: RUN_ISSUER })).jwksJson;
+});
 
 describe("trustedIdentityIssuers", () => {
-  test("locks a deployment to the canonical issuers when nothing is declared", () => {
+  test("locks a deployment to the canonical issuer when nothing is declared", () => {
     expect(trustedIdentityIssuers({})).toEqual(DEFAULTS);
   });
 
@@ -22,19 +23,18 @@ describe("trustedIdentityIssuers", () => {
   // own issuer INSTEAD OF production, not in addition to it.
   test("replaces the defaults rather than extending them", () => {
     const trusted = trustedIdentityIssuers({
-      CAIL_TRUSTED_IDENTITY_ISSUERS: RUN_ISSUER,
+      CAIL_TRUSTED_IDENTITY_ISSUER: RUN_ISSUER,
     });
     expect(trusted).toEqual([RUN_ISSUER]);
     expect(trusted).not.toContain(CAIL_CANONICAL_ISSUER);
-    expect(trusted).not.toContain(CAIL_STAGING_ISSUER);
   });
 
-  test("accepts several issuers and tolerates surrounding whitespace", () => {
+  test("rejects an issuer union", () => {
     expect(
       trustedIdentityIssuers({
-        CAIL_TRUSTED_IDENTITY_ISSUERS: ` ${CAIL_CANONICAL_ISSUER} , ${RUN_ISSUER} `,
+        CAIL_TRUSTED_IDENTITY_ISSUER: `${CAIL_CANONICAL_ISSUER},${RUN_ISSUER}`,
       }),
-    ).toEqual([CAIL_CANONICAL_ISSUER, RUN_ISSUER]);
+    ).toEqual([]);
   });
 
   // Empty is not "unrestricted": the primitive rejects an empty list, so a
@@ -51,7 +51,7 @@ describe("trustedIdentityIssuers", () => {
       `${RUN_ISSUER},not-a-url`,
     ];
     for (const value of malformed) {
-      expect(trustedIdentityIssuers({ CAIL_TRUSTED_IDENTITY_ISSUERS: value })).toEqual([]);
+      expect(trustedIdentityIssuers({ CAIL_TRUSTED_IDENTITY_ISSUER: value })).toEqual([]);
     }
   });
 
@@ -60,7 +60,7 @@ describe("trustedIdentityIssuers", () => {
     // missing value as "" must not silently restore the production issuers, and
     // an operator clearing the variable is withdrawing trust, not defaulting.
     for (const value of ["", "   "]) {
-      expect(trustedIdentityIssuers({ CAIL_TRUSTED_IDENTITY_ISSUERS: value })).toEqual([]);
+      expect(trustedIdentityIssuers({ CAIL_TRUSTED_IDENTITY_ISSUER: value })).toEqual([]);
     }
   });
 
@@ -70,59 +70,57 @@ describe("trustedIdentityIssuers", () => {
     // primitive refuses — a gate disagreeing with the thing it guards.
     expect(
       trustedIdentityIssuers({
-        CAIL_TRUSTED_IDENTITY_ISSUERS: "https://issuer.example/tenant/",
+        CAIL_TRUSTED_IDENTITY_ISSUER: "https://issuer.example/tenant/",
       }),
     ).toEqual(["https://issuer.example/tenant/"]);
     expect(
       trustedIdentityIssuers({
-        CAIL_TRUSTED_IDENTITY_ISSUERS: "https://issuer.example",
+        CAIL_TRUSTED_IDENTITY_ISSUER: "https://issuer.example",
       }),
     ).toEqual([]);
   });
 
-  test("fails closed on a repeated issuer", () => {
-    expect(
-      trustedIdentityIssuers({
-        CAIL_TRUSTED_IDENTITY_ISSUERS: `${RUN_ISSUER},${RUN_ISSUER}`,
-      }),
-    ).toEqual([]);
-  });
 });
 
 describe("the primitive honours the list this produces", () => {
   const load = (trusted: readonly string[], issuer: string) =>
-    parseIdentityConfig({ jwks: JWKS, issuer, supportedIssuers: trusted });
-
-  test("parses when the configured issuer is declared trusted", () => {
-    const declared = trustedIdentityIssuers({
-      CAIL_TRUSTED_IDENTITY_ISSUERS: RUN_ISSUER,
+    loadIdentityVerifierConfig({
+      jwks,
+      issuer,
+      expectedAudience: AUDIENCE,
+      supportedIssuers: trusted,
     });
-    expect(load(declared, RUN_ISSUER).ok).toBe(true);
+
+  test("loads when the configured issuer is declared trusted", async () => {
+    const declared = trustedIdentityIssuers({
+      CAIL_TRUSTED_IDENTITY_ISSUER: RUN_ISSUER,
+    });
+    expect((await load(declared, RUN_ISSUER)).ok).toBe(true);
   });
 
-  test("refuses the canonical issuer on a deployment scoped to the run", () => {
+  test("refuses the canonical issuer on a deployment scoped to the run", async () => {
     const declared = trustedIdentityIssuers({
-      CAIL_TRUSTED_IDENTITY_ISSUERS: RUN_ISSUER,
+      CAIL_TRUSTED_IDENTITY_ISSUER: RUN_ISSUER,
     });
-    expect(load(declared, CAIL_CANONICAL_ISSUER)).toMatchObject({
+    await expect(load(declared, CAIL_CANONICAL_ISSUER)).resolves.toMatchObject({
       ok: false,
       reason: "issuer_unsupported",
     });
   });
 
-  test("refuses the run issuer when nothing is declared", () => {
-    expect(load(trustedIdentityIssuers({}), RUN_ISSUER)).toMatchObject({
+  test("refuses the run issuer when nothing is declared", async () => {
+    await expect(load(trustedIdentityIssuers({}), RUN_ISSUER)).resolves.toMatchObject({
       ok: false,
       reason: "issuer_unsupported",
     });
   });
 
-  test("refuses everything when the declaration is malformed", () => {
+  test("refuses everything when the declaration is malformed", async () => {
     const declared = trustedIdentityIssuers({
-      CAIL_TRUSTED_IDENTITY_ISSUERS: "not-a-url",
+      CAIL_TRUSTED_IDENTITY_ISSUER: "not-a-url",
     });
     expect(declared).toEqual([]);
-    expect(load(declared, RUN_ISSUER)).toMatchObject({
+    await expect(load(declared, RUN_ISSUER)).resolves.toMatchObject({
       ok: false,
       reason: "issuer_unsupported",
     });

@@ -16,7 +16,7 @@ export const workerHandler = {
         // service in rotation through an identity outage while every
         // authenticated request failed, and made the fleet's probes disagree
         // about whether identity was healthy.
-        const ready = loggingConfigured && identityReady(env);
+        const ready = loggingConfigured && (await identityReady(env));
         return Response.json(
           {
             ok: ready,

@@ -372,7 +372,8 @@ describe("Cloudflare volatile boundaries", () => {
     ).rejects.toMatchObject({
       status: 503,
       code: "approval_delivery_failed",
-      message: "We saved your approval but couldn't finish applying it. Try again.",
+      message:
+        "We saved your approval but couldn't finish applying it. Check the release status first, then reuse the same Idempotency-Key if you need to retry.",
       cause: providerFailure,
     });
     expect(sendEvent).toHaveBeenCalledWith({

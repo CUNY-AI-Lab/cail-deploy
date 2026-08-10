@@ -47,7 +47,7 @@ Reference: [Cloudflare Agents SDK v0.20.0 and MCP SDK v2](https://developers.clo
 
 ## Scope decisions
 
-GitHub, repository ownership, webhooks, check runs, installation tokens, PATs, email/admin authorization, AWS dispatch, and old identifiers are absent. Linux/Sandbox builds are deferred until a first Linux-only artifact enters the integration scenario. Project D1/R2 provisioning and project secrets are deferred; this slice rejects all requested bindings, which keeps publication isolated without inventing a resource policy engine. One run-scoped KV binding stores only OAuth registration/grant/token protocol state. The isolated deployment verifies an offline run-scoped CAIL identity issuer with the accepted identity 4.6.0 source package. The local bearer map exists only for component tests.
+GitHub, repository ownership, webhooks, check runs, installation tokens, PATs, email/admin authorization, AWS dispatch, and old identifiers are absent. Linux/Sandbox builds are deferred until a first Linux-only artifact enters the integration scenario. Project D1/R2 provisioning and project secrets are deferred; this slice rejects all requested bindings, which keeps publication isolated without inventing a resource policy engine. One run-scoped KV binding stores only OAuth registration/grant/token protocol state. The isolated deployment verifies an offline run-scoped CAIL identity issuer with the published Identity 5.2.2 package. The local bearer map exists only for component tests.
 
 ## Recovery and rollback
 
