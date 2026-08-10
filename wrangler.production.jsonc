@@ -16,7 +16,6 @@
     "AUTH_MODE": "cail-jwt",
     "CAIL_ENVIRONMENT": "staging",
     "SERVICE_AUDIENCE": "cail:deploy",
-    "SERVICE_RELEASE": "112d5c83a041a5b3f5bc8f46d2af863780a3165f",
     "PUBLIC_BASE_URL": "https://kale-release-control-plane.ailab-452.workers.dev",
     "CAIL_IDENTITY_ISSUER": "https://tools.cuny.qzz.io/cail-sso",
     "RUN_ID": "staging",
