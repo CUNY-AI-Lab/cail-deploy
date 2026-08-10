@@ -30,4 +30,9 @@ describe("Wrangler deployment environment bindings", () => {
     const config = await loadConfig("wrangler.jsonc");
     expect(config.env?.production?.vars?.CAIL_ENVIRONMENT).toBe("production");
   });
+
+  test("the production profile does not pin a source revision", async () => {
+    const source = await Bun.file("wrangler.production.jsonc").text();
+    expect(source).not.toMatch(/"SERVICE_RELEASE"/u);
+  });
 });
