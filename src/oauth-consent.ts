@@ -78,23 +78,46 @@ function escapeHtml(value: string): string {
   });
 }
 
+/**
+ * The page's CSP is `default-src 'none'`, so no webfont can ever load here.
+ * The Lab's Outfit/Inter are therefore deliberately absent rather than named
+ * and silently substituted: this uses the platform UI face at brand weights
+ * and colors. Widening the CSP for typography is not worth it on the page
+ * where someone grants an app access to their projects.
+ */
 const CONSENT_PAGE_STYLE = `
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#fafcf8;color:#333;font-family:'Inter',ui-sans-serif,system-ui,sans-serif}
-main{max-width:420px;width:100%;margin:24px;padding:32px;background:#fff;border:1px solid #e5e7eb;border-radius:12px}
-h1{margin:0 0 12px;font-family:'Outfit',ui-sans-serif,system-ui,sans-serif;font-size:1.35rem;font-weight:600}
-p{margin:0 0 24px;line-height:1.5}
-form{display:flex;gap:12px}
-button{font:inherit;padding:10px 24px;border-radius:999px;cursor:pointer}
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#fafcf8;color:#333;font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:420px;width:100%;margin:24px;background:#fff;border:1px solid #e5e7eb;border-radius:14px;box-shadow:0 1px 2px rgba(51,51,51,.04),0 8px 24px rgba(51,51,51,.06);overflow:hidden}
+.topline{height:5px;background:linear-gradient(90deg,#1d3a83 0 33%,#3b73e6 33% 66%,#2fb8d6 66%)}
+.body{padding:28px}
+.eyebrow{margin:0 0 10px;color:#2a6fb8;font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase}
+h1{margin:0 0 14px;font-size:1.4rem;line-height:1.25;font-weight:700;letter-spacing:-.02em;text-wrap:balance}
+p{margin:0 0 12px}
+ul{margin:0 0 24px;padding-left:1.15rem;color:#4b5563}
+li{margin:.3rem 0}
+form{display:flex;flex-wrap:wrap;gap:12px}
+button{font:inherit;font-weight:600;padding:10px 24px;border-radius:999px;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
 button[value=approve]{background:#3b73e6;border:1px solid #3b73e6;color:#fff}
+button[value=approve]:hover{background:#2a6fb8;border-color:#2a6fb8}
 button[value=deny]{background:transparent;border:1px solid #d1d5db;color:#333}
+button[value=deny]:hover{border-color:#9ca3af}
+button:focus-visible{outline:2px solid #3b73e6;outline-offset:2px}
+@media (prefers-reduced-motion:reduce){button{transition:none}}
 `.trim();
 
 function consentPage(requestUrl: string, clientName: string, nonce: string): Response {
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Kale Deploy — approve access</title><style>${CONSENT_PAGE_STYLE}</style></head>
-<body><main><h1>Let ${escapeHtml(clientName)} deploy your projects?</h1><p>This app will be able to create projects and publish releases for you.</p>
+<body><main><div class="topline"></div><div class="body">
+<p class="eyebrow">CUNY AI Lab &middot; Kale Deploy</p>
+<h1>Let ${escapeHtml(clientName)} deploy your projects?</h1>
+<p>If you allow this, the app will be able to:</p>
+<ul><li>Create projects</li><li>Upload and publish new versions</li><li>Approve, check, and roll back releases</li></ul>
 <form method="post" action="${escapeHtml(requestUrl)}"><input type="hidden" name="consentNonce" value="${escapeHtml(nonce)}">
-<button type="submit" name="decision" value="approve">Allow</button><button type="submit" name="decision" value="deny">Cancel</button></form></main></body></html>`;
+<button type="submit" name="decision" value="approve">Allow</button><button type="submit" name="decision" value="deny">Cancel</button></form>
+</div></main></body></html>`;
   return new Response(html, {
     status: 200,
     headers: {
