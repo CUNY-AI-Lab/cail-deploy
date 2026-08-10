@@ -206,7 +206,7 @@ describe("owned API error boundary", () => {
 
     expect(response.status).toBe(400);
     expect(error.code).toBe("invalid_request_id");
-    expect(error.message).toBe("X-CAIL-Request-Id must be a UUID.");
+    expect(error.message).toBe("The X-CAIL-Request-Id header must be a UUID.");
     expect(error.requestId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     );

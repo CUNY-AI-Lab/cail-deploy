@@ -12,7 +12,7 @@ function ambiguousResult(cause?: unknown): ApiError {
   return new ApiError(
     502,
     "publication_ambiguous",
-    "Workers for Platforms returned an indeterminate publication result.",
+    "We could not confirm whether this release published. Check back shortly.",
     cause === undefined ? undefined : { cause },
   );
 }
@@ -175,7 +175,7 @@ export async function publishWorker(
     throw new ApiError(
       503,
       "publisher_not_configured",
-      "The isolated publisher credential is not configured.",
+      "Kale Deploy isn't set up correctly right now.",
     );
   }
   const timeout = publicationTimeoutMs(env.WFP_PUBLISH_TIMEOUT_MS);
@@ -208,14 +208,14 @@ export async function publishWorker(
     throw new ApiError(
       502,
       "publication_ambiguous",
-      "Workers for Platforms did not return a publication result.",
+      "We could not confirm whether this release published. Check back shortly.",
       { cause },
     );
   }
   if (!response.ok) {
     discardResponseBody(response);
     const code = response.status >= 500 ? "publication_ambiguous" : "publication_rejected";
-    throw new ApiError(502, code, "Workers for Platforms did not accept the prepared publication.");
+    throw new ApiError(502, code, "We could not publish this release.");
   }
   let envelope: unknown;
   try {

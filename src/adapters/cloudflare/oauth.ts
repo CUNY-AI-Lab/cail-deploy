@@ -38,18 +38,14 @@ class McpOAuthApiHandler extends WorkerEntrypoint<Env, OAuthPrincipalProps> {
     try {
       requestId = requestIdForRequest(request);
       if (request.headers.has("X-CAIL-Identity-JWT")) {
-        throw new ApiError(
-          401,
-          "credential_ambiguity",
-          "Provide exactly one accepted identity credential.",
-        );
+        throw new ApiError(401, "credential_ambiguity", "Send one sign-in credential, not two.");
       }
       const principalResult = oauthPrincipalFromProps(this.ctx.props as unknown);
       if (principalResult.kind === "insufficient_scope") {
         return insufficientScopeResponse(resourceMetadataUrl(this.env), requestId);
       }
       if (principalResult.kind === "invalid") {
-        throw new ApiError(401, "invalid_credential", "The OAuth access token is invalid.");
+        throw new ApiError(401, "invalid_credential", "Your sign-in isn't valid. Sign in again.");
       }
       return withRequestId(
         await handleMcpWithPrincipal(request, this.env, requestId, principalResult.principal),
@@ -69,7 +65,11 @@ const oauthDefaultHandler = {
       try {
         requestId = requestIdForRequest(request);
         if (!env.OAUTH_PROVIDER) {
-          throw new ApiError(503, "oauth_not_configured", "OAuth is not configured.");
+          throw new ApiError(
+            503,
+            "oauth_not_configured",
+            "Sign-in is unavailable right now. Try again shortly.",
+          );
         }
         return withRequestId(
           await handleOAuthAuthorize(request, env, env.OAUTH_PROVIDER),
@@ -106,7 +106,7 @@ export function createOAuthProviderOptions(env: Env): OAuthProviderOptions<Env> 
       authorization_servers: [baseUrl],
       scopes_supported: [OAUTH_REQUIRED_SCOPE],
       bearer_methods_supported: ["header"],
-      resource_name: "Kale Deploy MCP",
+      resource_name: "Kale Deploy",
     },
   };
 }
@@ -128,7 +128,7 @@ export const oauthWorkerHandler = {
         throw new ApiError(
           503,
           "logging_configuration_error",
-          "Operational logging configuration is unavailable.",
+          "This service isn't available right now.",
         );
       }
       if (
@@ -138,11 +138,7 @@ export const oauthWorkerHandler = {
       ) {
         return withRequestId(
           errorResponse(
-            new ApiError(
-              401,
-              "credential_ambiguity",
-              "Provide exactly one accepted identity credential.",
-            ),
+            new ApiError(401, "credential_ambiguity", "Send one sign-in credential, not two."),
             requestId,
           ),
           requestId,

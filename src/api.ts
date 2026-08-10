@@ -60,7 +60,7 @@ export function previewTimeoutMs(raw: string | undefined): number {
     throw new ApiError(
       503,
       "preview_configuration_error",
-      `Preview timeout must be an integer between ${MIN_PREVIEW_TIMEOUT_MS} and ${MAX_PREVIEW_TIMEOUT_MS} milliseconds.`,
+      "Kale Deploy isn't set up correctly right now.",
     );
   }
   return value;
@@ -86,7 +86,7 @@ export async function ensureWorkflowInstance(
       throw new ApiError(
         503,
         "workflow_start_failed",
-        "The release was saved but its Workflow could not be confirmed.",
+        "We saved your release but couldn't start it. Check back shortly.",
         {
           cause: new AggregateError(
             [createCause, recoveryCause],
@@ -115,7 +115,7 @@ function requiredIdempotencyKey(request: Request): string {
     throw new ApiError(
       400,
       "idempotency_key_required",
-      "A valid Idempotency-Key header is required.",
+      "The Idempotency-Key header is missing or invalid.",
     );
   }
   return key;
@@ -131,7 +131,7 @@ async function jsonBody(request: Request): Promise<unknown> {
 
 function parsedBody<T>(result: { success: true; data: T } | { success: false }): T {
   if (!result.success)
-    throw new ApiError(400, "invalid_request", "The request body does not match the contract.");
+    throw new ApiError(400, "invalid_request", "The request body doesn't match what's expected.");
   return result.data;
 }
 
@@ -206,7 +206,7 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
     throw new ApiError(
       413,
       "artifact_size_invalid",
-      "The artifact must be between 1 byte and 2 MiB.",
+      "Your upload must be between 1 byte and 2 MiB.",
     );
   }
 
@@ -214,7 +214,7 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
     throw new ApiError(
       413,
       "artifact_size_invalid",
-      "The artifact must be between 1 byte and 2 MiB.",
+      "Your upload must be between 1 byte and 2 MiB.",
     );
   }
 
@@ -238,7 +238,7 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
         throw new ApiError(
           413,
           "artifact_size_invalid",
-          "The artifact must be between 1 byte and 2 MiB.",
+          "Your upload must be between 1 byte and 2 MiB.",
         );
       }
       chunks.push(value);
@@ -251,7 +251,7 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
     throw new ApiError(
       413,
       "artifact_size_invalid",
-      "The artifact must be between 1 byte and 2 MiB.",
+      "Your upload must be between 1 byte and 2 MiB.",
     );
   }
 
@@ -323,7 +323,7 @@ async function uploadRevision(
     throw new ApiError(
       400,
       "content_digest_required",
-      "Content-Digest must contain one SHA-256 digest.",
+      "The Content-Digest header must contain one SHA-256 digest.",
     );
   }
   const bytes = await readArtifactBody(request, requestId);
@@ -335,14 +335,14 @@ async function uploadRevision(
   try {
     artifactJson = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
-    throw new ApiError(400, "artifact_json_invalid", "The artifact must be valid JSON.");
+    throw new ApiError(400, "artifact_json_invalid", "Your upload must be valid JSON.");
   }
   const artifact = parsedBody(artifactSchema.safeParse(artifactJson));
   if (artifact.requestedBindings.length > 0) {
     throw new ApiError(
       422,
       "binding_not_supported",
-      "This isolated release slice does not attach project resources or secrets.",
+      "This environment doesn't attach project resources or secrets.",
     );
   }
 
@@ -370,7 +370,7 @@ async function uploadRevision(
       throw new ApiError(
         409,
         "artifact_store_inconsistent",
-        "The immutable revision could not be confirmed after a concurrent upload.",
+        "Something went wrong saving your upload. Try again.",
       );
     }
     await requireConsistentRevisionArtifact(env, winner);
@@ -419,7 +419,7 @@ async function requireConsistentRevisionArtifact(env: Env, revision: RevisionRow
     throw new ApiError(
       409,
       "artifact_store_inconsistent",
-      "The immutable revision record and artifact store do not agree.",
+      "Something went wrong saving your upload. Try again.",
     );
   }
   const artifact = await env.ARTIFACTS.head(expectedKey);
@@ -437,7 +437,7 @@ async function requireConsistentRevisionArtifact(env: Env, revision: RevisionRow
     throw new ApiError(
       409,
       "artifact_store_inconsistent",
-      "The immutable revision record and artifact store do not agree.",
+      "Something went wrong saving your upload. Try again.",
     );
   }
 }
@@ -478,7 +478,7 @@ async function startRelease(
     throw new ApiError(
       409,
       "rollback_source_unavailable",
-      "The source release is not a retained live release.",
+      "You can only roll back to a release that is still live.",
     );
   }
   const revisionId = source?.revision_id ?? releaseBody?.revisionId;
@@ -490,7 +490,7 @@ async function startRelease(
     throw new ApiError(
       403,
       "production_target_denied",
-      "The isolated stack permits preview releases only.",
+      "This environment only supports preview releases.",
     );
   }
   const revision = await getRevision(env, projectId, revisionId);
@@ -515,7 +515,7 @@ async function startRelease(
       throw new ApiError(
         500,
         "idempotency_record_invalid",
-        "The stored release replay record is invalid.",
+        "Something went wrong processing this release. Try again.",
       );
     }
     const replayRelease = await requireRelease(env, projectId, replayReleaseId);
@@ -611,7 +611,7 @@ export async function readReleaseEventHistory(
     throw new ApiError(
       503,
       "release_history_too_large",
-      "The release history exceeds the supported retrieval limit.",
+      "This release's history is too long to show.",
     );
   }
   const events = await db
@@ -644,7 +644,7 @@ export async function readReleaseEventHistory(
     throw new ApiError(
       503,
       "release_history_too_large",
-      "The release history exceeds the supported retrieval limit.",
+      "This release's history is too long to show.",
     );
   }
   return events.results.map((event) => ({
@@ -794,7 +794,7 @@ async function approveRelease(
     throw new ApiError(
       409,
       "release_approval_already_accepted",
-      "A release approval was already accepted.",
+      "This release was already approved.",
     );
   }
   await sendApprovalEvent(env, release, subject);
@@ -816,7 +816,7 @@ export async function sendApprovalEvent(
     throw new ApiError(
       503,
       "approval_delivery_failed",
-      "The approval was saved but Workflow delivery must be retried.",
+      "We saved your approval but couldn't finish applying it. Try again.",
       { cause },
     );
   }
@@ -836,7 +836,7 @@ async function reconcileRelease(
     throw new ApiError(
       409,
       "release_not_reconcilable",
-      "The release has no ambiguous prepared publication to reconcile.",
+      "There is nothing left to finish on this release.",
     );
   }
   const requestDigest = await sha256Hex(
@@ -861,7 +861,7 @@ async function reconcileRelease(
     throw new ApiError(
       503,
       "reconciliation_authority_unavailable",
-      "Reconciliation authority could not be established.",
+      "Something went wrong processing this release. Try again.",
       { cause },
     );
   }
@@ -871,7 +871,7 @@ async function reconcileRelease(
       throw new ApiError(
         409,
         "release_not_reconcilable",
-        "The release has no ambiguous prepared publication to reconcile.",
+        "There is nothing left to finish on this release.",
       );
     }
     return Response.json(releaseResponse(current));
@@ -880,14 +880,14 @@ async function reconcileRelease(
     throw new ApiError(
       409,
       "release_not_reconcilable",
-      "The release has no ambiguous prepared publication to reconcile.",
+      "There is nothing left to finish on this release.",
     );
   }
   if (authority.state === "in_progress") {
     throw new ApiError(
       409,
       "release_reconciliation_in_progress",
-      "The release is already being reconciled.",
+      "This release is already being processed. Try again in a moment.",
     );
   }
 
@@ -896,14 +896,14 @@ async function reconcileRelease(
     throw new ApiError(
       409,
       "prepared_artifact_missing",
-      "The retained prepared artifact is missing.",
+      "The files saved for this release are missing.",
     );
   const json = await retained.text();
   if ((await sha256Hex(json)) !== release.prepared_digest) {
     throw new ApiError(
       409,
       "prepared_digest_mismatch",
-      "The retained prepared artifact failed verification.",
+      "The files saved for this release failed their check.",
     );
   }
 
@@ -928,7 +928,7 @@ async function reconcileRelease(
       throw new ApiError(
         503,
         "reconciliation_persist_failed",
-        "The reconciled publication could not be persisted.",
+        "Something went wrong processing this release. Try again.",
         { cause },
       );
     }
@@ -936,7 +936,7 @@ async function reconcileRelease(
       throw new ApiError(
         409,
         "release_reconciliation_raced",
-        "The release changed before reconciliation could complete.",
+        "This release is already being processed. Try again in a moment.",
       );
     }
     emitReleaseTerminal(
@@ -953,7 +953,7 @@ async function reconcileRelease(
       throw new ApiError(
         409,
         "release_reconciliation_raced",
-        "The release changed before reconciliation could complete.",
+        "This release is already being processed. Try again in a moment.",
       );
     }
     return Response.json(releaseResponse(current));

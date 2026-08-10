@@ -126,7 +126,7 @@ describe("release Workflow recovery", () => {
     expect(apiErrorSnapshot(captured)).toEqual({
       status: 503,
       code: "workflow_start_failed",
-      message: "The release was saved but its Workflow could not be confirmed.",
+      message: "We saved your release but couldn't start it. Check back shortly.",
     });
     const cause = (captured as Error).cause;
     expect(cause).toBeInstanceOf(AggregateError);
@@ -179,7 +179,7 @@ describe("release Workflow recovery", () => {
     expect(apiErrorSnapshot(captured)).toEqual({
       status: 503,
       code: "workflow_start_failed",
-      message: "The release was saved but its Workflow could not be confirmed.",
+      message: "We saved your release but couldn't start it. Check back shortly.",
     });
     const cause = (captured as Error).cause as AggregateError;
     expect(cause).toBeInstanceOf(AggregateError);

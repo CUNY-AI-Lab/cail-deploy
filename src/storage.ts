@@ -113,7 +113,7 @@ function parseReconciliationClaim(value: string): ReconciliationClaim {
     throw new ApiError(
       500,
       "reconciliation_record_invalid",
-      "The stored reconciliation authority is invalid.",
+      "Something went wrong processing this release. Try again.",
       { cause },
     );
   }
@@ -121,7 +121,7 @@ function parseReconciliationClaim(value: string): ReconciliationClaim {
     throw new ApiError(
       500,
       "reconciliation_record_invalid",
-      "The stored reconciliation authority is invalid.",
+      "Something went wrong processing this release. Try again.",
     );
   }
   const record = parsed as Record<string, unknown>;
@@ -145,7 +145,7 @@ function parseReconciliationClaim(value: string): ReconciliationClaim {
   throw new ApiError(
     500,
     "reconciliation_record_invalid",
-    "The stored reconciliation authority is invalid.",
+    "Something went wrong processing this release. Try again.",
   );
 }
 
@@ -194,7 +194,7 @@ export async function acquireReconciliationAuthority(
     throw new ApiError(
       503,
       "reconciliation_configuration_error",
-      "The reconciliation lease is not configured safely.",
+      "Kale Deploy isn't set up correctly right now.",
     );
   }
   const activeResponse = JSON.stringify({ state: "active", requestId });
@@ -241,7 +241,7 @@ export async function acquireReconciliationAuthority(
     throw new ApiError(
       500,
       "reconciliation_record_invalid",
-      "The stored reconciliation authority does not match the retained artifact.",
+      "Something went wrong processing this release. Try again.",
     );
   }
   let claim = parseReconciliationClaim(row.response_json);
@@ -252,7 +252,7 @@ export async function acquireReconciliationAuthority(
     throw new ApiError(
       500,
       "reconciliation_record_invalid",
-      "The stored reconciliation authority has an invalid lease timestamp.",
+      "Something went wrong processing this release. Try again.",
     );
   }
   if (claim.state === "active" && row.lease_expired === 0) {
@@ -308,7 +308,7 @@ export async function acquireReconciliationAuthority(
     throw new ApiError(
       500,
       "reconciliation_record_invalid",
-      "The stored reconciliation authority does not match the retained artifact.",
+      "Something went wrong processing this release. Try again.",
     );
   }
   claim = parseReconciliationClaim(row.response_json);
@@ -320,7 +320,7 @@ export async function acquireReconciliationAuthority(
     throw new ApiError(
       500,
       "reconciliation_record_invalid",
-      "The stored reconciliation authority has an invalid lease timestamp.",
+      "Something went wrong processing this release. Try again.",
     );
   }
   return row.lease_expired === 0 ? { state: "in_progress" } : { state: "blocked" };
@@ -617,14 +617,14 @@ export async function transitionReleaseStatus(
     throw new ApiError(
       500,
       "release_transition_configuration_error",
-      "The release transition has no allowed predecessor state.",
+      "Something went wrong processing this release. Try again.",
     );
   }
   if (options.type.length === 0) {
     throw new ApiError(
       500,
       "release_transition_configuration_error",
-      "The release transition has no event type.",
+      "Something went wrong processing this release. Try again.",
     );
   }
   const terminalStatus = Object.hasOwn(TERMINAL_EVENT_STATUS, options.type)
@@ -634,7 +634,7 @@ export async function transitionReleaseStatus(
     throw new ApiError(
       500,
       "release_transition_configuration_error",
-      "The release transition event does not match its status.",
+      "Something went wrong processing this release. Try again.",
     );
   }
 
@@ -698,7 +698,7 @@ export async function transitionReleaseStatus(
     throw new ApiError(
       500,
       "release_transition_persist_failed",
-      "The release transition did not persist its row and event together.",
+      "Something went wrong processing this release. Try again.",
     );
   }
   return transitionStateAfterFence(env, options.releaseId, options.to, options.type);
@@ -730,7 +730,7 @@ export async function appendReleaseStatus(
     throw new ApiError(
       500,
       "release_transition_configuration_error",
-      `The release transition to ${status} is not configured.`,
+      "Something went wrong processing this release. Try again.",
     );
   }
   return transitionReleaseStatus(env, {
@@ -777,7 +777,7 @@ export async function idempotentResponse(
     throw new ApiError(
       409,
       "idempotency_conflict",
-      "The idempotency key was already used for different input.",
+      "The Idempotency-Key header was already used with different values.",
     );
   }
   return JSON.parse(row.response_json) as unknown;

@@ -109,7 +109,11 @@ async function beginAuthorization(
   const html = await response.text();
   const match = html.match(/name="consentNonce" value="([^"]+)"/u);
   assert(match?.[1], "consent page did not contain an opaque nonce");
-  assert(html.includes("cail:deploy"), "consent page did not name the exact scope");
+  assert(
+    html.includes("deploy your projects?"),
+    "consent page did not ask about deploying projects",
+  );
+  assert(!html.includes("cail:deploy"), "consent page leaked the raw scope");
   return { url, verifier, nonce: match[1] };
 }
 

@@ -12,7 +12,7 @@ export function requestIdForRequest(request: Request): string {
   const supplied = request.headers.get("X-CAIL-Request-Id");
   if (!supplied) return crypto.randomUUID();
   if (!UUID_PATTERN.test(supplied)) {
-    throw new ApiError(400, "invalid_request_id", "X-CAIL-Request-Id must be a UUID.");
+    throw new ApiError(400, "invalid_request_id", "The X-CAIL-Request-Id header must be a UUID.");
   }
   return supplied;
 }

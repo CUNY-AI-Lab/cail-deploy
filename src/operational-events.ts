@@ -19,7 +19,7 @@ export function operationalLogSubject(
       throw new ApiError(
         503,
         "operational_identity_not_configured",
-        "A valid distinct operational pseudonym is required.",
+        "This service isn't available right now.",
       );
     }
     return signedOperationalSubject;

@@ -67,7 +67,7 @@ describe("OAuth Principal handoff", () => {
     expect(response.headers.get("X-CAIL-Request-Id")).toBe(requestId);
     expect(await response.json()).toEqual({
       error: "insufficient_scope",
-      error_description: "The cail:deploy scope is required.",
+      error_description: "This app doesn't have permission to deploy.",
     });
   });
 });

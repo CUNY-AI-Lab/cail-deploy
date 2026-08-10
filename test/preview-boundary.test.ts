@@ -67,14 +67,12 @@ describe("live preview operational boundary", () => {
     expect(previewTimeoutMs(undefined)).toBe(5_000);
     expect(previewTimeoutMs("100")).toBe(100);
     expect(previewTimeoutMs("30000")).toBe(30_000);
-    expect(() => previewTimeoutMs("99")).toThrow(
-      "Preview timeout must be an integer between 100 and 30000 milliseconds.",
-    );
+    expect(() => previewTimeoutMs("99")).toThrow("Kale Deploy isn't set up correctly right now.");
     expect(() => previewTimeoutMs("30001")).toThrow(
-      "Preview timeout must be an integer between 100 and 30000 milliseconds.",
+      "Kale Deploy isn't set up correctly right now.",
     );
     expect(() => previewTimeoutMs("invalid")).toThrow(
-      "Preview timeout must be an integer between 100 and 30000 milliseconds.",
+      "Kale Deploy isn't set up correctly right now.",
     );
   });
 

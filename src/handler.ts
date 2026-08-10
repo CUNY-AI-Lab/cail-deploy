@@ -31,7 +31,7 @@ export const workerHandler = {
         throw new ApiError(
           503,
           "logging_configuration_error",
-          "Operational logging configuration is unavailable.",
+          "This service isn't available right now.",
         );
       }
       return await handleApi(request, env, requestId);
