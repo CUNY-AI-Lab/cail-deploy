@@ -39,6 +39,7 @@ export interface IdentityIssuerEnv {
 const DEFAULT_TRUSTED_ISSUERS: readonly string[] = [CAIL_CANONICAL_ISSUER];
 
 function isExactIssuer(value: string): boolean {
+  if (value.includes(",")) return false;
   let parsed: URL;
   try {
     parsed = new URL(value);

@@ -79,7 +79,6 @@ describe("trustedIdentityIssuers", () => {
       }),
     ).toEqual([]);
   });
-
 });
 
 describe("the primitive honours the list this produces", () => {

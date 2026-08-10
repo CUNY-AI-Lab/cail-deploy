@@ -116,7 +116,8 @@ describe("Cloudflare volatile boundaries", () => {
     expect(captured).toMatchObject({
       status: 502,
       code: "publication_ambiguous",
-      message: "We could not confirm whether this release published. Check back shortly.",
+      message:
+        "We could not confirm whether this release published. Check the release status. If it is still publishing, use the reconcile action.",
     });
     expect((captured as Error).cause).toBeInstanceOf(DOMException);
     expect(((captured as Error).cause as DOMException).name).toBe("TimeoutError");
@@ -201,7 +202,8 @@ describe("Cloudflare volatile boundaries", () => {
       await expect(publishWithResponse(Response.json(envelope))).rejects.toMatchObject({
         status: 502,
         code: "publication_ambiguous",
-        message: "We could not confirm whether this release published. Check back shortly.",
+        message:
+          "We could not confirm whether this release published. Check the release status. If it is still publishing, use the reconcile action.",
       });
     }
     await expect(
@@ -316,7 +318,8 @@ describe("Cloudflare volatile boundaries", () => {
     await Bun.sleep(0);
     expect(captured).toMatchObject({
       code: "publication_ambiguous",
-      message: "We could not confirm whether this release published. Check back shortly.",
+      message:
+        "We could not confirm whether this release published. Check the release status. If it is still publishing, use the reconcile action.",
     });
     expect((captured as Error).cause).toBe(primary);
     expect(cancels).toBe(1);

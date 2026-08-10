@@ -8,7 +8,7 @@
         "@cloudflare/worker-bundler": "0.2.2",
         "@cloudflare/workers-oauth-provider": "0.5.0",
         "@cuny-ai-lab/cail-identity": "5.2.2",
-        "@cuny-ai-lab/cail-log": "file:vendor/cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz",
+        "@cuny-ai-lab/cail-log": "0.6.1",
         "@hono/node-server": "2.0.12",
         "@modelcontextprotocol/client": "2.0.0",
         "@modelcontextprotocol/server": "2.0.0",
@@ -119,7 +119,7 @@
 
     "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@5.2.2", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-identity/5.2.2/fb51ea5800e517cdb5780709e92e6559f6139a5e", { "dependencies": { "jose": "6.2.3" } }, "sha512-IFDLK3CxXlntPMaEjYOziKLCEWRN6FOFuf2tIEAYmt0JHpJaqRnXswsUaxvmW3XQKs0R/yvJ5gCMCm0J9TykrQ=="],
 
-    "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@vendor/cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz", {}],
+    "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@0.6.1", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-log/0.6.1/1b33369223ff745e8647931041a031ea99993680", {}, "sha512-2GkC0DRkXndWW5HVBasUbif1/9F4e3ram4Fkmg1eGi39/WLqgho9e9aROg0ZM89Q2Si3bgUVtv/LAjwuUCp1cw=="],
 
     "@emnapi/core": ["@emnapi/core@1.11.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.2", "tslib": "^2.4.0" } }, "sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ=="],
 
