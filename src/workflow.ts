@@ -63,11 +63,23 @@ async function transitionAllowsProgress(
   return allowedLegacyStatuses.includes(release.status as ReleaseStatus);
 }
 
-function isPreparedStateFenced(value: unknown): boolean {
+function isPreparedStateFenced(value: unknown): value is { outcome: "fenced" } {
   return (
     typeof value === "object" &&
     value !== null &&
     (value as { outcome?: unknown }).outcome === "fenced"
+  );
+}
+
+function isPreparedStatePrepared(
+  value: unknown,
+): value is { outcome: "prepared"; preparedKey: string; preparedDigest: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { outcome?: unknown }).outcome === "prepared" &&
+    typeof (value as { preparedKey?: unknown }).preparedKey === "string" &&
+    typeof (value as { preparedDigest?: unknown }).preparedDigest === "string"
   );
 }
 
@@ -135,7 +147,6 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
               outcome: "prepared" as const,
               preparedKey: source.prepared_key,
               preparedDigest: source.prepared_digest,
-              preparedJson,
             };
           })
         : await step.do("bundle and retain worker", async () => {
@@ -176,26 +187,15 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
             await this.env.ARTIFACTS.put(preparedKey, preparedJson, {
               customMetadata: { projectId, releaseId, revisionId, preparedDigest },
             });
-            return { outcome: "prepared" as const, preparedKey, preparedDigest, preparedJson };
+            return { outcome: "prepared" as const, preparedKey, preparedDigest };
           });
-      if (typeof preparedState !== "object" || preparedState === null) {
-        if (await hasTerminalReleaseOutcome(this.env, releaseId)) return;
-        await requireRelease(this.env, projectId, releaseId);
-        throw new Error("Prepared state is missing from the persisted Workflow output.");
-      }
       if (isPreparedStateFenced(preparedState)) return;
-      // The previous bundle/reuse steps returned these fields without an
-      // `outcome`; preserve that cached shape while keeping current output
-      // types strict.
-      const { preparedKey, preparedDigest } = preparedState as {
-        preparedKey: string;
-        preparedDigest: string;
-      };
-      if (typeof preparedKey !== "string" || typeof preparedDigest !== "string") {
+      if (!isPreparedStatePrepared(preparedState)) {
         if (await hasTerminalReleaseOutcome(this.env, releaseId)) return;
         await requireRelease(this.env, projectId, releaseId);
         throw new Error("Prepared state is incomplete in the persisted Workflow output.");
       }
+      const { preparedKey, preparedDigest } = preparedState;
       const preparedRecorded = await step.do("record prepared artifact", async () => {
         return transitionReleaseStatus(this.env, {
           releaseId,
