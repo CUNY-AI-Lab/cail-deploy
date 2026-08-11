@@ -30,5 +30,87 @@ jobs:
       - name: Validate Wrangler dry bundle
         run: bun run build
 
+  deploy:
+    needs: acceptance
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: kale-release-control-plane-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Confirm this commit is still main
+        run: |
+          set -euo pipefail
+          current_main="$(curl --fail --silent --show-error --max-time 10 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/main" | jq -r '.sha')"
+          test "$current_main" = "$GITHUB_SHA"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Deploy the exact main commit
+        run: |
+          set -euo pipefail
+          bunx wrangler deploy \
+            --config wrangler.production.jsonc \
+            --strict \
+            --tag "$GITHUB_SHA" \
+            --message "Deploy main $GITHUB_SHA"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Read back the serving version
+        run: |
+          set -euo pipefail
+          expected_message="Deploy main $GITHUB_SHA"
+          versions="$(bunx wrangler versions list --config wrangler.production.jsonc --json)"
+          version_id="$(jq -er --arg message "$expected_message" '
+            [.[] | select(.annotations["workers/message"] == $message)] | last | .id
+          ' <<<"$versions")"
+          test "$version_id" != "null"
+          version="$(bunx wrangler versions view "$version_id" --config wrangler.production.jsonc --json)"
+          jq -e --arg sha "$GITHUB_SHA" --arg message "$expected_message" '
+            .annotations["workers/tag"] == $sha and
+            .annotations["workers/message"] == $message
+          ' <<<"$version"
+          deployments="$(bunx wrangler deployments list --config wrangler.production.jsonc --json)"
+          jq -e --arg version "$version_id" '
+            last |
+            (.versions // []) | length == 1 and
+            .[0].version_id == $version and .[0].percentage == 100
+          ' <<<"$deployments"
+          printf 'serving_version=%s\n' "$version_id" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Smoke the public readiness and auth boundaries
+        run: |
+          set -euo pipefail
+          health="$(curl --fail --silent --show-error --max-time 10 \
+            https://kale-release-control-plane.ailab-452.workers.dev/health)"
+          jq -e '
+            .ok == true and
+            .status == "ready" and
+            .service == "kale-release-control-plane" and
+            .contractRevision == "kale.release.v1"
+          ' <<<"$health"
+          body_file="$(mktemp)"
+          trap 'rm -f "$body_file"' EXIT
+          code="$(curl --silent --show-error --max-time 10 \
+            --output "$body_file" --write-out '%{http_code}' \
+            https://kale-release-control-plane.ailab-452.workers.dev/v1/projects)"
+          test "$code" = 401
+          jq -e '.error.code == "authentication_required"' <"$body_file"
+
 # CI runs the repository's self-contained format, lint, type, unit, local
 # Worker, integration, and OAuth/MCP checks, followed by one Wrangler dry build.
