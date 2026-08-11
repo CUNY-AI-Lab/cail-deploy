@@ -24,7 +24,9 @@ function resourceMetadataUrl(env: Env): string {
 
 function withRequestId(response: Response, requestId: string): Response {
   const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-store");
   headers.set("X-CAIL-Request-Id", requestId);
+  headers.set("X-Content-Type-Options", "nosniff");
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

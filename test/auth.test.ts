@@ -24,6 +24,20 @@ function env(overrides: Partial<Env>): Env {
 }
 
 describe("CAIL identity boundary", () => {
+  test("readiness JSON is never cached or sniffed", async () => {
+    const response = await workerHandler.fetch(
+      new Request("https://deploy.invalid/health"),
+      env({
+        AUTH_MODE: "test",
+        TEST_PRINCIPALS_JSON: JSON.stringify({ test: TEST_SUBJECTS.alice }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  });
+
   test("readiness rejects unsupported and malformed identity modes", async () => {
     expect(await identityReady(env({ AUTH_MODE: "unknown" }))).toBe(false);
     expect(await identityReady(env({ AUTH_MODE: "test", TEST_PRINCIPALS_JSON: "not-json" }))).toBe(

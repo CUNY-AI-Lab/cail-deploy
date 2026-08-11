@@ -28,14 +28,16 @@ export const workerHandler = {
         // authenticated request failed, and made the fleet's probes disagree
         // about whether identity was healthy.
         const ready = loggingConfigured && (await identityReady(env));
-        return Response.json(
-          {
-            ok: ready,
-            status: ready ? "ready" : "not_ready",
-            service: "kale-release-control-plane",
-            contractRevision: "kale.release.v1",
-          },
-          { status: ready ? 200 : 503 },
+        return withApiHeaders(
+          Response.json(
+            {
+              ok: ready,
+              status: ready ? "ready" : "not_ready",
+              service: "kale-release-control-plane",
+              contractRevision: "kale.release.v1",
+            },
+            { status: ready ? 200 : 503 },
+          ),
         );
       }
       if (url.pathname.startsWith("/v1/") && !loggingConfigured) {
