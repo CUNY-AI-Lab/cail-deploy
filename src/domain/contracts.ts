@@ -55,7 +55,6 @@ export const createProjectSchema = z
 export const createReleaseSchema = z
   .object({
     revisionId: z.string().regex(REVISION_PATTERN),
-    target: z.enum(["preview", "production"]),
     approval: z.enum(["required", "automatic"]),
   })
   .strict();
@@ -74,6 +73,5 @@ export const releaseStatuses = [
   "publishing",
   "reconciling",
   "live",
-  "rejected",
   "failed",
 ] as const;

@@ -2,7 +2,7 @@
 
 ## Boundary
 
-Kale Release Control Plane accepts a source artifact from any authenticated producer, records an immutable content-addressed revision, and runs a durable release workflow that prepares and publishes a Worker to an isolated Workers for Platforms namespace. It owns project, revision, release, approval, and release-event records.
+Kale Release Control Plane accepts a source artifact from any authenticated producer, records an immutable content-addressed revision, and runs a durable release workflow that prepares and publishes a Worker to one isolated Workers for Platforms namespace. It owns project, revision, release, approval, and release-event records. It does not expose a preview-versus-production target choice because both would address the same publication boundary.
 
 The first vertical slice supports Worker-native TypeScript or JavaScript artifacts only. Worker Bundler compiles them, a Dynamic Worker executes a network-disabled smoke request, R2 retains the exact uploaded and prepared bytes, D1 owns history, Cloudflare Workflows owns durable progress and approval wait, and the documented Workers for Platforms API publishes the prepared modules.
 

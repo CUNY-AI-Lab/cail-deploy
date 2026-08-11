@@ -30,6 +30,10 @@ const principal: Principal = {
 const clients: Client[] = [];
 const modernClients: ModernClient[] = [];
 const validContentDigest = `sha-256=:${Buffer.alloc(32).toString("base64")}:`;
+const legacyTransportHeaders = {
+  Accept: "application/json, text/event-stream",
+  "Content-Type": "application/json",
+};
 
 afterEach(async () => {
   await Promise.all([
@@ -120,7 +124,6 @@ const validToolArguments = {
   "kale.create_release": {
     projectId: "prj_22222222222222222222222222222222",
     revisionId: `rev_sha256_${"a".repeat(64)}`,
-    target: "preview",
     approval: "required",
     idempotencyKey: "release-1",
   },
@@ -132,6 +135,10 @@ const validToolArguments = {
     projectId: "prj_22222222222222222222222222222222",
     releaseId: "rel_33333333333333333333333333333333",
     idempotencyKey: "approve-1",
+  },
+  "kale.reconcile_release": {
+    projectId: "prj_22222222222222222222222222222222",
+    releaseId: "rel_33333333333333333333333333333333",
   },
   "kale.rollback_release": {
     projectId: "prj_22222222222222222222222222222222",
@@ -153,7 +160,7 @@ const invalidToolArguments = {
     { ...validToolArguments["kale.upload_revision"], unexpected: true },
   ],
   "kale.create_release": [
-    { ...validToolArguments["kale.create_release"], target: "staging" },
+    { ...validToolArguments["kale.create_release"], approval: "yes" },
     { ...validToolArguments["kale.create_release"], revisionId: "rev_invalid" },
     { ...validToolArguments["kale.create_release"], unexpected: true },
   ],
@@ -165,6 +172,10 @@ const invalidToolArguments = {
     { ...validToolArguments["kale.approve_release"], idempotencyKey: 42 },
     { ...validToolArguments["kale.approve_release"], projectId: "prj_invalid" },
     { ...validToolArguments["kale.approve_release"], unexpected: true },
+  ],
+  "kale.reconcile_release": [
+    { ...validToolArguments["kale.reconcile_release"], releaseId: "rel_invalid" },
+    { ...validToolArguments["kale.reconcile_release"], unexpected: true },
   ],
   "kale.rollback_release": [
     { ...validToolArguments["kale.rollback_release"], approval: "yes" },
@@ -184,6 +195,7 @@ describe("MCP tool argument boundary", () => {
       "kale.create_release": "Publish a version.",
       "kale.get_release": "Check on a release.",
       "kale.approve_release": "Approve a release.",
+      "kale.reconcile_release": "Finish a release whose publication could not be confirmed.",
       "kale.rollback_release": "Roll back to an earlier version.",
     };
     expect((await client.listTools()).tools).toEqual(
@@ -228,6 +240,54 @@ describe("MCP tool argument boundary", () => {
         ).toBe(false);
       }
     }
+  });
+
+  test("exposes reconciliation to OAuth-only MCP clients", async () => {
+    const projectId = validToolArguments["kale.reconcile_release"].projectId;
+    const releaseId = validToolArguments["kale.reconcile_release"].releaseId;
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          return {
+            bind() {
+              return {
+                first: async () => {
+                  if (sql.includes("FROM projects")) {
+                    return { project_id: projectId, owner_subject: principal.subject };
+                  }
+                  if (sql.includes("FROM releases")) {
+                    return {
+                      project_id: projectId,
+                      release_id: releaseId,
+                      revision_id: `rev_sha256_${"a".repeat(64)}`,
+                      approval: "automatic",
+                      status: "publishing",
+                      workflow_instance_id: releaseId,
+                      prepared_key: null,
+                      prepared_digest: null,
+                    };
+                  }
+                  throw new Error(`Unexpected reconciliation SQL: ${sql}`);
+                },
+              };
+            },
+          };
+        },
+      },
+    } as unknown as Env;
+    const result = await (await standardClientAgainst(env)).callTool({
+      name: "kale.reconcile_release",
+      arguments: validToolArguments["kale.reconcile_release"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(toolText(result))).toEqual({
+      error: {
+        code: "release_not_reconcilable",
+        message: "There is nothing left to finish on this release.",
+        requestId,
+      },
+    });
   });
 
   test("matches create-project trim and Unicode code-point length boundaries", () => {
@@ -320,6 +380,109 @@ describe("MCP tool argument boundary", () => {
     expect(envReads).toBe(0);
   });
 
+  test("serves MCP only at its exact protected-resource path", async () => {
+    for (const path of ["/mcpx", "/mcp/extra"]) {
+      const response = await handleMcpWithPrincipal(
+        new Request(`https://deploy.invalid${path}`, {
+          method: "POST",
+          headers: legacyTransportHeaders,
+          body: JSON.stringify({ jsonrpc: "2.0", id: path, method: "initialize", params: {} }),
+        }),
+        {} as Env,
+        requestId,
+        principal,
+      );
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: { code: "route_not_found", message: "The route was not found.", requestId },
+      });
+    }
+  });
+
+  test("enforces the maintained MCP HTTP media contract before dispatch", async () => {
+    const body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: "media-contract",
+      method: "initialize",
+      params: {},
+    });
+    const cases = [
+      {
+        headers: { "Content-Type": "application/json" },
+        status: 406,
+        message: "Not Acceptable: Client must accept both application/json and text/event-stream",
+      },
+      {
+        headers: { Accept: "application/json, text/event-stream", "Content-Type": "text/plain" },
+        status: 415,
+        message: "Unsupported Media Type: Content-Type must be application/json",
+      },
+    ] as const;
+    for (const { headers, status, message } of cases) {
+      const response = await handleMcpWithPrincipal(
+        new Request("https://deploy.invalid/mcp", { method: "POST", headers, body }),
+        {} as Env,
+        requestId,
+        principal,
+      );
+      expect(response.status).toBe(status);
+      expect(response.headers.get("X-CAIL-Request-Id")).toBe(requestId);
+      expect(await response.json()).toEqual({
+        jsonrpc: "2.0",
+        error: { code: -32000, message },
+        id: null,
+      });
+    }
+
+    const malformed = await handleMcpWithPrincipal(
+      new Request("https://deploy.invalid/mcp", {
+        method: "POST",
+        headers: legacyTransportHeaders,
+        body: "{",
+      }),
+      {} as Env,
+      requestId,
+      principal,
+    );
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toEqual({
+      jsonrpc: "2.0",
+      error: { code: -32700, message: "Parse error: Invalid JSON" },
+      id: null,
+    });
+  });
+
+  test("returns JSON-RPC errors for malformed legacy requests", async () => {
+    const cases = [
+      {
+        body: { jsonrpc: "2.0", method: "initialize", params: {} },
+        error: { code: -32600, message: "Invalid Request" },
+        id: null,
+        status: 400,
+      },
+      {
+        body: { jsonrpc: "2.0", id: "unknown", method: "unknown", params: {} },
+        error: { code: -32601, message: "Method not found" },
+        id: "unknown",
+        status: 200,
+      },
+    ] as const;
+    for (const { body, error, id, status } of cases) {
+      const response = await handleMcpWithPrincipal(
+        new Request("https://deploy.invalid/mcp", {
+          method: "POST",
+          headers: legacyTransportHeaders,
+          body: JSON.stringify(body),
+        }),
+        {} as Env,
+        requestId,
+        principal,
+      );
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({ jsonrpc: "2.0", error, id });
+    }
+  });
+
   test("keeps legacy and modern tool discovery byte-equivalent", async () => {
     const modern = await modernClientAgainst({} as Env);
     const modernTools = (await modern.listTools()).tools;
@@ -369,8 +532,7 @@ describe("MCP tool argument boundary", () => {
         arguments: {
           projectId: "prj_22222222222222222222222222222222",
           revisionId: `rev_sha256_${"a".repeat(64)}`,
-          target: "staging",
-          approval: "automatic",
+          approval: "yes",
           idempotencyKey: "release-1",
         },
       },
@@ -416,7 +578,6 @@ describe("MCP tool argument boundary", () => {
         arguments: {
           projectId: "prj_22222222222222222222222222222222",
           revisionId: `rev_sha256_${"a".repeat(64)}`,
-          target: "staging",
           approval: "automatic",
           idempotencyKey: "strict-release",
           unexpected: true,
@@ -484,7 +645,7 @@ describe("MCP tool argument boundary", () => {
       const response = await handleMcpWithPrincipal(
         new Request("https://deploy.invalid/mcp", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: legacyTransportHeaders,
           body: JSON.stringify({
             jsonrpc: "2.0",
             id: 7,
@@ -542,7 +703,7 @@ describe("MCP tool argument boundary", () => {
       const response = await handleMcpWithPrincipal(
         new Request("https://deploy.invalid/mcp", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: legacyTransportHeaders,
           body: JSON.stringify({
             jsonrpc: "2.0",
             id: 8,
@@ -608,6 +769,7 @@ describe("MCP tool argument boundary", () => {
       }),
       duplex: "half",
       headers: {
+        Accept: "application/json, text/event-stream",
         "Content-Length": String(MAX_MCP_BODY_BYTES + 1),
         "Content-Type": "application/json",
       },
@@ -632,7 +794,10 @@ describe("MCP tool argument boundary", () => {
 
   test("preserves the MCP size error when cancellation, release, and diagnostics throw", async () => {
     const request = {
-      headers: new Headers({ "Content-Length": String(MAX_MCP_BODY_BYTES + 1) }),
+      headers: new Headers({
+        ...legacyTransportHeaders,
+        "Content-Length": String(MAX_MCP_BODY_BYTES + 1),
+      }),
       body: {
         getReader: () => ({
           cancel: () => {
@@ -690,7 +855,7 @@ describe("MCP tool argument boundary", () => {
         },
       }),
       duplex: "half",
-      headers: { "Content-Type": "application/json" },
+      headers: legacyTransportHeaders,
     } as RequestInit);
 
     try {
@@ -712,7 +877,7 @@ describe("MCP tool argument boundary", () => {
   test("preserves a primary MCP read failure when release and diagnostics also fail", async () => {
     const primary = new Error("PRIMARY_MCP_READ_FAILURE");
     const request = {
-      headers: new Headers(),
+      headers: new Headers(legacyTransportHeaders),
       body: {
         getReader: () => ({
           read: async () => {
@@ -754,7 +919,7 @@ describe("MCP tool argument boundary", () => {
       body,
       duplex: "half",
       signal: controller.signal,
-      headers: { "Content-Type": "application/json" },
+      headers: legacyTransportHeaders,
     } as RequestInit);
 
     const pending = handleMcpWithPrincipal(request, {} as Env, requestId, principal);
@@ -920,7 +1085,7 @@ describe("MCP tool argument boundary", () => {
     });
     const request = new Request("https://deploy.invalid/mcp", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: legacyTransportHeaders,
       body: requestBody,
       duplex: "half",
       signal: controller.signal,
@@ -1172,7 +1337,6 @@ describe("MCP tool argument boundary", () => {
       project_id: projectId,
       release_id: releaseId,
       revision_id: `rev_sha256_${"a".repeat(64)}`,
-      target: "preview",
       approval: "required",
       status: "queued",
       workflow_instance_id: releaseId,

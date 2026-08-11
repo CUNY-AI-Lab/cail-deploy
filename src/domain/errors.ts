@@ -39,6 +39,12 @@ export function errorResponse(error: unknown, requestId: string): Response {
   const apiError = apiErrorSnapshot(error) ?? internalErrorSnapshot;
   return Response.json(
     { error: { code: apiError.code, message: apiError.message, requestId } },
-    { status: apiError.status },
+    {
+      status: apiError.status,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
   );
 }

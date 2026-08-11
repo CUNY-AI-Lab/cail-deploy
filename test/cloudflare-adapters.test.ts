@@ -17,7 +17,7 @@ afterEach(() => {
 
 const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const revisionId = `rev_sha256_${"b".repeat(64)}`;
-const expectedPublicationName = "kp-ki-20260722123456-abcdef12-aaaaaaaaaaaa";
+const expectedPublicationName = "b".repeat(64);
 const prepared = {
   mainModule: "index.js",
   modules: { "index.js": "export default {}" },
@@ -32,7 +32,6 @@ async function publishWithResponse(response: Response, timeout = "1000"): Promis
       WFP_ACCOUNT_ID: "account",
       WFP_NAMESPACE: "namespace",
       WFP_PUBLISH_TIMEOUT_MS: timeout,
-      RUN_ID: "ki-20260722123456-abcdef12",
       WFP_API: { fetch: async () => response },
     } as unknown as Env,
     projectId,
@@ -103,7 +102,6 @@ describe("Cloudflare volatile boundaries", () => {
           WFP_ACCOUNT_ID: "account",
           WFP_NAMESPACE: "namespace",
           WFP_PUBLISH_TIMEOUT_MS: "1000",
-          RUN_ID: "ki-20260722123456-abcdef12",
         } as Env,
         projectId,
         revisionId,
@@ -136,7 +134,6 @@ describe("Cloudflare volatile boundaries", () => {
         CLOUDFLARE_API_TOKEN: "test-only",
         WFP_ACCOUNT_ID: "account",
         WFP_NAMESPACE: "namespace",
-        RUN_ID: "ki-20260722123456-abcdef12",
         WFP_API,
       } as unknown as Env,
       projectId,
@@ -152,9 +149,9 @@ describe("Cloudflare volatile boundaries", () => {
       },
     );
 
-    expect(result).toBe("kp-ki-20260722123456-abcdef12-aaaaaaaaaaaa");
+    expect(result).toBe(expectedPublicationName);
     expect(captured?.url).toBe(
-      "https://api.cloudflare.com/client/v4/accounts/account/workers/dispatch/namespaces/namespace/scripts/kp-ki-20260722123456-abcdef12-aaaaaaaaaaaa",
+      `https://api.cloudflare.com/client/v4/accounts/account/workers/dispatch/namespaces/namespace/scripts/${expectedPublicationName}`,
     );
     expect(captured?.method).toBe("PUT");
     expect(captured?.headers.get("authorization")).toBe("Bearer test-only");
@@ -326,10 +323,8 @@ describe("Cloudflare volatile boundaries", () => {
     expect(releases).toBe(1);
   });
 
-  test("WfP names are run-scoped and 4xx is deterministic rejection", async () => {
-    expect(
-      publicationName("ki-20260722123456-abcdef12", "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-    ).toBe("kp-ki-20260722123456-abcdef12-aaaaaaaaaaaa");
+  test("WfP names use the full revision digest and 4xx is deterministic rejection", async () => {
+    expect(publicationName(revisionId)).toBe(expectedPublicationName);
     globalThis.fetch = mock(
       async () => new Response("provider-secret-debug-body", { status: 400 }),
     ) as typeof fetch;
@@ -339,7 +334,6 @@ describe("Cloudflare volatile boundaries", () => {
           CLOUDFLARE_API_TOKEN: "test-only",
           WFP_ACCOUNT_ID: "account",
           WFP_NAMESPACE: "namespace",
-          RUN_ID: "ki-20260722123456-abcdef12",
         } as Env,
         "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         `rev_sha256_${"b".repeat(64)}`,

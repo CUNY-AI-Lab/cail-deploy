@@ -95,6 +95,12 @@ export function createOAuthProviderOptions(env: Env): OAuthProviderOptions<Env> 
     clientRegistrationEndpoint: `${baseUrl}/oauth/register`,
     scopesSupported: [OAUTH_REQUIRED_SCOPE],
     accessTokenTTL: 3600,
+    tokenExchangeCallback: ({ props, requestedScope }) => ({
+      accessTokenProps: {
+        ...(props as OAuthPrincipalProps),
+        scope: requestedScope,
+      },
+    }),
     allowPlainPKCE: false,
     allowImplicitFlow: false,
     allowTokenExchangeGrant: false,
@@ -145,9 +151,12 @@ export const oauthWorkerHandler = {
         );
       }
       const options = createOAuthProviderOptions(env);
-      return await new OAuthProvider<Env>(options).fetch(request, env, executionContext);
+      return withRequestId(
+        await new OAuthProvider<Env>(options).fetch(request, env, executionContext),
+        requestId,
+      );
     } catch (error) {
-      return errorResponse(error, requestId);
+      return withRequestId(errorResponse(error, requestId), requestId);
     }
   },
 };

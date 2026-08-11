@@ -185,7 +185,6 @@ async function createAutomaticRelease(worker, projectId, revisionId, jwt, idempo
     },
     body: JSON.stringify({
       revisionId,
-      target: "preview",
       approval: "automatic",
     }),
   });
@@ -224,7 +223,6 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
           CAIL_IDENTITY_ISSUER: issuer.issuer,
           CAIL_IDENTITY_JWKS: issuer.jwksJson,
           CAIL_TRUSTED_IDENTITY_ISSUER: issuer.issuer,
-          RUN_ID: "integration-local-e2e",
           WFP_ACCOUNT_ID: "integration-account",
           WFP_NAMESPACE: "integration-namespace",
           WFP_PUBLISH_TIMEOUT_MS: "1000",
@@ -303,17 +301,25 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
   assert.equal(wrongAudience.status, 401);
   assert.equal(wrongAudienceCode, "invalid_credential");
 
-  const projectResponse = await deploy.fetch("/v1/projects", {
-    method: "POST",
-    headers: {
-      ...identityHeaders(ownerJwt),
-      "Content-Type": "application/json",
-      "Idempotency-Key": "harness-project",
-    },
-    body: JSON.stringify({ name: "createTestHarness release fixture" }),
-  });
-  const project = await projectResponse.json();
-  assert.equal(projectResponse.status, 201, "project creation failed");
+  const createProjectRequest = () =>
+    deploy.fetch("/v1/projects", {
+      method: "POST",
+      headers: {
+        ...identityHeaders(ownerJwt),
+        "Content-Type": "application/json",
+        "Idempotency-Key": "harness-project",
+      },
+      body: JSON.stringify({ name: "createTestHarness release fixture" }),
+    });
+  const projectResponses = await Promise.all([createProjectRequest(), createProjectRequest()]);
+  const projects = await Promise.all(projectResponses.map((response) => response.json()));
+  assert.deepEqual(
+    projectResponses.map(({ status }) => status).sort(),
+    [200, 201],
+    "concurrent project idempotency did not produce one creation and one replay",
+  );
+  assert.equal(projects[0].projectId, projects[1].projectId);
+  const project = projects[0];
   assert.match(project.projectId, /^prj_[0-9a-f]{32}$/u);
 
   const artifact = await readFile(
@@ -362,22 +368,29 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
   assert.equal(revisionResponse.status, 201, "revision upload failed");
   assert.equal(revision.revisionId, `rev_sha256_${artifactDigest}`);
 
-  const releaseResponse = await deploy.fetch(`/v1/projects/${project.projectId}/releases`, {
-    method: "POST",
-    headers: {
-      ...identityHeaders(ownerJwt),
-      "Content-Type": "application/json",
-      "Idempotency-Key": "harness-release",
-      "X-CAIL-Request-Id": INITIAL_REQUEST_ID,
-    },
-    body: JSON.stringify({
-      revisionId: revision.revisionId,
-      target: "preview",
-      approval: "required",
-    }),
-  });
-  const release = await releaseResponse.json();
-  assert.equal(releaseResponse.status, 202, "release admission failed");
+  const createReleaseRequest = () =>
+    deploy.fetch(`/v1/projects/${project.projectId}/releases`, {
+      method: "POST",
+      headers: {
+        ...identityHeaders(ownerJwt),
+        "Content-Type": "application/json",
+        "Idempotency-Key": "harness-release",
+        "X-CAIL-Request-Id": INITIAL_REQUEST_ID,
+      },
+      body: JSON.stringify({
+        revisionId: revision.revisionId,
+        approval: "required",
+      }),
+    });
+  const releaseResponses = await Promise.all([createReleaseRequest(), createReleaseRequest()]);
+  const releases = await Promise.all(releaseResponses.map((response) => response.json()));
+  assert.deepEqual(
+    releaseResponses.map(({ status }) => status).sort(),
+    [200, 202],
+    "concurrent release idempotency did not produce one admission and one replay",
+  );
+  assert.equal(releases[0].releaseId, releases[1].releaseId);
+  const release = releases[0];
   const awaitingApproval = await waitForRelease(
     deploy,
     project.projectId,
@@ -583,6 +596,16 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
   assert.equal(rollbackRow.rollback_of_release_id, sourceBeforeRollback.release_id);
   assert.equal(rollbackRow.prepared_key, sourceBeforeRollback.prepared_key);
   assert.equal(rollbackRow.prepared_digest, sourceBeforeRollback.prepared_digest);
+  const liveAfterRollback = await env.DB.prepare(
+    "SELECT release_id FROM releases WHERE project_id = ? AND status = 'live' ORDER BY release_sequence DESC LIMIT 1",
+  )
+    .bind(project.projectId)
+    .first();
+  assert.equal(
+    liveAfterRollback.release_id,
+    rollbackRelease.releaseId,
+    "rollback did not become the newest admitted live authority",
+  );
   const rollbackPrepared = await readPreparedObject(
     env,
     rollbackRow.prepared_key,
@@ -682,19 +705,49 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
     status: "live",
   });
 
+  const lateLargeReconciliation = await deploy.fetch(
+    `/v1/projects/${project.projectId}/releases/${largeReleaseId}/reconcile`,
+    { method: "POST", headers: identityHeaders(ownerJwt) },
+  );
+  await assertStatusAndDiscard(
+    lateLargeReconciliation,
+    200,
+    "late reconciliation of the older release failed",
+  );
+  await waitForRelease(deploy, project.projectId, largeReleaseId, ownerJwt, "live");
+  const liveAfterLateReconciliation = await env.DB.prepare(
+    "SELECT release_id FROM releases WHERE project_id = ? AND status = 'live' ORDER BY release_sequence DESC LIMIT 1",
+  )
+    .bind(project.projectId)
+    .first();
+  assert.equal(
+    liveAfterLateReconciliation.release_id,
+    noIdentityReleaseId,
+    "late reconciliation superseded a newer admitted live release",
+  );
+
   const providerStateResponse = await provider.fetch("/__control/state", {
     headers: PROVIDER_CONTROL,
   });
   const providerState = await providerStateResponse.json();
   assert.equal(providerStateResponse.status, 200);
   assert.equal(providerState.errors.length, 0);
-  assert.equal(providerState.observations.length, 13);
+  assert.equal(providerState.observations.length, 14);
   assert.ok(
     providerState.observations.every(
-      ({ accountId, namespace, authorizationAccepted, mainModule, moduleNames }) =>
+      ({
+        accountId,
+        namespace,
+        authorizationAccepted,
+        mainModule,
+        moduleNames,
+        scriptName,
+        revisionId,
+      }) =>
         accountId === "integration-account" &&
         namespace === "integration-namespace" &&
         authorizationAccepted &&
+        scriptName === revisionId.slice("rev_sha256_".length) &&
         moduleNames.includes(mainModule),
     ),
   );
@@ -729,7 +782,7 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
   assert.equal(largeObservation.revisionId, largeRevision.revisionId);
   assert.deepEqual(largeObservation.moduleSha256, moduleSha256(largePrepared.envelope));
   assert.deepEqual(
-    providerState.observations.slice(6).map(({ responseMode }) => responseMode),
+    providerState.observations.slice(6, 13).map(({ responseMode }) => responseMode),
     [
       "success-false",
       "malformed-json",
@@ -766,6 +819,8 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
     providerState.observations[0].moduleSha256,
     providerState.observations[3].moduleSha256,
   );
+  assert.equal(providerState.observations[13].revisionId, largeRevision.revisionId);
+  assert.equal(providerState.observations[13].responseMode, "valid");
 
   const finalCounts = await env.DB.prepare(
     "SELECT (SELECT COUNT(*) FROM projects) AS projects, (SELECT COUNT(*) FROM revisions) AS revisions, (SELECT COUNT(*) FROM releases) AS releases, (SELECT COUNT(*) FROM releases WHERE status = 'live') AS liveReleases, (SELECT COUNT(*) FROM releases WHERE status = 'reconciling') AS reconcilingReleases",
@@ -774,8 +829,8 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
     projects: 1,
     revisions: 3,
     releases: 11,
-    liveReleases: 4,
-    reconcilingReleases: 7,
+    liveReleases: 5,
+    reconcilingReleases: 6,
   });
 
   const logs = harness.getLogs();

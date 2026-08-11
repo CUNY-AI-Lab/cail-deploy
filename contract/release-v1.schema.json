@@ -17,7 +17,6 @@
         "publishing",
         "reconciling",
         "live",
-        "rejected",
         "failed"
       ]
     },
@@ -44,10 +43,9 @@
     "createReleaseRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["revisionId", "target", "approval"],
+      "required": ["revisionId", "approval"],
       "properties": {
         "revisionId": { "$ref": "#/$defs/revisionId" },
-        "target": { "enum": ["preview", "production"] },
         "approval": { "enum": ["required", "automatic"] }
       }
     },
@@ -57,7 +55,6 @@
         "projectId",
         "releaseId",
         "revisionId",
-        "target",
         "approval",
         "status",
         "workflowInstanceId",
@@ -68,7 +65,6 @@
         "projectId": { "$ref": "#/$defs/projectId" },
         "releaseId": { "$ref": "#/$defs/releaseId" },
         "revisionId": { "$ref": "#/$defs/revisionId" },
-        "target": { "enum": ["preview", "production"] },
         "approval": { "enum": ["required", "automatic"] },
         "status": { "$ref": "#/$defs/releaseStatus" },
         "workflowInstanceId": { "type": "string", "minLength": 1 },

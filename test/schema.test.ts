@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   MAX_RELEASE_EVENT_COUNT,
   MAX_RELEASE_EVENT_HISTORY_BYTES,
+  LATEST_LIVE_RELEASE_SQL,
   RELEASE_INSERT_SQL,
   readReleaseEventHistory,
 } from "../src/api";
@@ -69,7 +70,7 @@ describe("durable release invariants", () => {
       now,
     ]);
     db.run(
-      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'required', 'queued', ?, ?, ?, ?, ?)",
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'required', 'queued', ?, ?, ?, ?, ?)",
       [
         releaseId,
         projectId,
@@ -136,7 +137,7 @@ describe("durable release invariants", () => {
       now,
     ]);
     db.run(
-      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'required', 'queued', ?, ?, ?, ?, ?)",
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'required', 'queued', ?, ?, ?, ?, ?)",
       [
         releaseId,
         projectId,
@@ -216,7 +217,6 @@ describe("durable release invariants", () => {
       releaseId,
       projectId,
       revisionId,
-      "preview",
       "required",
       releaseId,
       null,
@@ -229,6 +229,75 @@ describe("durable release invariants", () => {
 
     expect(db.query("SELECT status FROM releases WHERE release_id = ?").get(releaseId)).toEqual({
       status: "queued",
+    });
+    expect(() =>
+      db.run("UPDATE releases SET status = 'unknown' WHERE release_id = ?", [releaseId]),
+    ).toThrow();
+  });
+
+  test("preview keeps newest-admitted live authority across late reconciliation and rollback", async () => {
+    const db = new Database(":memory:");
+    db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
+    const now = new Date().toISOString();
+    const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const revisionId = `rev_sha256_${"b".repeat(64)}`;
+    db.run("INSERT INTO projects VALUES (?, ?, ?, ?)", [
+      projectId,
+      "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "test",
+      now,
+    ]);
+    db.run("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)", [
+      projectId,
+      revisionId,
+      "b".repeat(64),
+      1,
+      "key",
+      "ready",
+      now,
+    ]);
+    const insert = db.prepare(
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, rollback_of_release_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'automatic', ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const first = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const second = "rel_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const rollback = "rel_cccccccccccccccccccccccccccccccc";
+    insert.run(
+      first,
+      projectId,
+      revisionId,
+      "reconciling",
+      first,
+      null,
+      "request-1",
+      now,
+      now,
+      now,
+    );
+    insert.run(second, projectId, revisionId, "live", second, null, "request-2", now, now, now);
+    db.run("UPDATE releases SET status = 'live', updated_at = ? WHERE release_id = ?", [
+      "2026-08-02T00:00:00.000Z",
+      first,
+    ]);
+    expect(db.query(LATEST_LIVE_RELEASE_SQL).get(projectId)).toMatchObject({
+      release_id: second,
+    });
+
+    insert.run(
+      rollback,
+      projectId,
+      revisionId,
+      "live",
+      rollback,
+      second,
+      "request-3",
+      now,
+      now,
+      now,
+    );
+    expect(db.query(LATEST_LIVE_RELEASE_SQL).get(projectId)).toMatchObject({
+      release_id: rollback,
+      rollback_of_release_id: second,
     });
   });
 
@@ -252,7 +321,7 @@ describe("durable release invariants", () => {
       now,
     ]);
     db.run(
-      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, operational_subject, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'required', 'publishing', ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, operational_subject, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'required', 'publishing', ?, ?, ?, ?, ?, ?)",
       [
         "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -288,7 +357,6 @@ describe("durable release invariants", () => {
     for (const [status, type] of [
       ["live", "release.live"],
       ["failed", "release.failed"],
-      ["rejected", "release.rejected"],
     ] as const) {
       const db = new Database(":memory:");
       db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
@@ -312,7 +380,7 @@ describe("durable release invariants", () => {
         now,
       ]);
       db.run(
-        "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'publishing', ?, ?, ?, ?, ?)",
+        "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'automatic', 'publishing', ?, ?, ?, ?, ?)",
         [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
       );
       const env = {
@@ -337,9 +405,6 @@ describe("durable release invariants", () => {
   test("the terminal fence is enforced for direct SQL writers by its migration trigger", async () => {
     const db = new Database(":memory:");
     db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
-    db.exec(
-      await Bun.file(new URL("../schema/0003_release_terminal_fence.sql", import.meta.url)).text(),
-    );
     const now = new Date().toISOString();
     const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const revisionId = `rev_sha256_${"b".repeat(64)}`;
@@ -360,7 +425,7 @@ describe("durable release invariants", () => {
       now,
     ]);
     db.run(
-      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'live', ?, ?, ?, ?, ?)",
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'automatic', 'live', ?, ?, ?, ?, ?)",
       [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
     );
     const env = {
@@ -379,7 +444,7 @@ describe("durable release invariants", () => {
 
     const eventOnlyReleaseId = "rel_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     db.run(
-      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'reconciling', ?, ?, ?, ?, ?)",
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'automatic', 'reconciling', ?, ?, ?, ?, ?)",
       [
         eventOnlyReleaseId,
         projectId,
@@ -432,7 +497,7 @@ describe("durable release invariants", () => {
       now,
     ]);
     db.run(
-      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'queued', ?, ?, ?, ?, ?)",
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'automatic', 'queued', ?, ?, ?, ?, ?)",
       [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
     );
     const env = {
@@ -482,7 +547,7 @@ describe("durable release invariants", () => {
       now,
     ]);
     db.run(
-      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'required', 'awaiting_approval', ?, ?, ?, ?, ?)",
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'required', 'awaiting_approval', ?, ?, ?, ?, ?)",
       [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
     );
     db.run(
@@ -529,7 +594,7 @@ describe("durable release invariants", () => {
       now,
     ]);
     db.run(
-      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'automatic', 'queued', ?, ?, ?, ?, ?)",
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'automatic', 'queued', ?, ?, ?, ?, ?)",
       [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
     );
 
@@ -598,7 +663,7 @@ describe("durable release invariants", () => {
       now,
     ]);
     db.run(
-      "INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, operational_subject, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'preview', 'required', 'awaiting_approval', ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, operational_subject, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'required', 'awaiting_approval', ?, ?, ?, ?, ?, ?)",
       [
         releaseId,
         projectId,
@@ -624,7 +689,7 @@ describe("durable release invariants", () => {
 describe("OAuth consent nonce invariants", () => {
   test("one subject/client/request-bound nonce is consumed once before expiry", async () => {
     const db = new Database(":memory:");
-    db.exec(await Bun.file(new URL("../schema/0002_oauth_consent.sql", import.meta.url)).text());
+    db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
     const nonce = `ocn_${"a".repeat(32)}`;
     const subject = "cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const clientId = "client-a";
@@ -634,14 +699,7 @@ describe("OAuth consent nonce invariants", () => {
       [nonce, subject, clientId, digest, "2099-01-01T00:00:00.000Z"],
     );
     const consume = db.prepare(CONSUME_CONSENT_NONCE_SQL);
-    const parameters = [
-      "2026-07-22T00:00:00.000Z",
-      nonce,
-      subject,
-      clientId,
-      digest,
-      "2026-07-22T00:00:00.000Z",
-    ];
+    const parameters = [nonce, subject, clientId, digest, "2026-07-22T00:00:00.000Z"];
     expect(consume.run(...parameters).changes).toBe(1);
     expect(consume.run(...parameters).changes).toBe(0);
   });
@@ -675,7 +733,7 @@ describe("OAuth consent nonce invariants", () => {
     ];
     for (const [subject, clientId, digest, now] of variants) {
       const db = new Database(":memory:");
-      db.exec(await Bun.file(new URL("../schema/0002_oauth_consent.sql", import.meta.url)).text());
+      db.exec(await Bun.file(new URL("../schema/0001_control_plane.sql", import.meta.url)).text());
       db.run(
         "INSERT INTO oauth_consent_nonces (nonce, owner_subject, client_id, request_digest, expires_at) VALUES (?, ?, ?, ?, ?)",
         [
@@ -690,7 +748,6 @@ describe("OAuth consent nonce invariants", () => {
         db
           .prepare(CONSUME_CONSENT_NONCE_SQL)
           .run(
-            "2026-07-22T00:00:00.000Z",
             `ocn_${"a".repeat(32)}`,
             subject as string,
             clientId as string,

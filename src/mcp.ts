@@ -58,6 +58,7 @@ const getReleaseArgumentsSchema = z
 const approveReleaseArgumentsSchema = getReleaseArgumentsSchema
   .extend({ idempotencyKey: idempotencyKeySchema })
   .strict();
+const reconcileReleaseArgumentsSchema = getReleaseArgumentsSchema;
 const rollbackReleaseArgumentsSchema = z
   .object({
     projectId: projectIdSchema,
@@ -104,6 +105,7 @@ const toolDefinitions = [
   { name: "kale.create_release", schema: createReleaseArgumentsSchema },
   { name: "kale.get_release", schema: getReleaseArgumentsSchema },
   { name: "kale.approve_release", schema: approveReleaseArgumentsSchema },
+  { name: "kale.reconcile_release", schema: reconcileReleaseArgumentsSchema },
   { name: "kale.rollback_release", schema: rollbackReleaseArgumentsSchema },
 ] as const;
 
@@ -530,7 +532,6 @@ async function callKaleTool(
         headers.set("Idempotency-Key", args.idempotencyKey);
         body = JSON.stringify({
           revisionId: args.revisionId,
-          target: args.target,
           approval: args.approval,
         });
       } else if (name === "kale.get_release") {
@@ -542,6 +543,9 @@ async function callKaleTool(
         path = `/v1/projects/${args.projectId}/releases/${args.releaseId}/approve`;
         headers.set("Idempotency-Key", args.idempotencyKey);
         body = JSON.stringify({ decision: "approved" });
+      } else if (name === "kale.reconcile_release") {
+        const args = parseToolArguments(reconcileReleaseArgumentsSchema, argumentsValue);
+        path = `/v1/projects/${args.projectId}/releases/${args.releaseId}/reconcile`;
       } else if (name === "kale.rollback_release") {
         const args = parseToolArguments(rollbackReleaseArgumentsSchema, argumentsValue);
         path = `/v1/projects/${args.projectId}/releases/${args.releaseId}/rollback`;
@@ -602,6 +606,7 @@ const TOOL_DESCRIPTIONS: Record<(typeof toolDefinitions)[number]["name"], string
   "kale.create_release": "Publish a version.",
   "kale.get_release": "Check on a release.",
   "kale.approve_release": "Approve a release.",
+  "kale.reconcile_release": "Finish a release whose publication could not be confirmed.",
   "kale.rollback_release": "Roll back to an earlier version.",
 };
 
@@ -625,6 +630,27 @@ function legacyToolResponse(id: unknown, result: CallToolResult, requestId: stri
   );
 }
 
+function legacyProtocolError(
+  id: unknown,
+  code: number,
+  message: string,
+  requestId: string,
+  status = 400,
+): Response {
+  return Response.json(
+    { jsonrpc: "2.0", id: id ?? null, error: { code, message } },
+    {
+      status,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-CAIL-Request-Id": requestId,
+        "X-Content-Type-Options": "nosniff",
+        "x-request-id": requestId,
+      },
+    },
+  );
+}
+
 export async function handleLegacyMcpMessage(
   parsedBody: unknown,
   requestUrl: string,
@@ -635,7 +661,7 @@ export async function handleLegacyMcpMessage(
   operationDeadlineMs = MAX_MCP_OPERATION_MS,
 ): Promise<Response> {
   if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
-    throw new ApiError(400, "invalid_mcp", "The request must be a JSON-RPC 2.0 object.");
+    return legacyProtocolError(null, -32600, "Invalid Request", requestId);
   }
   const message = parsedBody as {
     jsonrpc?: string;
@@ -643,8 +669,16 @@ export async function handleLegacyMcpMessage(
     method?: string;
     params?: Record<string, unknown>;
   };
-  if (message.jsonrpc !== "2.0")
-    throw new ApiError(400, "invalid_mcp", "The request must use JSON-RPC 2.0.");
+  if (message.jsonrpc !== "2.0") {
+    return legacyProtocolError(message.id, -32600, "Invalid Request", requestId);
+  }
+  if (
+    message.method !== "notifications/initialized" &&
+    typeof message.id !== "string" &&
+    typeof message.id !== "number"
+  ) {
+    return legacyProtocolError(null, -32600, "Invalid Request", requestId);
+  }
   if (message.method === "initialize") {
     return Response.json({
       jsonrpc: "2.0",
@@ -666,8 +700,9 @@ export async function handleLegacyMcpMessage(
   if (message.method === "notifications/initialized") {
     return new Response(null, { status: 202 });
   }
-  if (message.method !== "tools/call")
-    throw new ApiError(400, "unknown_mcp_method", "That method isn't supported.");
+  if (message.method !== "tools/call") {
+    return legacyProtocolError(message.id, -32601, "Method not found", requestId, 200);
+  }
   const name = message.params?.name;
   if (typeof name !== "string") {
     return legacyToolResponse(

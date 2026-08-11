@@ -55,6 +55,8 @@ function previewRequest(signal?: AbortSignal): Request {
   return new Request(`https://deploy.test/v1/projects/${projectId}/preview`, {
     headers: {
       Authorization: "Bearer must-not-forward",
+      Cookie: "session=must-not-forward",
+      "Proxy-Authorization": "Basic must-not-forward",
       "X-CAIL-Identity-JWT": "must-not-forward",
       "X-CAIL-Request-Id": requestId,
     },
@@ -160,7 +162,11 @@ describe("live preview operational boundary", () => {
         observed = request;
         return new Response("preview-ok", {
           status: 200,
-          headers: { "content-type": "text/plain" },
+          headers: {
+            "content-type": "text/plain",
+            "set-cookie": "preview=must-not-set",
+            "clear-site-data": '"cookies"',
+          },
         });
       },
     });
@@ -170,7 +176,11 @@ describe("live preview operational boundary", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("preview-ok");
     expect(observed?.headers.has("authorization")).toBe(false);
+    expect(observed?.headers.has("cookie")).toBe(false);
+    expect(observed?.headers.has("proxy-authorization")).toBe(false);
     expect(observed?.headers.has("x-cail-identity-jwt")).toBe(false);
     expect(observed?.headers.get("x-cail-request-id")).toBe(requestId);
+    expect(response.headers.has("set-cookie")).toBe(false);
+    expect(response.headers.has("clear-site-data")).toBe(false);
   });
 });

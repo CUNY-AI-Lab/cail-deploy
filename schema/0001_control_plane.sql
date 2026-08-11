@@ -20,12 +20,22 @@ CREATE TABLE revisions (
 );
 
 CREATE TABLE releases (
-  release_id TEXT PRIMARY KEY,
+  release_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  release_id TEXT NOT NULL UNIQUE,
   project_id TEXT NOT NULL,
   revision_id TEXT NOT NULL,
-  target TEXT NOT NULL CHECK (target IN ('preview', 'production')),
   approval TEXT NOT NULL CHECK (approval IN ('required', 'automatic')),
-  status TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN (
+    'queued',
+    'validating',
+    'building',
+    'prepared',
+    'awaiting_approval',
+    'publishing',
+    'reconciling',
+    'live',
+    'failed'
+  )),
   workflow_instance_id TEXT NOT NULL,
   prepared_key TEXT,
   prepared_digest TEXT,
@@ -64,8 +74,37 @@ CREATE TABLE idempotency (
 
 CREATE UNIQUE INDEX one_release_terminal
   ON release_events(release_id)
-  WHERE type IN ('release.live', 'release.failed', 'release.rejected');
+  WHERE type IN ('release.live', 'release.failed');
 
 CREATE UNIQUE INDEX one_release_approval
   ON release_events(release_id)
   WHERE type = 'release.approval_accepted';
+
+CREATE INDEX latest_live_release
+  ON releases(project_id, status, release_sequence DESC);
+
+CREATE TABLE oauth_consent_nonces (
+  nonce TEXT PRIMARY KEY,
+  owner_subject TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX oauth_consent_nonces_expiry
+  ON oauth_consent_nonces(expires_at);
+
+CREATE TRIGGER release_terminal_status_fence
+BEFORE UPDATE OF status ON releases
+WHEN (
+    OLD.status IN ('live', 'failed')
+    OR EXISTS (
+      SELECT 1 FROM release_events
+      WHERE release_id = OLD.release_id
+        AND type IN ('release.live', 'release.failed')
+    )
+  )
+  AND NEW.status <> OLD.status
+BEGIN
+  SELECT RAISE(ABORT, 'terminal release status cannot regress');
+END;

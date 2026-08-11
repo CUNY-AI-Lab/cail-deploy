@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  // This fleet uses the standalone CAIL Doorway issuer. CAIL_ENVIRONMENT stays
-  // "staging" for resource identity and is independent of the exact issuer URL.
+  // This fleet uses the standalone CAIL Doorway issuer. The deployment label
+  // describes this control-plane Worker, not an artifact publication target.
   "name": "kale-release-control-plane",
   "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
   "main": "src/index.ts",
@@ -12,19 +12,18 @@
   "observability": { "enabled": true },
   "vars": {
     "AUTH_MODE": "cail-jwt",
-    "CAIL_ENVIRONMENT": "staging",
+    "CAIL_ENVIRONMENT": "production",
     "SERVICE_AUDIENCE": "cail:deploy",
     "PUBLIC_BASE_URL": "https://kale-release-control-plane.ailab-452.workers.dev",
     "CAIL_IDENTITY_ISSUER": "https://cail-doorway.ailab-452.workers.dev/cail-sso",
-    "RUN_ID": "staging",
     "WFP_ACCOUNT_ID": "452c33847cf5cb1e46f391fca32fd1b5",
     "WFP_NAMESPACE": "kale-release-control-plane"
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "kale-release-control-plane",
-      "database_id": "4e83d80e-e130-41ed-9691-76afd7154a62",
+      "database_name": "kale-release-control-plane-current",
+      "database_id": "13da045d-e006-44db-a0b3-2fc60e6b952e",
       "migrations_dir": "schema"
     }
   ],

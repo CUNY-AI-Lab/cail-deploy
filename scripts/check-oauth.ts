@@ -85,6 +85,7 @@ async function beginAuthorization(
   options: {
     state?: string;
     resource?: string;
+    redirectUri?: string;
     challengeMethod?: string;
     omitChallenge?: boolean;
   } = {},
@@ -93,7 +94,7 @@ async function beginAuthorization(
   const url = new URL(`${baseUrl}/api/oauth/authorize`);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", clientId);
-  url.searchParams.set("redirect_uri", "http://127.0.0.1:43123/callback");
+  url.searchParams.set("redirect_uri", options.redirectUri ?? "http://127.0.0.1:43123/callback");
   url.searchParams.set("state", options.state ?? crypto.randomUUID());
   if (!options.omitChallenge) {
     url.searchParams.set("code_challenge", await sha256Base64Url(verifier));
@@ -163,6 +164,7 @@ async function exchangeCode(
   clientId: string,
   verifier: string,
   code: string,
+  scope?: string,
 ): Promise<TokenResponse> {
   const response = await fetch(`${baseUrl}/oauth/token`, {
     method: "POST",
@@ -174,6 +176,7 @@ async function exchangeCode(
       code,
       code_verifier: verifier,
       resource: `${baseUrl}/mcp`,
+      ...(scope === undefined ? {} : { scope }),
     }),
   });
   if (response.status !== 200)
@@ -350,8 +353,6 @@ const worker = Bun.spawn(
     "--var",
     `CAIL_IDENTITY_JWKS:${issuer.jwksJson}`,
     "--var",
-    "RUN_ID:oauth-local-test",
-    "--var",
     "WFP_ACCOUNT_ID:not-used",
     "--var",
     "WFP_NAMESPACE:not-used",
@@ -382,8 +383,13 @@ try {
 
   const protectedMetadataResponse = await fetch(
     `${baseUrl}/.well-known/oauth-protected-resource/mcp`,
+    { headers: { "X-CAIL-Request-Id": requestId } },
   );
   assert(protectedMetadataResponse.status === 200, "protected-resource metadata failed");
+  assert(
+    protectedMetadataResponse.headers.get("X-CAIL-Request-Id") === requestId,
+    "OAuth provider response omitted the canonical request id",
+  );
   const protectedMetadata = (await protectedMetadataResponse.json()) as Record<string, unknown>;
   assert(protectedMetadata.resource === `${baseUrl}/mcp`, "metadata resource drifted");
   assert(
@@ -419,6 +425,17 @@ try {
 
   const client = await registerClient(baseUrl, "Kale OAuth conformance client");
   const secondClient = await registerClient(baseUrl, "Changed client negative");
+
+  const loopback = await beginAuthorization(baseUrl, client.client_id, aliceJwt, {
+    redirectUri: "http://127.0.0.1:54321/callback",
+  });
+  assert(!(loopback instanceof Response), "dynamic loopback port was rejected");
+  const loopbackDenial = await submitConsent(baseUrl, loopback, aliceJwt, "deny");
+  assert(loopbackDenial.status === 302, "dynamic loopback denial did not redirect");
+  assert(
+    loopbackDenial.headers.get("location")?.startsWith("http://127.0.0.1:54321/callback?"),
+    "dynamic loopback redirect port was not preserved",
+  );
 
   const plain = await beginAuthorization(baseUrl, client.client_id, aliceJwt, {
     challengeMethod: "plain",
@@ -648,7 +665,7 @@ try {
   const standardClient = new Client({ name: "kale-oauth-conformance", version: "0.1.0" });
   await standardClient.connect(standardTransport);
   const listed = await standardClient.listTools();
-  assert(listed.tools.length === 6, "standard MCP client did not list six tools");
+  assert(listed.tools.length === 7, "standard MCP client did not list seven tools");
 
   const spoofedProjectResult = await standardClient.callTool({
     name: "kale.create_project",
@@ -783,6 +800,30 @@ try {
       `${name} did not preserve 404 concealment/request id`,
     );
   }
+
+  const downscopedSession = await beginAuthorization(baseUrl, client.client_id, aliceJwt);
+  assert(!(downscopedSession instanceof Response), "downscope authorization did not start");
+  const downscopedApproval = await submitConsent(baseUrl, downscopedSession, aliceJwt, "approve");
+  assert(downscopedApproval.status === 302, "downscope consent was not approved");
+  const downscopedCode = new URL(downscopedApproval.headers.get("location") ?? "").searchParams.get(
+    "code",
+  );
+  assert(downscopedCode, "downscope authorization returned no code");
+  const downscopedToken = await exchangeCode(
+    baseUrl,
+    client.client_id,
+    downscopedSession.verifier,
+    downscopedCode,
+    "other",
+  );
+  assert(downscopedToken.scope === "", "provider did not issue the expected empty token scope");
+  const downscopedBearer = await rpc(baseUrl, downscopedToken.access_token, {
+    jsonrpc: "2.0",
+    id: 5,
+    method: "initialize",
+    params: {},
+  });
+  assert(downscopedBearer.status === 403, "downscoped bearer retained Deploy authority");
 
   const expiredAccessToken = await authorize(baseUrl, client.client_id, aliceJwt);
   await mutateTokenRecord(cwd, persistTo, expiredAccessToken.access_token, (record) => {

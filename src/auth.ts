@@ -7,6 +7,29 @@ import type { Env } from "./env";
 /** This service's own audience, named by tokens presented at its ingress. */
 export const SERVICE_AUDIENCE = "cail:deploy";
 
+function testPrincipals(env: Env): Record<string, string> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(env.TEST_PRINCIPALS_JSON ?? "{}");
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const entries = Object.entries(parsed);
+  if (entries.length === 0) return null;
+  if (
+    entries.some(
+      ([credential, subject]) =>
+        !/^[A-Za-z0-9._~-]+$/u.test(credential) ||
+        typeof subject !== "string" ||
+        !SUBJECT_PATTERN.test(subject),
+    )
+  ) {
+    return null;
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
+}
+
 /**
  * Whether identity verification is usable right now. Used by the readiness probe
  * so it reports the same health this boundary enforces, instead of ok
@@ -14,7 +37,8 @@ export const SERVICE_AUDIENCE = "cail:deploy";
  * authenticated request failed.
  */
 export async function identityReady(env: Env): Promise<boolean> {
-  if (env.AUTH_MODE !== "cail-jwt") return true;
+  if (env.AUTH_MODE === "test") return testPrincipals(env) !== null;
+  if (env.AUTH_MODE !== "cail-jwt") return false;
   const config = await loadIdentityVerifierConfig({
     jwks: env.CAIL_IDENTITY_JWKS,
     issuer: env.CAIL_IDENTITY_ISSUER,
@@ -92,10 +116,8 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
   if (!match?.[1])
     throw new ApiError(401, "authentication_required", "A bearer credential is required.");
 
-  let principals: Record<string, string>;
-  try {
-    principals = JSON.parse(env.TEST_PRINCIPALS_JSON ?? "{}") as Record<string, string>;
-  } catch {
+  const principals = testPrincipals(env);
+  if (!principals) {
     throw new ApiError(503, "test_identity_invalid", "The isolated identity map is invalid.");
   }
   const subject = principals[match[1]];

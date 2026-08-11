@@ -4,6 +4,17 @@ import { ApiError, errorResponse } from "./domain/errors";
 import { readLoggingContext, type Env } from "./env";
 import { requestIdForRequest } from "./request-id";
 
+function withApiHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-store");
+  headers.set("X-Content-Type-Options", "nosniff");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export const workerHandler = {
   async fetch(request: Request, env: Env): Promise<Response> {
     let requestId: string = crypto.randomUUID();
@@ -34,7 +45,7 @@ export const workerHandler = {
           "This service isn't available right now.",
         );
       }
-      return await handleApi(request, env, requestId);
+      return withApiHeaders(await handleApi(request, env, requestId));
     } catch (error) {
       return errorResponse(error, requestId);
     }

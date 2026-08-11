@@ -51,7 +51,6 @@ describe("immutable artifact contract", () => {
       "publishing",
       "reconciling",
       "live",
-      "rejected",
       "failed",
     ]);
   });

@@ -28,6 +28,7 @@ import {
 import {
   acquireReconciliationAuthority,
   completeReconciliation,
+  failReconciliation,
   getOwnedRevision,
   getRevision,
   idempotentResponse,
@@ -47,8 +48,10 @@ const DEFAULT_PREVIEW_TIMEOUT_MS = 5_000;
 const MIN_PREVIEW_TIMEOUT_MS = 100;
 const MAX_PREVIEW_TIMEOUT_MS = 30_000;
 const RECONCILIATION_LEASE_MULTIPLIER = 2;
-export const RELEASE_INSERT_SQL = `INSERT INTO releases (release_id, project_id, revision_id, target, approval, status, workflow_instance_id, rollback_of_release_id, operational_subject, request_id, admitted_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`;
+export const RELEASE_INSERT_SQL = `INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, rollback_of_release_id, operational_subject, request_id, admitted_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`;
+export const LATEST_LIVE_RELEASE_SQL =
+  "SELECT * FROM releases WHERE project_id = ? AND status = 'live' ORDER BY release_sequence DESC LIMIT 1";
 
 export function previewTimeoutMs(raw: string | undefined): number {
   const value = raw === undefined ? DEFAULT_PREVIEW_TIMEOUT_MS : Number(raw);
@@ -109,6 +112,39 @@ function workflowParams(release: ReleaseRow): ReleaseWorkflowParams {
   };
 }
 
+async function releaseReplayResponse(
+  env: Env,
+  projectId: string,
+  operation: string,
+  key: string,
+  requestDigest: string,
+): Promise<Response | null> {
+  const replay = await idempotentResponse(env, projectId, operation, key, requestDigest);
+  if (!replay) return null;
+  const replayReleaseId =
+    typeof replay === "object" &&
+    replay !== null &&
+    "releaseId" in replay &&
+    typeof replay.releaseId === "string" &&
+    RELEASE_PATTERN.test(replay.releaseId)
+      ? replay.releaseId
+      : null;
+  if (!replayReleaseId) {
+    throw new ApiError(
+      500,
+      "idempotency_record_invalid",
+      "Something went wrong processing this release. Try again.",
+    );
+  }
+  const replayRelease = await requireRelease(env, projectId, replayReleaseId);
+  await ensureWorkflowInstance(
+    env,
+    replayRelease.workflow_instance_id,
+    workflowParams(replayRelease),
+  );
+  return Response.json(replay, { status: 200 });
+}
+
 function requiredIdempotencyKey(request: Request): string {
   const key = request.headers.get("Idempotency-Key");
   if (!key || key.length > 120 || !/^[A-Za-z0-9._:-]+$/u.test(key)) {
@@ -126,6 +162,14 @@ async function jsonBody(request: Request): Promise<unknown> {
     return await request.json();
   } catch {
     throw new ApiError(400, "invalid_json", "The request body must be valid JSON.");
+  }
+}
+
+export function parseArtifactJsonBytes(bytes: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new ApiError(400, "artifact_json_invalid", "Your upload must be valid UTF-8 JSON.");
   }
 }
 
@@ -269,7 +313,6 @@ function releaseResponse(release: ReleaseRow) {
     projectId: release.project_id,
     releaseId: release.release_id,
     revisionId: release.revision_id,
-    target: release.target,
     approval: release.approval,
     status: release.status,
     workflowInstanceId: release.workflow_instance_id,
@@ -292,14 +335,26 @@ async function createProject(request: Request, env: Env, subject: string): Promi
   const projectId = opaqueId("prj");
   const createdAt = new Date().toISOString();
   const response = { projectId, name: body.name, createdAt };
-  await env.DB.batch([
-    env.DB.prepare(
-      "INSERT INTO projects (project_id, owner_subject, name, created_at) VALUES (?, ?, ?, ?)",
-    ).bind(projectId, subject, body.name, createdAt),
-    env.DB.prepare(
-      "INSERT INTO idempotency (project_id, operation, idempotency_key, request_digest, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-    ).bind(scope, "create_project", key, requestDigest, JSON.stringify(response), createdAt),
-  ]);
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO projects (project_id, owner_subject, name, created_at) VALUES (?, ?, ?, ?)",
+      ).bind(projectId, subject, body.name, createdAt),
+      env.DB.prepare(
+        "INSERT INTO idempotency (project_id, operation, idempotency_key, request_digest, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind(scope, "create_project", key, requestDigest, JSON.stringify(response), createdAt),
+    ]);
+  } catch (cause) {
+    const concurrentReplay = await idempotentResponse(
+      env,
+      scope,
+      "create_project",
+      key,
+      requestDigest,
+    );
+    if (concurrentReplay) return Response.json(concurrentReplay, { status: 200 });
+    throw cause;
+  }
   return Response.json(response, { status: 201 });
 }
 
@@ -331,12 +386,7 @@ async function uploadRevision(
   if (digest !== bytesToHex(expected)) {
     throw new ApiError(400, "digest_mismatch", "Content-Digest does not match the uploaded bytes.");
   }
-  let artifactJson: unknown;
-  try {
-    artifactJson = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    throw new ApiError(400, "artifact_json_invalid", "Your upload must be valid JSON.");
-  }
+  const artifactJson = parseArtifactJsonBytes(bytes);
   const artifact = parsedBody(artifactSchema.safeParse(artifactJson));
   if (artifact.requestedBindings.length > 0) {
     throw new ApiError(
@@ -482,50 +532,19 @@ async function startRelease(
     );
   }
   const revisionId = source?.revision_id ?? releaseBody?.revisionId;
-  const target = source?.target ?? releaseBody?.target;
   const approval = rollbackBody?.approval ?? releaseBody?.approval;
-  if (!revisionId || !target || !approval)
+  if (!revisionId || !approval)
     throw new ApiError(400, "invalid_request", "The release request is incomplete.");
-  if (target === "production" && env.ALLOW_PRODUCTION_TARGET !== "1") {
-    throw new ApiError(
-      403,
-      "production_target_denied",
-      "This environment only supports preview releases.",
-    );
-  }
   const revision = await getRevision(env, projectId, revisionId);
   if (!revision) throw new ApiError(404, "revision_not_found", "The revision was not found.");
   await requireConsistentRevisionArtifact(env, revision);
 
   const key = requiredIdempotencyKey(request);
-  const requestShape = { revisionId, target, approval, rollbackOfReleaseId };
+  const requestShape = { revisionId, approval, rollbackOfReleaseId };
   const requestDigest = await sha256Hex(canonicalJson(requestShape));
   const operation = rollbackOfReleaseId ? `rollback:${rollbackOfReleaseId}` : "create_release";
-  const replay = await idempotentResponse(env, projectId, operation, key, requestDigest);
-  if (replay) {
-    const replayReleaseId =
-      typeof replay === "object" &&
-      replay !== null &&
-      "releaseId" in replay &&
-      typeof replay.releaseId === "string" &&
-      RELEASE_PATTERN.test(replay.releaseId)
-        ? replay.releaseId
-        : null;
-    if (!replayReleaseId) {
-      throw new ApiError(
-        500,
-        "idempotency_record_invalid",
-        "Something went wrong processing this release. Try again.",
-      );
-    }
-    const replayRelease = await requireRelease(env, projectId, replayReleaseId);
-    await ensureWorkflowInstance(
-      env,
-      replayRelease.workflow_instance_id,
-      workflowParams(replayRelease),
-    );
-    return Response.json(replay, { status: 200 });
-  }
+  const replay = await releaseReplayResponse(env, projectId, operation, key, requestDigest);
+  if (replay) return replay;
 
   const releaseId = opaqueId("rel");
   const now = new Date().toISOString();
@@ -534,7 +553,6 @@ async function startRelease(
     projectId,
     releaseId,
     revisionId,
-    target,
     approval,
     status: "queued",
     workflowInstanceId: releaseId,
@@ -542,28 +560,39 @@ async function startRelease(
     createdAt: now,
     updatedAt: now,
   };
-  await env.DB.batch([
-    env.DB.prepare(RELEASE_INSERT_SQL).bind(
-      releaseId,
+  try {
+    await env.DB.batch([
+      env.DB.prepare(RELEASE_INSERT_SQL).bind(
+        releaseId,
+        projectId,
+        revisionId,
+        approval,
+        releaseId,
+        rollbackOfReleaseId,
+        logSubject ?? null,
+        requestId,
+        now,
+        now,
+        now,
+      ),
+      env.DB.prepare(
+        "INSERT INTO release_events (release_id, sequence, type, occurred_at, actor_subject, detail_json) VALUES (?, 1, 'release.queued', ?, ?, ?)",
+      ).bind(releaseId, now, subject, JSON.stringify({ revisionId, rollbackOfReleaseId })),
+      env.DB.prepare(
+        "INSERT INTO idempotency (project_id, operation, idempotency_key, request_digest, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind(projectId, operation, key, requestDigest, JSON.stringify(response), now),
+    ]);
+  } catch (cause) {
+    const concurrentReplay = await releaseReplayResponse(
+      env,
       projectId,
-      revisionId,
-      target,
-      approval,
-      releaseId,
-      rollbackOfReleaseId,
-      logSubject ?? null,
-      requestId,
-      now,
-      now,
-      now,
-    ),
-    env.DB.prepare(
-      "INSERT INTO release_events (release_id, sequence, type, occurred_at, actor_subject, detail_json) VALUES (?, 1, 'release.queued', ?, ?, ?)",
-    ).bind(releaseId, now, subject, JSON.stringify({ revisionId, target, rollbackOfReleaseId })),
-    env.DB.prepare(
-      "INSERT INTO idempotency (project_id, operation, idempotency_key, request_digest, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-    ).bind(projectId, operation, key, requestDigest, JSON.stringify(response), now),
-  ]);
+      operation,
+      key,
+      requestDigest,
+    );
+    if (concurrentReplay) return concurrentReplay;
+    throw cause;
+  }
   emitReleaseAdmission(env, releaseId, requestId, logSubject);
   await ensureWorkflowInstance(env, releaseId, {
     projectId,
@@ -678,16 +707,14 @@ async function previewProject(
   projectId: string,
 ): Promise<Response> {
   await requireOwnedProject(env, projectId, subject);
-  const release = await env.DB.prepare(
-    "SELECT * FROM releases WHERE project_id = ? AND status = 'live' ORDER BY updated_at DESC LIMIT 1",
-  )
-    .bind(projectId)
-    .first<ReleaseRow>();
+  const release = await env.DB.prepare(LATEST_LIVE_RELEASE_SQL).bind(projectId).first<ReleaseRow>();
   if (!release?.publication_name)
     throw new ApiError(404, "live_release_not_found", "The project has no live release.");
-  const headers = new Headers(request.headers);
-  headers.delete("Authorization");
-  headers.delete("X-CAIL-Identity-JWT");
+  const headers = new Headers();
+  for (const name of ["Accept", "Accept-Language", "X-CAIL-Request-Id"]) {
+    const value = request.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
   const signal = AbortSignal.any([
     request.signal,
     AbortSignal.timeout(previewTimeoutMs(env.PREVIEW_TIMEOUT_MS)),
@@ -703,7 +730,16 @@ async function previewProject(
     signal,
   });
   try {
-    return await env.DISPATCHER.get(release.publication_name).fetch(target);
+    const response = await env.DISPATCHER.get(release.publication_name).fetch(target);
+    const responseHeaders = new Headers(response.headers);
+    responseHeaders.delete("Set-Cookie");
+    responseHeaders.delete("Set-Cookie2");
+    responseHeaders.delete("Clear-Site-Data");
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+    });
   } catch (cause) {
     throw new ApiError(503, "preview_unavailable", "The live preview is unavailable.", {
       cause,
@@ -891,29 +927,58 @@ async function reconcileRelease(
     );
   }
 
-  const retained = await env.ARTIFACTS.get(release.prepared_key);
-  if (!retained)
-    throw new ApiError(
-      409,
-      "prepared_artifact_missing",
-      "The files saved for this release are missing.",
-    );
-  const json = await retained.text();
-  if ((await sha256Hex(json)) !== release.prepared_digest) {
-    throw new ApiError(
-      409,
-      "prepared_digest_mismatch",
-      "The files saved for this release failed their check.",
-    );
-  }
-
   try {
-    const name = await publishWorker(
-      env,
-      projectId,
-      release.revision_id,
-      JSON.parse(json) as PreparedEnvelope,
-    );
+    const retained = await env.ARTIFACTS.get(release.prepared_key);
+    if (!retained)
+      throw new ApiError(
+        409,
+        "prepared_artifact_missing",
+        "The files saved for this release are missing.",
+      );
+    const json = await retained.text();
+    if ((await sha256Hex(json)) !== release.prepared_digest) {
+      throw new ApiError(
+        409,
+        "prepared_digest_mismatch",
+        "The files saved for this release failed their check.",
+      );
+    }
+
+    let name: string;
+    try {
+      name = await publishWorker(
+        env,
+        projectId,
+        release.revision_id,
+        JSON.parse(json) as PreparedEnvelope,
+      );
+    } catch (cause) {
+      if (apiErrorSnapshot(cause)?.code !== "publication_rejected") throw cause;
+      const failed = await failReconciliation(
+        env,
+        release,
+        requestDigest,
+        authority.token,
+        requestId,
+      );
+      if (!failed) {
+        throw new ApiError(
+          409,
+          "release_reconciliation_raced",
+          "This release is already being processed. Check its status in a moment.",
+        );
+      }
+      emitReleaseTerminal(
+        env,
+        releaseId,
+        release.request_id,
+        release.operational_subject ?? undefined,
+        release.admitted_at,
+        "error",
+        "upstream_failure",
+      );
+      throw cause;
+    }
     let completed: boolean;
     try {
       completed = await completeReconciliation(

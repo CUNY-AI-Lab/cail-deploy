@@ -4,7 +4,7 @@ import {
   TEST_OPERATIONAL_SUBJECTS,
   TEST_SUBJECTS,
 } from "@cuny-ai-lab/cail-identity/testing";
-import { authenticate } from "../src/auth";
+import { authenticate, identityReady } from "../src/auth";
 import type { Env } from "../src/env";
 import { workerHandler } from "../src/handler";
 import { operationalLogSubject } from "../src/operational-events";
@@ -24,6 +24,21 @@ function env(overrides: Partial<Env>): Env {
 }
 
 describe("CAIL identity boundary", () => {
+  test("readiness rejects unsupported and malformed identity modes", async () => {
+    expect(await identityReady(env({ AUTH_MODE: "unknown" }))).toBe(false);
+    expect(await identityReady(env({ AUTH_MODE: "test", TEST_PRINCIPALS_JSON: "not-json" }))).toBe(
+      false,
+    );
+    expect(
+      await identityReady(
+        env({
+          AUTH_MODE: "test",
+          TEST_PRINCIPALS_JSON: JSON.stringify({ test: TEST_SUBJECTS.alice }),
+        }),
+      ),
+    ).toBe(true);
+  });
+
   test("never maps an ownership subject into an operational subject", () => {
     expect(operationalLogSubject(TEST_SUBJECTS.alice)).toBeUndefined();
     expect(operationalLogSubject(TEST_SUBJECTS.alice, TEST_OPERATIONAL_SUBJECTS.alice)).toBe(
