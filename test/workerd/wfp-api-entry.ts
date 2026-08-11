@@ -132,7 +132,7 @@ async function publish(request: Request, env: Env): Promise<Response> {
     url.origin !== "https://api.cloudflare.com" ||
     match[1] !== "integration-account" ||
     match[2] !== "integration-namespace" ||
-    !/^kp-integration-local-e2e-[0-9a-f]{12}$/u.test(match[3]) ||
+    !/^[0-9a-f]{64}$/u.test(match[3]) ||
     !authorizationAccepted
   ) {
     return rejectWithState(

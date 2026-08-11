@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 
 interface WranglerConfig {
   vars?: Record<string, unknown>;
-  env?: Record<string, { vars?: Record<string, unknown> }>;
 }
 
 const configs = [
@@ -15,7 +14,7 @@ const configs = [
 ] as const;
 
 async function loadConfig(path: string): Promise<WranglerConfig> {
-  return JSON.parse(await Bun.file(path).text()) as WranglerConfig;
+  return Bun.JSONC.parse(await Bun.file(path).text()) as WranglerConfig;
 }
 
 describe("Wrangler deployment environment bindings", () => {
@@ -27,8 +26,8 @@ describe("Wrangler deployment environment bindings", () => {
   });
 
   test("the production environment declares its own binding", async () => {
-    const config = await loadConfig("wrangler.jsonc");
-    expect(config.env?.production?.vars?.CAIL_ENVIRONMENT).toBe("production");
+    const config = await loadConfig("wrangler.production.jsonc");
+    expect(config.vars?.CAIL_ENVIRONMENT).toBe("production");
   });
 
   test("the production profile does not pin a source revision", async () => {

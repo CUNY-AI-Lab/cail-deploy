@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readArtifactBody } from "../src/api";
+import { parseArtifactJsonBytes, readArtifactBody } from "../src/api";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
 const maxArtifactBytes = 2 * 1024 * 1024;
@@ -19,6 +19,17 @@ function streamingRequest(
 }
 
 describe("revision upload body boundary", () => {
+  test("rejects malformed UTF-8 instead of changing uploaded JSON text", () => {
+    const prefix = new TextEncoder().encode('{"source":"');
+    const suffix = new TextEncoder().encode('"}');
+    const bytes = new Uint8Array(prefix.byteLength + 1 + suffix.byteLength);
+    bytes.set(prefix);
+    bytes[prefix.byteLength] = 0x80;
+    bytes.set(suffix, prefix.byteLength + 1);
+
+    expect(() => parseArtifactJsonBytes(bytes)).toThrow("valid UTF-8 JSON");
+  });
+
   test("rejects a declared oversized body before reading it", async () => {
     let pulls = 0;
     let cancelled = false;

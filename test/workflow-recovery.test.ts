@@ -232,7 +232,6 @@ describe("release Workflow recovery", () => {
       projectId,
       releaseId,
       revisionId,
-      target: "preview",
       approval: "automatic",
       status: "queued",
       workflowInstanceId: releaseId,
@@ -244,7 +243,6 @@ describe("release Workflow recovery", () => {
       release_id: releaseId,
       project_id: projectId,
       revision_id: revisionId,
-      target: "preview",
       approval: "automatic",
       status: "queued",
       workflow_instance_id: releaseId,
@@ -304,7 +302,6 @@ describe("release Workflow recovery", () => {
 
     const requestBody = {
       revisionId,
-      target: "preview",
       approval: "automatic",
     } as const;
     async function requestDigest(): Promise<string> {
@@ -313,7 +310,6 @@ describe("release Workflow recovery", () => {
           approval: requestBody.approval,
           revisionId: requestBody.revisionId,
           rollbackOfReleaseId: null,
-          target: requestBody.target,
         }),
       );
       return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (byte) =>
@@ -343,7 +339,6 @@ describe("release Workflow recovery", () => {
       },
       ARTIFACTS: { head },
       RELEASE_WORKFLOW: { get, create },
-      ALLOW_PRODUCTION_TARGET: "0",
     } as unknown as Env;
     const replayRequestId = "22222222-2222-4222-8222-222222222222";
     const request = new Request(`https://deploy.test/v1/projects/${projectId}/releases`, {

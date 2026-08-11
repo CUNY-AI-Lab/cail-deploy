@@ -4,6 +4,7 @@ import { handleApiForPrincipal, reconciliationLeaseMs } from "../src/api";
 import type { Principal } from "../src/auth";
 import { canonicalJson, sha256Hex } from "../src/domain/digests";
 import type { Env } from "../src/env";
+import { appendTerminalStatus } from "../src/storage";
 
 const subject = `cail-${"a".repeat(32)}`;
 const projectId = `prj_${"b".repeat(32)}`;
@@ -11,6 +12,7 @@ const revisionId = `rev_sha256_${"c".repeat(64)}`;
 const releaseId = "rel_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa";
 const requestId = "11111111-1111-4111-8111-111111111111";
 const preparedKey = `prepared/${projectId}/${releaseId}/worker.json`;
+const publicationName = "c".repeat(64);
 const originalFetch = globalThis.fetch;
 
 function successfulProviderResponse(): Response {
@@ -19,7 +21,7 @@ function successfulProviderResponse(): Response {
     messages: [],
     success: true,
     result: {
-      id: "kp-ki-20260722123456-abcdef12-bbbbbbbbbbbb",
+      id: publicationName,
       startup_time_ms: 1,
     },
   });
@@ -98,10 +100,10 @@ async function fixture(status: "publishing" | "reconciling") {
   ]);
   sqlite.run(
     `INSERT INTO releases
-      (release_id, project_id, revision_id, target, approval, status, workflow_instance_id,
+      (release_id, project_id, revision_id, approval, status, workflow_instance_id,
        prepared_key, prepared_digest, operational_subject, request_id, admitted_at, created_at,
        updated_at)
-     VALUES (?, ?, ?, 'preview', 'required', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, 'required', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       releaseId,
       projectId,
@@ -129,9 +131,8 @@ async function fixture(status: "publishing" | "reconciling") {
     WFP_ACCOUNT_ID: "account",
     WFP_NAMESPACE: "namespace",
     WFP_PUBLISH_TIMEOUT_MS: "1000",
-    RUN_ID: "ki-20260722123456-abcdef12",
   } as unknown as Env;
-  return { db, env, preparedDigest };
+  return { db, env, prepared, preparedDigest };
 }
 
 async function seedActiveClaim(
@@ -185,7 +186,7 @@ describe("release reconciliation authority", () => {
       expect(await first.json()).toMatchObject({
         releaseId,
         status: "live",
-        publicationName: "kp-ki-20260722123456-abcdef12-bbbbbbbbbbbb",
+        publicationName,
       });
       const replay = await handleApiForPrincipal(
         reconcileRequest(),
@@ -203,12 +204,65 @@ describe("release reconciliation authority", () => {
         {
           type: "release.live",
           detail_json: JSON.stringify({
-            publicationName: "kp-ki-20260722123456-abcdef12-bbbbbbbbbbbb",
+            publicationName,
             reconciled: true,
             requestId,
           }),
         },
       ]);
+    });
+  }
+
+  test("a deterministic provider rejection terminally fails reconciliation", async () => {
+    const { db, env } = await fixture("reconciling");
+    globalThis.fetch = mock(async () => new Response(null, { status: 400 })) as typeof fetch;
+
+    await expect(
+      handleApiForPrincipal(reconcileRequest(), env, principal, requestId),
+    ).rejects.toMatchObject({ status: 502, code: "publication_rejected" });
+    expect(
+      db.sqlite.query("SELECT status FROM releases WHERE release_id = ?").get(releaseId),
+    ).toEqual({ status: "failed" });
+    expect(
+      db.sqlite
+        .query("SELECT type, detail_json FROM release_events WHERE release_id = ?")
+        .get(releaseId),
+    ).toEqual({
+      type: "release.failed",
+      detail_json: JSON.stringify({
+        code: "publication_rejected",
+        reconciled: true,
+        requestId,
+      }),
+    });
+  });
+
+  for (const retainedFailure of ["missing", "digest mismatch"] as const) {
+    test(`releases reconciliation authority after retained bytes are ${retainedFailure}`, async () => {
+      const { db, env } = await fixture("reconciling");
+      globalThis.fetch = mock(async () => {
+        throw new Error("provider must not be called");
+      }) as typeof fetch;
+      env.ARTIFACTS = {
+        get: async () =>
+          retainedFailure === "missing" ? null : { text: async () => "wrong prepared bytes" },
+      } as R2Bucket;
+      const expectedCode =
+        retainedFailure === "missing" ? "prepared_artifact_missing" : "prepared_digest_mismatch";
+
+      for (const retryRequestId of [requestId, "33333333-3333-4333-8333-333333333333"]) {
+        await expect(
+          handleApiForPrincipal(reconcileRequest(), env, principal, retryRequestId),
+        ).rejects.toMatchObject({ status: 409, code: expectedCode });
+        expect(
+          db.sqlite
+            .query(
+              "SELECT 1 FROM idempotency WHERE project_id = ? AND operation = 'prepared-publication' AND idempotency_key = ?",
+            )
+            .get(projectId, `reconcile:${releaseId}`),
+        ).toBeNull();
+      }
+      expect(globalThis.fetch).not.toHaveBeenCalled();
     });
   }
 
@@ -346,7 +400,7 @@ describe("release reconciliation authority", () => {
       {
         type: "release.live",
         detail_json: JSON.stringify({
-          publicationName: "kp-ki-20260722123456-abcdef12-bbbbbbbbbbbb",
+          publicationName,
           reconciled: true,
           requestId: takeoverRequestId,
         }),
@@ -440,8 +494,8 @@ describe("release reconciliation authority", () => {
 
     resolvers[0]?.(new Response(null, { status: 400 }));
     await expect(stale).rejects.toMatchObject({
-      status: 502,
-      code: "publication_rejected",
+      status: 409,
+      code: "release_reconciliation_raced",
     });
     expect(
       db.sqlite
@@ -534,15 +588,7 @@ describe("release reconciliation authority", () => {
   test("does not overwrite or fabricate live after a terminal race", async () => {
     const { db, env } = await fixture("reconciling");
     globalThis.fetch = mock(async () => {
-      const now = "2026-07-23T00:00:01.000Z";
-      db.sqlite.run("INSERT INTO release_events VALUES (?, 1, 'release.failed', ?, NULL, '{}')", [
-        releaseId,
-        now,
-      ]);
-      db.sqlite.run("UPDATE releases SET status = 'failed', updated_at = ? WHERE release_id = ?", [
-        now,
-        releaseId,
-      ]);
+      expect(await appendTerminalStatus(env, releaseId, "failed", "release.failed")).toBe(true);
       return successfulProviderResponse();
     }) as typeof fetch;
 

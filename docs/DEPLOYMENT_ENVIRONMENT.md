@@ -8,15 +8,15 @@ whitespace-padded values leave readiness unavailable and reject operational
 API/MCP traffic before it can reach authentication or stateful work.
 
 The top-level `wrangler.jsonc` is the isolated local configuration and binds
-`CAIL_ENVIRONMENT` to `test`. It declares a separate `env.production` value so
-an explicitly selected production profile cannot inherit a test label. Wrangler
-bindings and `vars` are non-inheritable across environments, so an authorized
-production configuration must provide its complete resource bindings and
-`CAIL_ENVIRONMENT: "production"` together. The repository does not declare a
-staging profile; selecting one without a complete source-owned configuration
-must remain unavailable rather than silently becoming staging.
+`CAIL_ENVIRONMENT` to `test`. `wrangler.production.jsonc` is the complete live
+configuration and binds `CAIL_ENVIRONMENT` to `production`. The label describes
+the control-plane deployment; it is unrelated to artifact publication, which
+always stays inside the configured Workers for Platforms namespace.
 
-No deployment or binding migration is performed by this source change.
+The live control plane must bind a D1 database created from the canonical
+`schema/0001_control_plane.sql`. Because the current live database predates that
+greenfield schema, release requires an empty-state database recreation and a
+new binding ID before the updated Worker can receive traffic.
 
 References: [Cloudflare Workers environment variables](https://developers.cloudflare.com/workers/configuration/environment-variables/),
 [Wrangler environments and non-inheritance](https://developers.cloudflare.com/workers/wrangler/environments/),

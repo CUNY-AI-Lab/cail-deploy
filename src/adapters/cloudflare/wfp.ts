@@ -145,8 +145,8 @@ function validPublicationEnvelope(value: unknown, expectedName: string): boolean
   );
 }
 
-export function publicationName(runId: string, projectId: string): string {
-  return `kp-${runId}-${projectId.slice(4, 16)}`;
+export function publicationName(revisionId: string): string {
+  return revisionId.slice("rev_sha256_".length);
 }
 
 export function publicationTimeoutMs(raw: string | undefined): number {
@@ -180,7 +180,7 @@ export async function publishWorker(
   }
   const timeout = publicationTimeoutMs(env.WFP_PUBLISH_TIMEOUT_MS);
   const signal = AbortSignal.timeout(timeout);
-  const name = publicationName(env.RUN_ID, projectId);
+  const name = publicationName(revisionId);
   const metadata = {
     main_module: prepared.mainModule,
     compatibility_date: prepared.compatibilityDate,

@@ -1,12 +1,29 @@
 import {
   hostHeaderValidationResponse,
+  isJsonContentType,
   isLegacyRequest,
   originValidationResponse,
 } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import type { Principal } from "../../auth";
+import { apiErrorSnapshot } from "../../domain/errors";
 import type { Env } from "../../env";
 import { createKaleMcpServer, handleLegacyMcpMessage, readMcpMessage } from "../../mcp";
+
+function protocolError(status: number, code: number, message: string, requestId: string): Response {
+  return Response.json(
+    { jsonrpc: "2.0", error: { code, message }, id: null },
+    {
+      status,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-CAIL-Request-Id": requestId,
+        "X-Content-Type-Options": "nosniff",
+        "x-request-id": requestId,
+      },
+    },
+  );
+}
 
 export async function handleMcpWithPrincipal(
   request: Request,
@@ -15,7 +32,14 @@ export async function handleMcpWithPrincipal(
   principal: Principal,
 ): Promise<Response> {
   if (typeof request.url === "string") {
-    const requestHostname = new URL(request.url).hostname;
+    const url = new URL(request.url);
+    if (url.pathname !== "/mcp") {
+      return Response.json(
+        { error: { code: "route_not_found", message: "The route was not found.", requestId } },
+        { status: 404 },
+      );
+    }
+    const requestHostname = url.hostname;
     const boundaryRejection =
       (request.headers.has("Host")
         ? hostHeaderValidationResponse(request, [requestHostname])
@@ -23,14 +47,36 @@ export async function handleMcpWithPrincipal(
     if (boundaryRejection) return boundaryRejection;
   }
 
-  const parsedBody = await readMcpMessage(request, requestId);
-  const headers = new Headers(request.headers);
-  if (!headers.has("Accept")) {
-    headers.set("Accept", "application/json, text/event-stream");
+  const accept = request.headers.get("Accept");
+  if (!accept?.includes("application/json") || !accept.includes("text/event-stream")) {
+    return protocolError(
+      406,
+      -32000,
+      "Not Acceptable: Client must accept both application/json and text/event-stream",
+      requestId,
+    );
+  }
+  if (!isJsonContentType(request.headers.get("Content-Type"))) {
+    return protocolError(
+      415,
+      -32000,
+      "Unsupported Media Type: Content-Type must be application/json",
+      requestId,
+    );
+  }
+
+  let parsedBody: unknown;
+  try {
+    parsedBody = await readMcpMessage(request, requestId);
+  } catch (error) {
+    if (apiErrorSnapshot(error)?.code === "invalid_mcp") {
+      return protocolError(400, -32700, "Parse error: Invalid JSON", requestId);
+    }
+    throw error;
   }
   const transportRequest = new Request(request.url, {
     method: request.method,
-    headers,
+    headers: request.headers,
     signal: request.signal,
   });
   if (await isLegacyRequest(transportRequest, parsedBody)) {

@@ -88,7 +88,10 @@ function projectRequest(correlation = requestId): Request {
 function mcpCreateProjectRequest(): Request {
   return new Request("https://deploy.invalid/mcp", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: 7,

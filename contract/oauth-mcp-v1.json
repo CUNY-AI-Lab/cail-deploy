@@ -33,7 +33,7 @@
   },
   "state": {
     "providerBinding": "OAUTH_KV",
-    "consentMigration": "schema/0002_oauth_consent.sql",
+    "consentSchema": "schema/0001_control_plane.sql",
     "consentTtlSeconds": 600
   }
 }

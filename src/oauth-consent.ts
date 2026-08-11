@@ -5,9 +5,9 @@ import type { Env, OAuthAuthorizationRequest, OAuthHelpersLike } from "./env";
 import { OAUTH_REQUIRED_SCOPE } from "./oauth-principal";
 
 const CONSENT_TTL_MS = 10 * 60 * 1000;
-export const CONSUME_CONSENT_NONCE_SQL = `UPDATE oauth_consent_nonces SET consumed_at = ?
+export const CONSUME_CONSENT_NONCE_SQL = `DELETE FROM oauth_consent_nonces
      WHERE nonce = ? AND owner_subject = ? AND client_id = ? AND request_digest = ?
-       AND consumed_at IS NULL AND expires_at > ?`;
+       AND expires_at > ?`;
 
 function authorizationResource(env: Env): string {
   return new URL("/mcp", env.PUBLIC_BASE_URL).toString();
@@ -135,7 +135,7 @@ async function requireClient(
   request: OAuthAuthorizationRequest,
 ): Promise<{ clientId: string; clientName?: string }> {
   const client = await helpers.lookupClient(request.clientId);
-  if (!client || !client.redirectUris.includes(request.redirectUri)) {
+  if (!client) {
     throw new ApiError(
       400,
       "invalid_oauth_client",
@@ -163,12 +163,14 @@ export async function handleOAuthAuthorize(
 
   if (request.method === "GET") {
     const nonce = `ocn_${crypto.randomUUID().replaceAll("-", "")}`;
+    const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + CONSENT_TTL_MS).toISOString();
-    await env.DB.prepare(
-      "INSERT INTO oauth_consent_nonces (nonce, owner_subject, client_id, request_digest, expires_at) VALUES (?, ?, ?, ?, ?)",
-    )
-      .bind(nonce, principal.subject, authorization.clientId, digest, expiresAt)
-      .run();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM oauth_consent_nonces WHERE expires_at <= ?").bind(now),
+      env.DB.prepare(
+        "INSERT INTO oauth_consent_nonces (nonce, owner_subject, client_id, request_digest, expires_at) VALUES (?, ?, ?, ?, ?)",
+      ).bind(nonce, principal.subject, authorization.clientId, digest, expiresAt),
+    ]);
     return consentPage(request.url, client.clientName ?? "the app you're using", nonce);
   }
 
@@ -191,7 +193,7 @@ export async function handleOAuthAuthorize(
   }
   const consumedAt = new Date().toISOString();
   const result = await env.DB.prepare(CONSUME_CONSENT_NONCE_SQL)
-    .bind(consumedAt, nonce, principal.subject, authorization.clientId, digest, consumedAt)
+    .bind(nonce, principal.subject, authorization.clientId, digest, consumedAt)
     .run();
   if ((result.meta.changes ?? 0) !== 1) {
     throw new ApiError(

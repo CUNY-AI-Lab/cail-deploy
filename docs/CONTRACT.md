@@ -17,17 +17,19 @@ Clients propagate correlation through `X-CAIL-Request-Id`, which must be a UUID.
 - `POST /v1/projects` with `Idempotency-Key` and `{"name":"Example"}` returns `201` and `{projectId,name,createdAt}`.
 - `POST /v1/projects/{projectId}/revisions` accepts exact artifact JSON bytes as `application/vnd.cuny.kale.artifact.v1+json`. `Content-Digest` is required as `sha-256=:<base64>:`. It returns `201`, or `200` for the same retained revision.
 - `GET /v1/projects/{projectId}/revisions/{revisionId}` returns owner-scoped immutable revision metadata only after the D1 row and R2 key, byte count, custom metadata, and SHA-256 checksum agree. Missing and cross-owner revisions share the same `404 revision_not_found`; inconsistent retained state returns `409 artifact_store_inconsistent`. It never returns artifact bytes.
-- `POST /v1/projects/{projectId}/releases` with `Idempotency-Key` and `{revisionId,target,approval}` returns `202`.
+- `POST /v1/projects/{projectId}/releases` with `Idempotency-Key` and `{revisionId,approval}` returns `202`.
 - `GET /v1/projects/{projectId}/releases/{releaseId}` returns the release and ordered events.
 - `POST /v1/projects/{projectId}/releases/{releaseId}/approve` with `Idempotency-Key` and `{decision:"approved"}` returns `202`.
 - `POST /v1/projects/{projectId}/releases/{releaseId}/rollback` with `Idempotency-Key` and `{approval:"required"|"automatic"}` returns a new release.
 - `POST /v1/projects/{projectId}/releases/{releaseId}/reconcile` retries only a release whose prepared bytes are retained and whose state is `publishing` or `reconciling`.
 
-`target` is `preview` or `production`. The isolated deployment permits `preview` only. The exact release status enum is `queued`, `validating`, `building`, `prepared`, `awaiting_approval`, `publishing`, `reconciling`, `live`, `rejected`, or `failed`. The underscore spelling `awaiting_approval` is normative.
+Publication is isolated: Deploy uploads the prepared Worker into its dedicated Workers for Platforms namespace. It does not claim a separate preview or production target. The script name is the revision's full SHA-256 digest, so a new or ambiguous publication cannot overwrite another revision's live bytes. Preview serves the live release with the greatest durable admission sequence; late reconciliation of an older release cannot supersede a newer admitted live release, while rollback creates a new sequence and takes effect when it becomes live. The exact release status enum is `queued`, `validating`, `building`, `prepared`, `awaiting_approval`, `publishing`, `reconciling`, `live`, or `failed`. The underscore spelling `awaiting_approval` is normative.
+
+This slice exposes no delete operation. Immutable revisions, prepared artifacts, and their content-addressed published scripts are retained indefinitely for release history and rollback. Workers for Platforms includes 1,000 scripts, then currently charges $0.02 per additional script; this release adds no arbitrary cap or cleanup scheduler.
 
 ## MCP
 
-`POST /mcp` exposes the same operations through JSON-RPC 2.0 tools. The frozen compatibility lane negotiates MCP `2025-06-18`; the stateless MCP SDK v2 lane negotiates `2026-07-28`. Both lanes expose the same six tool names, descriptions, strict JSON Schema 2020-12 input schemas generated from the runtime Zod argument schemas, and Kale tool-result errors. `kale.upload_revision` carries `artifactBase64` and `contentDigest`; all other arguments mirror the service API.
+`POST /mcp` exposes the same operations through JSON-RPC 2.0 tools. The frozen compatibility lane negotiates MCP `2025-06-18`; the stateless MCP SDK v2 lane negotiates `2026-07-28`. Both lanes expose the same seven tool names, descriptions, strict JSON Schema 2020-12 input schemas generated from the runtime Zod argument schemas, and Kale tool-result errors. `kale.upload_revision` carries `artifactBase64` and `contentDigest`; all other arguments mirror the service API.
 
 The provider validates the bearer before protocol handling. MCP never has more authority than that provider-validated principal, the bearer is never forwarded into the raw API authentication function, and protocol state never becomes authority. Requests are bounded before protocol classification. Each internal API tool call has one 30-second operation deadline covering dispatch and response consumption; its derived abort signal is passed into the internal `Request`, and only the remaining budget is spent reading the response. Caller cancellation is a correlated `499 request_cancelled`; an internal deadline is a stable correlated `504 mcp_operation_timeout`. Response overflow is a correlated `502 mcp_response_too_large`: the reader is cancelled once and no truncated result is returned. Present `Host` and `Origin` hostnames must match the request URL hostname. Public responses preserve `X-CAIL-Request-Id`, and tool failures carry the same request ID in their Kale error document.
 
@@ -43,7 +45,7 @@ The public surface is frozen in `contract/oauth-mcp-v1.json`:
 - `Authorization` is accepted only on `/mcp`; raw `/v1` remains identity-JWT-only. Supplying both credentials to `/mcp` returns `credential_ambiguity`.
 - Missing, invalid, expired, or wrong-resource bearer tokens return the provider's RFC 9728 `401` challenge. Missing scope returns `403` with `scope="cail:deploy"`. Tokens and provider internals are never included in application error bodies.
 
-The provider pin is `@cloudflare/workers-oauth-provider@0.5.0`. Its default refresh-token TTL is 30 days and dynamic-registration TTL is 90 days. These are test-only protocol records in `OAUTH_KV`; D1 project/revision/release state does not depend on them.
+The OAuth provider's default refresh-token TTL is 30 days and dynamic-registration TTL is 90 days. These are protocol records in `OAUTH_KV`; D1 project/revision/release state does not depend on them.
 
 The MCP transport pins are `agents@0.20.1`, `@modelcontextprotocol/server@2.0.0`, and `@modelcontextprotocol/client@2.0.0`. `@modelcontextprotocol/sdk@1.30.0` satisfies the Agents peer pin and exercises the frozen `2025-06-18` client lane; no separate v1 SDK alias is installed. Cloudflare-specific MCP transport imports remain isolated in `src/adapters/cloudflare/mcp.ts`; the shared tool dispatcher does not depend on Cloudflare Agents.
 

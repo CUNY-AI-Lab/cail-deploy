@@ -96,9 +96,9 @@ async function fixture(): Promise<{
   ]);
   sqlite.run(
     `INSERT INTO releases
-      (release_id, project_id, revision_id, target, approval, status, workflow_instance_id,
+      (release_id, project_id, revision_id, approval, status, workflow_instance_id,
        request_id, admitted_at, created_at, updated_at)
-     VALUES (?, ?, ?, 'preview', 'required', 'awaiting_approval', ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, 'required', 'awaiting_approval', ?, ?, ?, ?, ?)`,
     [releaseId, projectId, revisionId, releaseId, "request-id", now, now, now],
   );
   sqlite.run(

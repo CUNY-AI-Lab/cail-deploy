@@ -12,7 +12,6 @@
     "PUBLIC_BASE_URL": "http://127.0.0.1:8787",
     "CAIL_IDENTITY_ISSUER": "https://identity.release-workerd-test.invalid",
     "CAIL_IDENTITY_JWKS": "{\"keys\":[]}",
-    "RUN_ID": "release-workerd-test",
     "WFP_ACCOUNT_ID": "not-used",
     "WFP_NAMESPACE": "not-used"
   },

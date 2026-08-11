@@ -19,10 +19,10 @@ export interface RevisionRow {
 }
 
 export interface ReleaseRow {
+  release_sequence: number;
   release_id: string;
   project_id: string;
   revision_id: string;
-  target: "preview" | "production";
   approval: "required" | "automatic";
   status: string;
   workflow_instance_id: string;
@@ -47,7 +47,6 @@ export type ReleaseStatus =
   | "publishing"
   | "reconciling"
   | "live"
-  | "rejected"
   | "failed";
 
 export type ReleaseTransitionState = "applied" | "fenced" | "already_applied";
@@ -56,7 +55,7 @@ export interface ReleaseTransitionResult {
   state: ReleaseTransitionState;
 }
 
-const TERMINAL_RELEASE_STATUSES = ["live", "failed", "rejected"] as const;
+const TERMINAL_RELEASE_STATUSES = ["live", "failed"] as const;
 const NONTERMINAL_RELEASE_STATUSES = [
   "queued",
   "validating",
@@ -67,19 +66,14 @@ const NONTERMINAL_RELEASE_STATUSES = [
   "reconciling",
 ] as const;
 
-const TERMINAL_RELEASE_EVENT_TYPES = [
-  "release.live",
-  "release.failed",
-  "release.rejected",
-] as const;
+const TERMINAL_RELEASE_EVENT_TYPES = ["release.live", "release.failed"] as const;
 
 const TERMINAL_EVENT_STATUS: Record<
   (typeof TERMINAL_RELEASE_EVENT_TYPES)[number],
-  "live" | "failed" | "rejected"
+  "live" | "failed"
 > = {
   "release.live": "live",
   "release.failed": "failed",
-  "release.rejected": "rejected",
 };
 
 const RECONCILIATION_KEY = "prepared-publication";
@@ -211,7 +205,7 @@ export async function acquireReconciliationAuthority(
          AND NOT EXISTS (
            SELECT 1 FROM release_events
            WHERE release_id = releases.release_id
-             AND type IN ('release.live', 'release.failed', 'release.rejected')
+             AND type IN ('release.live', 'release.failed')
          )
      )
      RETURNING response_json, created_at`,
@@ -274,7 +268,7 @@ export async function acquireReconciliationAuthority(
            AND NOT EXISTS (
              SELECT 1 FROM release_events
              WHERE release_id = releases.release_id
-             AND type IN ('release.live', 'release.failed', 'release.rejected')
+             AND type IN ('release.live', 'release.failed')
            )
        )
      RETURNING response_json, created_at`,
@@ -373,7 +367,7 @@ export async function completeReconciliation(
          AND NOT EXISTS (
            SELECT 1 FROM release_events
            WHERE release_id = releases.release_id
-             AND type IN ('release.live', 'release.failed', 'release.rejected')
+             AND type IN ('release.live', 'release.failed')
          )`,
     ).bind(
       publicationName,
@@ -396,7 +390,7 @@ export async function completeReconciliation(
          AND NOT EXISTS (
            SELECT 1 FROM release_events
            WHERE release_id = releases.release_id
-             AND type IN ('release.live', 'release.failed', 'release.rejected')
+             AND type IN ('release.live', 'release.failed')
          )
          AND EXISTS (
            SELECT 1 FROM idempotency
@@ -465,6 +459,77 @@ export async function completeReconciliation(
   );
 }
 
+export async function failReconciliation(
+  env: Env,
+  release: ReleaseRow,
+  requestDigest: string,
+  token: { responseJson: string; createdAt: string },
+  requestId: string,
+): Promise<boolean> {
+  const now = new Date().toISOString();
+  const operation = reconciliationOperation(release.release_id);
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE releases SET status = 'failed', updated_at = ?
+       WHERE release_id = ? AND project_id = ?
+         AND status IN ('publishing', 'reconciling')
+         AND prepared_key = ? AND prepared_digest = ?
+         AND EXISTS (
+           SELECT 1 FROM idempotency
+           WHERE project_id = ? AND operation = ? AND idempotency_key = ?
+             AND request_digest = ? AND response_json = ? AND created_at = ?
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM release_events
+           WHERE release_id = releases.release_id
+             AND type IN ('release.live', 'release.failed')
+         )`,
+    ).bind(
+      now,
+      release.release_id,
+      release.project_id,
+      release.prepared_key,
+      release.prepared_digest,
+      release.project_id,
+      operation,
+      RECONCILIATION_KEY,
+      requestDigest,
+      token.responseJson,
+      token.createdAt,
+    ),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO release_events
+         (release_id, sequence, type, occurred_at, detail_json)
+       SELECT ?, COALESCE((SELECT MAX(sequence) + 1 FROM release_events WHERE release_id = ?), 1),
+         'release.failed', ?, ?
+       WHERE changes() = 1`,
+    ).bind(
+      release.release_id,
+      release.release_id,
+      now,
+      JSON.stringify({ code: "publication_rejected", reconciled: true, requestId }),
+    ),
+    env.DB.prepare(
+      `DELETE FROM idempotency
+       WHERE project_id = ? AND operation = ? AND idempotency_key = ?
+         AND request_digest = ? AND response_json = ? AND created_at = ?
+         AND EXISTS (
+           SELECT 1 FROM releases
+           WHERE release_id = ? AND status = 'failed'
+         )`,
+    ).bind(
+      release.project_id,
+      operation,
+      RECONCILIATION_KEY,
+      requestDigest,
+      token.responseJson,
+      token.createdAt,
+      release.release_id,
+    ),
+  ]);
+  return results.every((result) => (result.meta.changes ?? 0) === 1);
+}
+
 export async function requireOwnedProject(
   env: Env,
   projectId: string,
@@ -519,21 +584,18 @@ export async function requireRelease(
   return release;
 }
 
-/**
- * Return the durable terminal fence for a release. A terminal event remains
- * authoritative even if a legacy writer left the row status nonterminal.
- */
+/** Return the durable terminal fence for a release. */
 export async function hasTerminalReleaseOutcome(env: Env, releaseId: string): Promise<boolean> {
   const row = await env.DB.prepare(
     `SELECT (
        EXISTS (
          SELECT 1 FROM releases
-         WHERE release_id = ? AND status IN ('live', 'failed', 'rejected')
+         WHERE release_id = ? AND status IN ('live', 'failed')
        )
        OR EXISTS (
          SELECT 1 FROM release_events
          WHERE release_id = ?
-           AND type IN ('release.live', 'release.failed', 'release.rejected')
+           AND type IN ('release.live', 'release.failed')
        )
      ) AS terminal_outcome`,
   )
@@ -746,8 +808,8 @@ export async function appendReleaseStatus(
 export async function appendTerminalStatus(
   env: Env,
   releaseId: string,
-  status: "live" | "failed" | "rejected",
-  type: "release.live" | "release.failed" | "release.rejected",
+  status: "live" | "failed",
+  type: "release.live" | "release.failed",
   detail: Record<string, unknown> = {},
 ): Promise<boolean> {
   const result = await transitionReleaseStatus(env, {
