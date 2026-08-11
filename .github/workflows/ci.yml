@@ -25,6 +25,8 @@ jobs:
         run: bun install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Audit dependencies
+        run: bun audit --audit-level high
       - name: Run self-contained checks
         run: bun run check
       - name: Validate Wrangler dry bundle
