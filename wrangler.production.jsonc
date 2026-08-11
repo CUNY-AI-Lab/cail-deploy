@@ -6,7 +6,7 @@
   "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-22",
-  "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"],
   "workers_dev": true,
   "preview_urls": false,
   "observability": { "enabled": true },

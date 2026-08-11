@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 interface WranglerConfig {
+  compatibility_flags?: string[];
   vars?: Record<string, unknown>;
 }
 
@@ -13,11 +14,24 @@ const configs = [
   "wrangler.workerd-test.jsonc",
 ] as const;
 
+const allConfigs = [...configs, "wrangler.production.jsonc"] as const;
+
 async function loadConfig(path: string): Promise<WranglerConfig> {
   return Bun.JSONC.parse(await Bun.file(path).text()) as WranglerConfig;
 }
 
 describe("Wrangler deployment environment bindings", () => {
+  test("every maintained config passes incoming cancellation to subrequests", async () => {
+    for (const path of allConfigs) {
+      const config = await loadConfig(path);
+      expect(config.compatibility_flags, path).toEqual([
+        "nodejs_compat",
+        "enable_request_signal",
+        "request_signal_passthrough",
+      ]);
+    }
+  });
+
   test("every maintained config declares the isolated test environment", async () => {
     for (const path of configs) {
       const config = await loadConfig(path);

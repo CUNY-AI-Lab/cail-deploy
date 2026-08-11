@@ -387,6 +387,11 @@ try {
   );
   assert(protectedMetadataResponse.status === 200, "protected-resource metadata failed");
   assert(
+    protectedMetadataResponse.headers.get("Cache-Control") === "no-store" &&
+      protectedMetadataResponse.headers.get("X-Content-Type-Options") === "nosniff",
+    "protected-resource metadata omitted its response baseline",
+  );
+  assert(
     protectedMetadataResponse.headers.get("X-CAIL-Request-Id") === requestId,
     "OAuth provider response omitted the canonical request id",
   );
@@ -403,6 +408,11 @@ try {
 
   const serverMetadataResponse = await fetch(`${baseUrl}/.well-known/oauth-authorization-server`);
   assert(serverMetadataResponse.status === 200, "authorization-server metadata failed");
+  assert(
+    serverMetadataResponse.headers.get("Cache-Control") === "no-store" &&
+      serverMetadataResponse.headers.get("X-Content-Type-Options") === "nosniff",
+    "authorization-server metadata omitted its response baseline",
+  );
   const serverMetadata = (await serverMetadataResponse.json()) as Record<string, unknown>;
   assert(serverMetadata.issuer === baseUrl, "OAuth issuer drifted");
   assert(
