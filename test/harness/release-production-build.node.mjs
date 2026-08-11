@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomFillSync } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createTestIdentityIssuer, TEST_SUBJECTS } from "@cuny-ai-lab/cail-identity/testing";
@@ -262,6 +262,7 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
         "valid",
         "valid",
         "valid",
+        "http-503",
         "success-false",
         "malformed-json",
         "invalid-utf8",
@@ -591,6 +592,63 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
   assert.deepEqual(rollbackPrepared.envelope, sourcePreparedBeforeRollback.envelope);
   const rollbackModuleSha256 = moduleSha256(sourcePreparedBeforeRollback.envelope);
 
+  const largePayload = Buffer.allocUnsafe(1_350_000);
+  randomFillSync(largePayload);
+  const largeArtifact = new TextEncoder().encode(
+    JSON.stringify({
+      schemaVersion: "kale.artifact.v1",
+      runtime: "worker",
+      entrypoint: "src/index.ts",
+      files: {
+        "src/index.ts":
+          `const payload = "${largePayload.toString("base64")}";` +
+          "export default { fetch() { return new Response(String(payload.length)) } }",
+      },
+      compatibility: { date: "2026-07-22", flags: [] },
+      requestedBindings: [],
+    }),
+  );
+  assert.ok(largeArtifact.byteLength > 1_750_000, "large artifact was not near the 2 MiB limit");
+  assert.ok(largeArtifact.byteLength < 2 * 1024 * 1024, "large artifact exceeded 2 MiB");
+  const largeArtifactDigest = createHash("sha256").update(largeArtifact).digest("hex");
+  const largeContentDigest = `sha-256=:${createHash("sha256").update(largeArtifact).digest("base64")}:`;
+  const largeRevisionResponse = await deploy.fetch(revisionPath, {
+    method: "POST",
+    headers: {
+      ...identityHeaders(ownerJwt),
+      "Content-Type": "application/vnd.cuny.kale.artifact.v1+json",
+      "Content-Digest": largeContentDigest,
+    },
+    body: largeArtifact,
+  });
+  const largeRevision = await largeRevisionResponse.json();
+  assert.equal(largeRevisionResponse.status, 201, "near-2MiB revision upload failed");
+  assert.equal(largeRevision.revisionId, `rev_sha256_${largeArtifactDigest}`);
+  const largeReleaseId = await createAutomaticRelease(
+    deploy,
+    project.projectId,
+    largeRevision.revisionId,
+    ownerJwt,
+    "harness-large-release",
+  );
+  await waitForRelease(deploy, project.projectId, largeReleaseId, ownerJwt, "reconciling");
+  const largeReleaseRow = await env.DB.prepare(
+    "SELECT prepared_key, prepared_digest FROM releases WHERE release_id = ?",
+  )
+    .bind(largeReleaseId)
+    .first();
+  const largePrepared = await readPreparedObject(
+    env,
+    largeReleaseRow.prepared_key,
+    largeReleaseRow.prepared_digest,
+  );
+  assert.ok(
+    largePrepared.bytes.byteLength > 1024 * 1024,
+    "near-2MiB prepared bytes did not cross the Workflow step-result limit",
+  );
+  assert.equal(largePrepared.envelope.releaseId, largeReleaseId);
+  assert.equal(largePrepared.envelope.revisionId, largeRevision.revisionId);
+
   const responseBoundaryReleases = [];
   for (const mode of [
     "success-false",
@@ -630,7 +688,7 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
   const providerState = await providerStateResponse.json();
   assert.equal(providerStateResponse.status, 200);
   assert.equal(providerState.errors.length, 0);
-  assert.equal(providerState.observations.length, 12);
+  assert.equal(providerState.observations.length, 13);
   assert.ok(
     providerState.observations.every(
       ({ accountId, namespace, authorizationAccepted, mainModule, moduleNames }) =>
@@ -666,8 +724,12 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
     rollbackModuleSha256,
     "rollback publication did not use the exact retained prepared module bytes",
   );
+  const largeObservation = providerState.observations[5];
+  assert.equal(largeObservation.responseMode, "http-503");
+  assert.equal(largeObservation.revisionId, largeRevision.revisionId);
+  assert.deepEqual(largeObservation.moduleSha256, moduleSha256(largePrepared.envelope));
   assert.deepEqual(
-    providerState.observations.slice(5).map(({ responseMode }) => responseMode),
+    providerState.observations.slice(6).map(({ responseMode }) => responseMode),
     [
       "success-false",
       "malformed-json",
@@ -710,10 +772,10 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
   ).first();
   assert.deepEqual(finalCounts, {
     projects: 1,
-    revisions: 2,
-    releases: 10,
+    revisions: 3,
+    releases: 11,
     liveReleases: 4,
-    reconcilingReleases: 6,
+    reconcilingReleases: 7,
   });
 
   const logs = harness.getLogs();
