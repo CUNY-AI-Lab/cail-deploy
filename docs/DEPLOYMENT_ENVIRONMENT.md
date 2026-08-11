@@ -15,8 +15,9 @@ always stays inside the configured Workers for Platforms namespace.
 
 The live control plane must bind a D1 database created from the canonical
 `schema/0001_control_plane.sql`. Because the current live database predates that
-greenfield schema, release requires an empty-state database recreation and a
-new binding ID before the updated Worker can receive traffic.
+greenfield schema, release requires a fresh empty-state database and a new
+binding ID before the updated Worker can receive traffic. The prior empty
+database stays unbound as a temporary recovery artifact.
 
 References: [Cloudflare Workers environment variables](https://developers.cloudflare.com/workers/configuration/environment-variables/),
 [Wrangler environments and non-inheritance](https://developers.cloudflare.com/workers/wrangler/environments/),
