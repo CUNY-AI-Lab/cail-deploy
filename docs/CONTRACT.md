@@ -38,7 +38,7 @@ Release retrieval returns the complete ordered event history only when it contai
 The public surface is frozen in `contract/oauth-mcp-v1.json`:
 
 - `GET /.well-known/oauth-protected-resource/mcp` identifies the exact absolute `/mcp` resource, the same-origin authorization server, and only `cail:deploy`.
-- `GET /.well-known/oauth-authorization-server` identifies `POST /oauth/register`, `GET|POST /api/oauth/authorize`, and `POST /oauth/token`.
+- `GET /.well-known/oauth-authorization-server` identifies `POST /oauth/register`, Doorway's `GET|POST /api/oauth/authorize` browser ingress, and `POST /oauth/token`. Doorway privately forwards the consent request with only a `cail:deploy` identity; this service remains the OAuth issuer and token authority.
 - Authorization uses a public OAuth 2.1 authorization-code client with S256 PKCE. Plain PKCE, implicit flow, token exchange, CIMD, and external/PAT tokens are disabled.
 - Both authorize methods independently verify `X-CAIL-Identity-JWT` with the same exact issuer and `cail:deploy` audience. GET renders explicit client/scope consent but grants nothing. POST consumes one opaque ten-minute D1 nonce bound to the verified subject, client, canonical authorization request, and expiry.
 - The grant carries only `{subject, operationalSubject?, scope:["cail:deploy"]}`. The Cloudflare provider validates the bearer and passes those props to the MCP adapter; Deploy validates their representation before constructing its existing `Principal`.

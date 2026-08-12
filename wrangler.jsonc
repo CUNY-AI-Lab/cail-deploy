@@ -11,6 +11,7 @@
     "CAIL_ENVIRONMENT": "test",
     "SERVICE_AUDIENCE": "cail:deploy",
     "PUBLIC_BASE_URL": "http://127.0.0.1:8787",
+    "OAUTH_AUTHORIZE_URL": "http://127.0.0.1:8787/api/oauth/authorize",
     "WFP_ACCOUNT_ID": "replace-with-isolated-account-id",
     "WFP_NAMESPACE": "replace-with-run-scoped-namespace",
     "WFP_PUBLISH_TIMEOUT_MS": "30000",

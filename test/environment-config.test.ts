@@ -48,6 +48,9 @@ describe("Wrangler deployment environment bindings", () => {
   test("the production environment declares its own binding", async () => {
     const config = await loadConfig("wrangler.production.jsonc");
     expect(config.vars?.CAIL_ENVIRONMENT).toBe("production");
+    expect(config.vars?.OAUTH_AUTHORIZE_URL).toBe(
+      "https://cail-doorway.ailab-452.workers.dev/api/oauth/authorize",
+    );
     expect(config.observability).toEqual({
       enabled: true,
       logs: {

@@ -9,6 +9,10 @@ The production MCP endpoint is:
 
 `https://kale-release-control-plane.ailab-452.workers.dev/mcp`
 
+Browser authorization goes through CAIL Doorway so the normal CUNY login can
+mint the private identity used by the consent page. Kale Deploy remains the
+OAuth issuer and token owner.
+
 This repository also contains the `kale-deploy` Codex plugin and its artifact
 preparation helper. The plugin connects only to the institutional MCP above;
 it does not use the retired GitHub-first deploy service.

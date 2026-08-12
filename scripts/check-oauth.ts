@@ -343,6 +343,8 @@ const worker = Bun.spawn(
     "--var",
     `PUBLIC_BASE_URL:${baseUrl}`,
     "--var",
+    `OAUTH_AUTHORIZE_URL:${baseUrl}/api/oauth/authorize`,
+    "--var",
     "AUTH_MODE:cail-jwt",
     "--var",
     "CAIL_ENVIRONMENT:test",
