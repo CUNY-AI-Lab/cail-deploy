@@ -131,6 +131,9 @@ const validToolArguments = {
     projectId: "prj_22222222222222222222222222222222",
     releaseId: "rel_33333333333333333333333333333333",
   },
+  "kale.preview_project": {
+    projectId: "prj_22222222222222222222222222222222",
+  },
   "kale.approve_release": {
     projectId: "prj_22222222222222222222222222222222",
     releaseId: "rel_33333333333333333333333333333333",
@@ -168,6 +171,10 @@ const invalidToolArguments = {
     { ...validToolArguments["kale.get_release"], releaseId: "rel_invalid" },
     { ...validToolArguments["kale.get_release"], unexpected: true },
   ],
+  "kale.preview_project": [
+    { projectId: "prj_invalid" },
+    { ...validToolArguments["kale.preview_project"], unexpected: true },
+  ],
   "kale.approve_release": [
     { ...validToolArguments["kale.approve_release"], idempotencyKey: 42 },
     { ...validToolArguments["kale.approve_release"], projectId: "prj_invalid" },
@@ -194,6 +201,7 @@ describe("MCP tool argument boundary", () => {
       "kale.upload_revision": "Upload a new version of your app.",
       "kale.create_release": "Publish a version.",
       "kale.get_release": "Check on a release.",
+      "kale.preview_project": "Preview the latest live release.",
       "kale.approve_release": "Approve a release.",
       "kale.reconcile_release": "Finish a release whose publication could not be confirmed.",
       "kale.rollback_release": "Roll back to an earlier version.",
@@ -287,6 +295,59 @@ describe("MCP tool argument boundary", () => {
         message: "There is nothing left to finish on this release.",
         requestId,
       },
+    });
+  });
+
+  test("returns the owner-scoped live preview through MCP without response cookies", async () => {
+    const projectId = validToolArguments["kale.preview_project"].projectId;
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          return {
+            bind() {
+              return {
+                first: async () => {
+                  if (sql.includes("FROM projects")) {
+                    return { project_id: projectId, owner_subject: principal.subject };
+                  }
+                  if (sql.includes("FROM releases")) {
+                    return { publication_name: "published-revision" };
+                  }
+                  throw new Error(`Unexpected preview SQL: ${sql}`);
+                },
+              };
+            },
+          };
+        },
+      },
+      DISPATCHER: {
+        get(name: string) {
+          expect(name).toBe("published-revision");
+          return {
+            async fetch(request: Request) {
+              expect(new URL(request.url).pathname).toBe("/");
+              return new Response("<h1>Kale preview</h1>", {
+                headers: {
+                  "content-type": "text/html; charset=utf-8",
+                  "set-cookie": "session=must-not-escape",
+                },
+              });
+            },
+          };
+        },
+      },
+    } as unknown as Env;
+
+    const result = await (await standardClientAgainst(env)).callTool({
+      name: "kale.preview_project",
+      arguments: validToolArguments["kale.preview_project"],
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(toolText(result))).toEqual({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: "<h1>Kale preview</h1>",
     });
   });
 

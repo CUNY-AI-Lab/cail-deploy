@@ -675,7 +675,7 @@ try {
   const standardClient = new Client({ name: "kale-oauth-conformance", version: "0.1.0" });
   await standardClient.connect(standardTransport);
   const listed = await standardClient.listTools();
-  assert(listed.tools.length === 7, "standard MCP client did not list seven tools");
+  assert(listed.tools.length === 8, "standard MCP client did not list eight tools");
 
   const spoofedProjectResult = await standardClient.callTool({
     name: "kale.create_project",

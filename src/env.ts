@@ -1,8 +1,10 @@
 import {
   CAIL_EVENT_CATALOG,
+  createAnalyticsEngineSink,
   createCailLogger,
   type CailLogEnvironment,
   type CailLogger,
+  fanoutSinks,
   workersStructuredSink,
 } from "@cuny-ai-lab/cail-log";
 
@@ -119,6 +121,7 @@ export interface Env {
   WFP_API?: Fetcher;
   PREVIEW_TIMEOUT_MS?: string;
   CLOUDFLARE_API_TOKEN?: string;
+  CAIL_FLEET_EVENTS?: AnalyticsEngineDataset;
 }
 
 /**
@@ -129,13 +132,16 @@ export interface Env {
  * remains the owner of release and resource-field validation.
  */
 export function readLoggingContext(
-  env: Pick<Env, "CAIL_ENVIRONMENT" | "SERVICE_RELEASE">,
+  env: Pick<Env, "CAIL_ENVIRONMENT" | "SERVICE_RELEASE" | "CAIL_FLEET_EVENTS">,
 ): LoggingContext | null {
   const environment = parseCailEnvironment(env.CAIL_ENVIRONMENT);
   if (!environment) return null;
 
   const release = env.SERVICE_RELEASE ?? "uncommitted";
   try {
+    const sink = env.CAIL_FLEET_EVENTS
+      ? fanoutSinks(workersStructuredSink, createAnalyticsEngineSink(env.CAIL_FLEET_EVENTS))
+      : workersStructuredSink;
     const logger = createCailLogger({
       service: CAIL_LOG_SERVICE,
       release,
@@ -143,7 +149,7 @@ export function readLoggingContext(
       sourceClass: "platform",
       subjectVersion: CAIL_LOG_SUBJECT_VERSION,
       catalog: CAIL_EVENT_CATALOG,
-      sink: workersStructuredSink,
+      sink,
     });
     return Object.freeze({
       environment,
