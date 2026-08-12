@@ -41,6 +41,29 @@ describe("immutable artifact contract", () => {
     ).toBe(false);
   });
 
+  test("required artifact fields are not filled in by runtime defaults", async () => {
+    const base = JSON.parse(await Bun.file(fixturePath).text()) as Record<string, unknown>;
+    const compatibility = base.compatibility as Record<string, unknown>;
+    expect(
+      artifactSchema.safeParse({
+        ...base,
+        compatibility: { ...compatibility, flags: undefined },
+      }).success,
+    ).toBe(false);
+    const withoutFlags = { ...compatibility };
+    delete withoutFlags.flags;
+    expect(artifactSchema.safeParse({ ...base, compatibility: withoutFlags }).success).toBe(false);
+    expect(
+      artifactSchema.safeParse({
+        ...base,
+        requestedBindings: undefined,
+      }).success,
+    ).toBe(false);
+    const withoutBindings = { ...base };
+    delete withoutBindings.requestedBindings;
+    expect(artifactSchema.safeParse(withoutBindings).success).toBe(false);
+  });
+
   test("release progress freezes prepared before approval", () => {
     expect(releaseStatuses).toEqual([
       "queued",

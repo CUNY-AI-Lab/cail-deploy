@@ -22,7 +22,7 @@ export const artifactSchema = z
     files: z.record(safePath, z.string()).refine((files) => Object.keys(files).length > 0),
     compatibility: z.object({
       date: z.iso.date(),
-      flags: z.array(z.string().min(1).max(80)).max(16).default([]),
+      flags: z.array(z.string().min(1).max(80)).max(16),
     }),
     requestedBindings: z
       .array(
@@ -31,8 +31,7 @@ export const artifactSchema = z
           kind: z.enum(["d1", "r2", "kv", "secret", "service"]),
         }),
       )
-      .max(32)
-      .default([]),
+      .max(32),
   })
   .strict()
   .refine(
