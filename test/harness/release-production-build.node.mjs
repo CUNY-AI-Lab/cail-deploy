@@ -175,6 +175,22 @@ async function waitForRelease(worker, projectId, releaseId, jwt, expectedStatus)
   );
 }
 
+async function waitForProviderObservation(provider, expectedCount) {
+  let observed;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const response = await provider.fetch("/__control/state", {
+      headers: PROVIDER_CONTROL,
+    });
+    observed = await response.json();
+    assert.equal(response.status, 200, "provider state read failed");
+    if (observed.observations.length >= expectedCount) return observed;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.fail(
+    `provider did not record observation ${expectedCount}; observed ${String(observed?.observations?.length)}`,
+  );
+}
+
 async function createAutomaticRelease(worker, projectId, revisionId, jwt, idempotencyKey) {
   const response = await worker.fetch(`/v1/projects/${projectId}/releases`, {
     method: "POST",
@@ -457,6 +473,17 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
     "retained revision bytes drifted",
   );
 
+  await env.DB.prepare(`
+    CREATE TRIGGER fail_reconciling_transition
+    BEFORE UPDATE OF status ON releases
+    WHEN OLD.release_id = '${release.releaseId}'
+      AND OLD.status = 'publishing'
+      AND NEW.status = 'reconciling'
+    BEGIN
+      SELECT RAISE(ABORT, 'injected reconciling failure');
+    END
+  `).run();
+
   const approvalResponse = await deploy.fetch(
     `/v1/projects/${project.projectId}/releases/${release.releaseId}/approve`,
     {
@@ -470,8 +497,27 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
     },
   );
   await assertStatusAndDiscard(approvalResponse, 202, "release approval failed");
-  await waitForRelease(deploy, project.projectId, release.releaseId, ownerJwt, "reconciling");
-
+  await waitForProviderObservation(provider, 1);
+  const publishingAfterTransitionFailure = await waitForRelease(
+    deploy,
+    project.projectId,
+    release.releaseId,
+    ownerJwt,
+    "publishing",
+  );
+  assert.deepEqual(
+    publishingAfterTransitionFailure.events.map(({ type }) => type),
+    [
+      "release.queued",
+      "release.validating",
+      "release.building",
+      "release.prepared",
+      "release.awaiting_approval",
+      "release.approval_accepted",
+      "release.publishing",
+    ],
+    "a failed reconciling transition changed the durable release outcome",
+  );
   const reconciliationPath = `/v1/projects/${project.projectId}/releases/${release.releaseId}/reconcile`;
   const reconciliationResponses = await Promise.all([
     fetch(new URL(reconciliationPath, harnessUrl), {
@@ -498,6 +544,7 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
   });
   await assertStatusAndDiscard(reconciliationResponse, 200, "reconciliation retry failed");
   await waitForRelease(deploy, project.projectId, release.releaseId, ownerJwt, "live");
+  await env.DB.prepare("DROP TRIGGER fail_reconciling_transition").run();
 
   const secondArtifact = new TextEncoder().encode(
     JSON.stringify({
