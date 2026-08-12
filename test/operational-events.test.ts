@@ -121,6 +121,40 @@ describe("release operational event contract", () => {
     ]);
   });
 
+  test("fans privacy-safe release events into the fleet diagnostic dataset", () => {
+    const points: unknown[] = [];
+    const productionEnv = {
+      ...env,
+      CAIL_ENVIRONMENT: "production",
+      CAIL_FLEET_EVENTS: {
+        writeDataPoint(point: unknown) {
+          points.push(point);
+        },
+      },
+    } as Env;
+    const { records, diagnostics } = captureEvents(() => {
+      emitReleaseAdmission(
+        productionEnv,
+        releaseId,
+        "11111111-1111-4111-8111-111111111111",
+        operationalSubject,
+      );
+    });
+
+    expect(diagnostics).toEqual([]);
+    expect(records).toHaveLength(1);
+    expect(points).toHaveLength(1);
+    expect(JSON.stringify(points[0])).not.toContain(operationalSubject);
+    expect(points[0]).toMatchObject({
+      blobs: expect.arrayContaining([
+        "cail.action.admitted",
+        "kale-release-control-plane",
+        "production",
+        "kale-deploy",
+      ]),
+    });
+  });
+
   test.each([
     undefined,
     "",

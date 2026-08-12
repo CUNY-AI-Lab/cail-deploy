@@ -55,6 +55,7 @@ const createReleaseArgumentsSchema = createReleaseSchema
 const getReleaseArgumentsSchema = z
   .object({ projectId: projectIdSchema, releaseId: releaseIdSchema })
   .strict();
+const previewProjectArgumentsSchema = z.object({ projectId: projectIdSchema }).strict();
 const approveReleaseArgumentsSchema = getReleaseArgumentsSchema
   .extend({ idempotencyKey: idempotencyKeySchema })
   .strict();
@@ -104,6 +105,7 @@ const toolDefinitions = [
   { name: "kale.upload_revision", schema: uploadRevisionArgumentsSchema },
   { name: "kale.create_release", schema: createReleaseArgumentsSchema },
   { name: "kale.get_release", schema: getReleaseArgumentsSchema },
+  { name: "kale.preview_project", schema: previewProjectArgumentsSchema },
   { name: "kale.approve_release", schema: approveReleaseArgumentsSchema },
   { name: "kale.reconcile_release", schema: reconcileReleaseArgumentsSchema },
   { name: "kale.rollback_release", schema: rollbackReleaseArgumentsSchema },
@@ -393,6 +395,50 @@ async function mcpToolResult(
   }
 }
 
+async function mcpPreviewResult(
+  response: Response,
+  requestId: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+  externalDeadlineSignal: AbortSignal,
+  externalDeadlineError: ApiError,
+): Promise<CallToolResult> {
+  if (!response.ok) {
+    return mcpToolResult(
+      response,
+      requestId,
+      signal,
+      timeoutMs,
+      externalDeadlineSignal,
+      externalDeadlineError,
+    );
+  }
+  try {
+    const body = await readMcpResponseText(
+      response,
+      signal,
+      requestId,
+      timeoutMs,
+      externalDeadlineSignal,
+      externalDeadlineError,
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            status: response.status,
+            contentType: response.headers.get("content-type"),
+            body,
+          }),
+        },
+      ],
+    };
+  } catch (error) {
+    return errorToolResult(error, requestId);
+  }
+}
+
 export function createMcpApiRequest(
   requestUrl: string,
   path: string,
@@ -538,6 +584,10 @@ async function callKaleTool(
         const args = parseToolArguments(getReleaseArgumentsSchema, argumentsValue);
         path = `/v1/projects/${args.projectId}/releases/${args.releaseId}`;
         method = "GET";
+      } else if (name === "kale.preview_project") {
+        const args = parseToolArguments(previewProjectArgumentsSchema, argumentsValue);
+        path = `/v1/projects/${args.projectId}/preview`;
+        method = "GET";
       } else if (name === "kale.approve_release") {
         const args = parseToolArguments(approveReleaseArgumentsSchema, argumentsValue);
         path = `/v1/projects/${args.projectId}/releases/${args.releaseId}/approve`;
@@ -587,14 +637,23 @@ async function callKaleTool(
       observeLateMcpResponse(response, requestId, operation.deadlineError);
       return errorToolResult(operation.deadlineError, requestId);
     }
-    return mcpToolResult(
-      response,
-      requestId,
-      operation.callerSignal,
-      remainingMs,
-      operation.deadlineSignal,
-      operation.deadlineError,
-    );
+    return name === "kale.preview_project"
+      ? mcpPreviewResult(
+          response,
+          requestId,
+          operation.callerSignal,
+          remainingMs,
+          operation.deadlineSignal,
+          operation.deadlineError,
+        )
+      : mcpToolResult(
+          response,
+          requestId,
+          operation.callerSignal,
+          remainingMs,
+          operation.deadlineSignal,
+          operation.deadlineError,
+        );
   } finally {
     clearTimeout(operation.timeoutHandle);
   }
@@ -605,6 +664,7 @@ const TOOL_DESCRIPTIONS: Record<(typeof toolDefinitions)[number]["name"], string
   "kale.upload_revision": "Upload a new version of your app.",
   "kale.create_release": "Publish a version.",
   "kale.get_release": "Check on a release.",
+  "kale.preview_project": "Preview the latest live release.",
   "kale.approve_release": "Approve a release.",
   "kale.reconcile_release": "Finish a release whose publication could not be confirmed.",
   "kale.rollback_release": "Roll back to an earlier version.",

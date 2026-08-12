@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "kale": {
+      "type": "http",
+      "url": "https://kale-release-control-plane.ailab-452.workers.dev/mcp"
+    }
+  }
+}

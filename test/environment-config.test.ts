@@ -2,6 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 interface WranglerConfig {
   compatibility_flags?: string[];
+  observability?: {
+    enabled?: boolean;
+    logs?: Record<string, unknown>;
+    traces?: Record<string, unknown>;
+  };
+  analytics_engine_datasets?: Array<{ binding?: string; dataset?: string }>;
   vars?: Record<string, unknown>;
 }
 
@@ -42,6 +48,19 @@ describe("Wrangler deployment environment bindings", () => {
   test("the production environment declares its own binding", async () => {
     const config = await loadConfig("wrangler.production.jsonc");
     expect(config.vars?.CAIL_ENVIRONMENT).toBe("production");
+    expect(config.observability).toEqual({
+      enabled: true,
+      logs: {
+        enabled: true,
+        persist: true,
+        head_sampling_rate: 1,
+        invocation_logs: false,
+      },
+      traces: { enabled: false },
+    });
+    expect(config.analytics_engine_datasets).toEqual([
+      { binding: "CAIL_FLEET_EVENTS", dataset: "cail_fleet_events_v1" },
+    ]);
   });
 
   test("the production profile does not pin a source revision", async () => {
