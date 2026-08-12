@@ -12,7 +12,7 @@ import {
 } from "../../oauth-principal";
 import { requestIdForRequest } from "../../request-id";
 import { handleMcpWithPrincipal } from "./mcp";
-import { validatedOAuthPublicBaseUrl } from "./oauth-origin";
+import { validatedOAuthAuthorizeUrl, validatedOAuthPublicBaseUrl } from "./oauth-origin";
 
 function publicBaseUrl(env: Env): string {
   return validatedOAuthPublicBaseUrl(env.PUBLIC_BASE_URL);
@@ -92,7 +92,7 @@ export function createOAuthProviderOptions(env: Env): OAuthProviderOptions<Env> 
     apiRoute: resource,
     apiHandler: McpOAuthApiHandler,
     defaultHandler: oauthDefaultHandler,
-    authorizeEndpoint: `${baseUrl}/api/oauth/authorize`,
+    authorizeEndpoint: validatedOAuthAuthorizeUrl(env.OAUTH_AUTHORIZE_URL),
     tokenEndpoint: `${baseUrl}/oauth/token`,
     clientRegistrationEndpoint: `${baseUrl}/oauth/register`,
     scopesSupported: [OAUTH_REQUIRED_SCOPE],

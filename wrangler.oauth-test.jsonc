@@ -10,6 +10,7 @@
     "CAIL_ENVIRONMENT": "test",
     "SERVICE_AUDIENCE": "cail:deploy",
     "PUBLIC_BASE_URL": "http://127.0.0.1:8787",
+    "OAUTH_AUTHORIZE_URL": "http://127.0.0.1:8787/api/oauth/authorize",
     "CAIL_IDENTITY_ISSUER": "https://identity.oauth-test.invalid",
     "CAIL_IDENTITY_JWKS": "{\"keys\":[]}",
     "WFP_ACCOUNT_ID": "not-used",

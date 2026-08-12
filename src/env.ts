@@ -109,6 +109,7 @@ export interface Env {
   CAIL_TRUSTED_IDENTITY_ISSUER?: string;
   SERVICE_AUDIENCE: string;
   PUBLIC_BASE_URL: string;
+  OAUTH_AUTHORIZE_URL: string;
   SERVICE_RELEASE?: string;
   WFP_ACCOUNT_ID: string;
   WFP_NAMESPACE: string;
