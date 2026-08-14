@@ -107,7 +107,7 @@ button[value=approve]{background:#2a6fb8;border:1px solid #2a6fb8;color:#fff}
 button[value=approve]:hover{background:#1d3a83;border-color:#1d3a83}
 button[value=deny]{background:transparent;border:2px solid #1d3a83;color:#1d3a83}
 button[value=deny]:hover{background:#e8f4fc}
-button:focus-visible{outline:3px solid #ffb81c;outline-offset:0}
+button:focus-visible{outline:3px solid #7a5300;outline-offset:0}
 @media (prefers-reduced-motion:reduce){button{transition:none}}
 `.trim();
 
