@@ -78,53 +78,57 @@ function escapeHtml(value: string): string {
   });
 }
 
-/**
- * The page's CSP is `default-src 'none'`, so no webfont can ever load here.
- * The Lab's Outfit/Inter are therefore deliberately absent rather than named
- * and silently substituted: this uses the platform UI face at brand weights
- * and colors. Widening the CSP for typography is not worth it on the page
- * where someone grants an app access to their projects.
- */
+// Palette and type match the main website (ailab.gc.cuny.edu): cream ground,
+// charcoal ink, the Lab's action blue, Inter body with Outfit headings. The
+// CSP admits exactly the two Google Fonts hosts and nothing else.
 const CONSENT_PAGE_STYLE = `
-:root{color-scheme:light}
+:root{color-scheme:light;--sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--display:Outfit,var(--sans)}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#fafcf8;color:#333;font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-main{max-width:420px;width:100%;margin:24px;background:#fff;border:1px solid #e5e7eb;border-radius:14px;box-shadow:0 1px 2px rgba(51,51,51,.04),0 8px 24px rgba(51,51,51,.06);overflow:hidden}
-.topline{height:5px;background:linear-gradient(90deg,#1d3a83 0 33%,#3b73e6 33% 66%,#2fb8d6 66%)}
-.body{padding:28px}
-.eyebrow{margin:0 0 10px;color:#2a6fb8;font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase}
-h1{margin:0 0 14px;font-size:1.4rem;line-height:1.25;font-weight:700;letter-spacing:-.02em;text-wrap:balance}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#fafcf8;color:#333;font:16px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+main{position:relative;max-width:440px;width:100%;margin:24px;background:#fff;padding:32px}
+main::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:linear-gradient(90deg,#7ac88e 0 44px,#1d3a83 44px)}
+.wordmark{display:flex;align-items:center;gap:10px;margin:0 0 18px}
+.mark{display:flex;flex-direction:column;justify-content:center;gap:3px;width:34px;height:32px}
+.mark i{display:block;height:4px;border-radius:999px}
+.mark .b1{width:26px;margin-left:6px;background:#1d3a83}
+.mark .b2{width:28px;margin-left:0;background:#3b73e6}
+.mark .b3{width:26px;margin-left:8px;background:#2fb8d6}
+.mark .b4{width:24px;margin-left:2px;background:#2a6fb8}
+.wordmark-text{display:flex;flex-direction:column;line-height:1.15}
+.wordmark-name{font:700 14px/1.15 var(--display);letter-spacing:-.01em}
+.wordmark-sub{color:#6b7280;font:500 12px/1.2 var(--sans)}
+h1{margin:0 0 14px;font-family:var(--display);font-size:1.5rem;line-height:1.2;font-weight:800;letter-spacing:-.03em;text-wrap:balance}
 p{margin:0 0 12px}
 ul{margin:0 0 24px;padding-left:1.15rem;color:#4b5563}
 li{margin:.3rem 0}
 form{display:flex;flex-wrap:wrap;gap:12px}
-button{font:inherit;font-weight:600;padding:10px 24px;border-radius:999px;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
-button[value=approve]{background:#3b73e6;border:1px solid #3b73e6;color:#fff}
-button[value=approve]:hover{background:#2a6fb8;border-color:#2a6fb8}
-button[value=deny]{background:transparent;border:1px solid #d1d5db;color:#333}
-button[value=deny]:hover{border-color:#9ca3af}
-button:focus-visible{outline:2px solid #3b73e6;outline-offset:2px}
+button{font:inherit;font-weight:600;padding:10px 24px;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+button[value=approve]{background:#2a6fb8;border:1px solid #2a6fb8;color:#fff}
+button[value=approve]:hover{background:#1d3a83;border-color:#1d3a83}
+button[value=deny]{background:transparent;border:2px solid #1d3a83;color:#1d3a83}
+button[value=deny]:hover{background:#e8f4fc}
+button:focus-visible{outline:3px solid #7a5300;outline-offset:0}
 @media (prefers-reduced-motion:reduce){button{transition:none}}
 `.trim();
 
 function consentPage(requestUrl: string, clientName: string, nonce: string): Response {
   const html = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Kale Deploy — approve access</title><style>${CONSENT_PAGE_STYLE}</style></head>
-<body><main><div class="topline"></div><div class="body">
-<p class="eyebrow">CUNY AI Lab &middot; Kale Deploy</p>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="color-scheme" content="light"><title>Kale Deploy — approve access</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet"><style>${CONSENT_PAGE_STYLE}</style></head>
+<body><main>
+<div class="wordmark"><span class="mark" aria-hidden="true"><i class="b1"></i><i class="b2"></i><i class="b3"></i><i class="b4"></i></span><span class="wordmark-text"><span class="wordmark-name">CUNY AI Lab</span><span class="wordmark-sub">Kale Deploy</span></span></div>
 <h1>Let ${escapeHtml(clientName)} deploy your projects?</h1>
 <p>If you allow this, the app will be able to:</p>
 <ul><li>Create projects</li><li>Upload and publish new versions</li><li>Approve, check, and roll back releases</li></ul>
 <form method="post" action="${escapeHtml(requestUrl)}"><input type="hidden" name="consentNonce" value="${escapeHtml(nonce)}">
 <button type="submit" name="decision" value="approve">Allow</button><button type="submit" name="decision" value="deny">Cancel</button></form>
-</div></main></body></html>`;
+</main></body></html>`;
   return new Response(html, {
     status: 200,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
       "Content-Security-Policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
       "X-Frame-Options": "DENY",
     },
   });
