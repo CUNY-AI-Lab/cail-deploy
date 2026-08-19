@@ -1,8 +1,9 @@
 import { authenticate } from "./auth";
 import { canonicalJson, sha256Hex } from "./domain/digests";
 import { ApiError, apiErrorSnapshot } from "./domain/errors";
+import { jsonValueSchema } from "./domain/json";
 import type { Env, OAuthAuthorizationRequest, OAuthHelpersLike } from "./env";
-import { OAUTH_REQUIRED_SCOPE } from "./oauth-principal";
+import { OAUTH_REQUIRED_SCOPE, type OAuthPrincipalProps } from "./oauth-principal";
 
 const CONSENT_TTL_MS = 10 * 60 * 1000;
 export const CONSUME_CONSENT_NONCE_SQL = `DELETE FROM oauth_consent_nonces
@@ -54,18 +55,28 @@ async function parseAuthorizationRequest(
 }
 
 async function authorizationRequestDigest(request: OAuthAuthorizationRequest): Promise<string> {
-  return sha256Hex(
-    canonicalJson({
-      responseType: request.responseType,
-      clientId: request.clientId,
-      redirectUri: request.redirectUri,
-      scope: request.scope,
-      state: request.state,
-      codeChallenge: request.codeChallenge,
-      codeChallengeMethod: request.codeChallengeMethod,
-      resource: request.resource,
-    }),
-  );
+  interface AuthorizationRequestDigestPayload {
+    responseType: string;
+    clientId: string;
+    redirectUri: string;
+    scope: string[];
+    state: string;
+    codeChallenge?: string;
+    codeChallengeMethod?: string;
+    resource?: string | string[];
+  }
+  const payload: AuthorizationRequestDigestPayload = {
+    responseType: request.responseType,
+    clientId: request.clientId,
+    redirectUri: request.redirectUri,
+    scope: request.scope,
+    state: request.state,
+  };
+  if (request.codeChallenge !== undefined) payload.codeChallenge = request.codeChallenge;
+  if (request.codeChallengeMethod !== undefined)
+    payload.codeChallengeMethod = request.codeChallengeMethod;
+  if (request.resource !== undefined) payload.resource = request.resource;
+  return sha256Hex(canonicalJson(jsonValueSchema.parse(payload)));
 }
 
 function escapeHtml(value: string): string {
@@ -188,7 +199,7 @@ export async function handleOAuthAuthorize(
   const form = await request.formData();
   const nonce = form.get("consentNonce");
   const decision = form.get("decision");
-  if (typeof nonce !== "string" || (decision !== "approve" && decision !== "deny")) {
+  if (nonce === null || nonce instanceof File || (decision !== "approve" && decision !== "deny")) {
     throw new ApiError(
       400,
       "invalid_consent",
@@ -214,16 +225,17 @@ export async function handleOAuthAuthorize(
     return Response.redirect(redirect.toString(), 302);
   }
 
+  const props: OAuthPrincipalProps = {
+    subject: principal.subject,
+    scope: [OAUTH_REQUIRED_SCOPE],
+  };
+  if (principal.operationalSubject) props.operationalSubject = principal.operationalSubject;
   const { redirectTo } = await helpers.completeAuthorization({
     request: authorization,
     userId: principal.subject,
     metadata: {},
     scope: [OAUTH_REQUIRED_SCOPE],
-    props: {
-      subject: principal.subject,
-      ...(principal.operationalSubject ? { operationalSubject: principal.operationalSubject } : {}),
-      scope: [OAUTH_REQUIRED_SCOPE],
-    },
+    props,
   });
   return Response.redirect(redirectTo, 302);
 }

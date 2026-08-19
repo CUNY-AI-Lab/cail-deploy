@@ -36,9 +36,19 @@ try {
         `${scenario} OAuth config returned ${response.status}: ${await response.text()}`,
       );
     }
-    const body = (await response.json()) as {
-      error?: { code?: string; message?: string; requestId?: string; stack?: unknown };
-    };
+    const body = z
+      .object({
+        error: z
+          .object({
+            code: z.string().optional(),
+            message: z.string().optional(),
+            requestId: z.string().optional(),
+            stack: z.json().optional(),
+          })
+          .optional(),
+      })
+      .passthrough()
+      .parse(await response.json());
     if (
       body.error?.code !== "oauth_not_configured" ||
       body.error.message !== "Sign-in is unavailable right now. Try again shortly." ||
@@ -53,3 +63,4 @@ try {
   process.kill();
   await process.exited;
 }
+import { z } from "zod";

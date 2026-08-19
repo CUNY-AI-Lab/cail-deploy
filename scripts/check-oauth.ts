@@ -14,12 +14,16 @@ import {
   TEST_OPERATIONAL_SUBJECTS,
   TEST_SUBJECTS,
 } from "@cuny-ai-lab/cail-identity/testing";
+import { z } from "zod";
+import type { JsonObject, JsonValue } from "../src/domain/json";
 
 const config = "wrangler.oauth-test.jsonc";
 const database = "kale-release-control-plane-oauth-local";
 const requestId = "22222222-2222-4222-8222-222222222222";
 
-function assert(condition: unknown, message: string): asserts condition {
+type AssertionCondition = boolean | string | number | null | undefined;
+
+function assert(condition: AssertionCondition, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -45,10 +49,73 @@ interface RegisteredClient {
   client_id: string;
 }
 
+const registeredClientSchema = z.object({ client_id: z.string() }).passthrough();
+
 interface TokenResponse {
   access_token: string;
   token_type: string;
   scope: string;
+}
+
+const tokenResponseSchema = z
+  .object({ access_token: z.string(), token_type: z.string(), scope: z.string() })
+  .passthrough();
+
+interface OAuthTokenRecord {
+  [key: string]: JsonValue;
+}
+
+const oauthTokenRecordSchema = z.record(z.string(), z.json());
+
+const protectedMetadataSchema = z
+  .object({
+    resource: z.string(),
+    authorization_servers: z.array(z.string()),
+    scopes_supported: z.array(z.string()),
+  })
+  .passthrough();
+
+const authorizationServerMetadataSchema = z
+  .object({
+    issuer: z.string(),
+    authorization_endpoint: z.string(),
+    token_endpoint: z.string(),
+    registration_endpoint: z.string(),
+    code_challenge_methods_supported: z.array(z.string()),
+    client_id_metadata_document_supported: z.boolean(),
+    grant_types_supported: z.array(z.string()),
+  })
+  .passthrough();
+
+const oauthErrorSchema = z
+  .object({
+    error: z.object({ code: z.string().optional(), message: z.string().optional() }).optional(),
+  })
+  .passthrough();
+
+const spoofedProjectErrorSchema = z
+  .object({ error: z.object({ code: z.string(), requestId: z.string() }).optional() })
+  .passthrough();
+
+const projectSchema = z.object({ projectId: z.string() }).passthrough();
+const revisionSchema = z
+  .object({ revisionId: z.string(), artifactBytes: z.number() })
+  .passthrough();
+const modernProjectSchema = z.object({ projectId: z.string().optional() }).passthrough();
+const denialBodySchema = z
+  .object({
+    result: z
+      .object({
+        isError: z.boolean().optional(),
+        content: z.array(z.object({ text: z.string().optional() })).optional(),
+      })
+      .optional(),
+  })
+  .passthrough();
+
+interface ToolResult {
+  content?: Array<{ text?: string }>;
+  isError?: boolean;
 }
 
 interface AuthorizationSession {
@@ -75,7 +142,7 @@ async function registerClient(baseUrl: string, name: string): Promise<Registered
     }),
   });
   if (response.status !== 201) throw new Error(`DCR failed: ${await responseBody(response)}`);
-  return (await response.json()) as RegisteredClient;
+  return registeredClientSchema.parse(await response.json());
 }
 
 async function beginAuthorization(
@@ -156,7 +223,10 @@ async function listKvKeys(cwd: string, persistTo: string, prefix: string): Promi
     ],
     cwd,
   );
-  return (JSON.parse(output) as Array<{ name: string }>).map((entry) => entry.name);
+  return z
+    .array(z.object({ name: z.string() }))
+    .parse(JSON.parse(output))
+    .map((entry) => entry.name);
 }
 
 async function exchangeCode(
@@ -166,22 +236,23 @@ async function exchangeCode(
   code: string,
   scope?: string,
 ): Promise<TokenResponse> {
+  const tokenParams = new URLSearchParams({
+    grant_type: "authorization_code",
+    client_id: clientId,
+    redirect_uri: "http://127.0.0.1:43123/callback",
+    code,
+    code_verifier: verifier,
+    resource: `${baseUrl}/mcp`,
+  });
+  if (scope !== undefined) tokenParams.set("scope", scope);
   const response = await fetch(`${baseUrl}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: clientId,
-      redirect_uri: "http://127.0.0.1:43123/callback",
-      code,
-      code_verifier: verifier,
-      resource: `${baseUrl}/mcp`,
-      ...(scope === undefined ? {} : { scope }),
-    }),
+    body: tokenParams,
   });
   if (response.status !== 200)
     throw new Error(`token exchange failed: ${await responseBody(response)}`);
-  return (await response.json()) as TokenResponse;
+  return tokenResponseSchema.parse(await response.json());
 }
 
 async function authorize(
@@ -206,7 +277,7 @@ async function authorize(
 async function rpc(
   baseUrl: string,
   token: string,
-  message: Record<string, unknown>,
+  message: JsonObject,
   headers: Record<string, string> = {},
 ): Promise<Response> {
   return fetch(`${baseUrl}/mcp`, {
@@ -223,10 +294,10 @@ async function rpc(
   });
 }
 
-function toolText(result: unknown): string {
-  const content = (result as { content?: Array<{ text?: string }> }).content;
+function toolText(result: ToolResult): string {
+  const content = result.content;
   const text = content?.[0]?.text;
-  assert(typeof text === "string", "MCP tool result did not contain text");
+  assert(text !== undefined, "MCP tool result did not contain text");
   return text;
 }
 
@@ -234,7 +305,7 @@ async function mutateTokenRecord(
   cwd: string,
   persistTo: string,
   token: string,
-  mutate: (record: Record<string, unknown>) => void,
+  mutate: (record: OAuthTokenRecord) => void,
 ): Promise<void> {
   const [userId, grantId] = token.split(":", 3);
   assert(userId && grantId, "provider token format changed");
@@ -250,7 +321,7 @@ async function mutateTokenRecord(
     config,
   ];
   const value = await run(["bunx", "wrangler", "kv", "key", "get", key, ...common], cwd);
-  const record = JSON.parse(value) as Record<string, unknown>;
+  const record = oauthTokenRecordSchema.parse(JSON.parse(value));
   mutate(record);
   await run(["bunx", "wrangler", "kv", "key", "put", key, JSON.stringify(record), ...common], cwd);
 }
@@ -397,7 +468,7 @@ try {
     protectedMetadataResponse.headers.get("X-CAIL-Request-Id") === requestId,
     "OAuth provider response omitted the canonical request id",
   );
-  const protectedMetadata = (await protectedMetadataResponse.json()) as Record<string, unknown>;
+  const protectedMetadata = protectedMetadataSchema.parse(await protectedMetadataResponse.json());
   assert(protectedMetadata.resource === `${baseUrl}/mcp`, "metadata resource drifted");
   assert(
     JSON.stringify(protectedMetadata.authorization_servers) === JSON.stringify([baseUrl]),
@@ -415,7 +486,9 @@ try {
       serverMetadataResponse.headers.get("X-Content-Type-Options") === "nosniff",
     "authorization-server metadata omitted its response baseline",
   );
-  const serverMetadata = (await serverMetadataResponse.json()) as Record<string, unknown>;
+  const serverMetadata = authorizationServerMetadataSchema.parse(
+    await serverMetadataResponse.json(),
+  );
   assert(serverMetadata.issuer === baseUrl, "OAuth issuer drifted");
   assert(
     serverMetadata.authorization_endpoint === `${baseUrl}/api/oauth/authorize` &&
@@ -429,7 +502,7 @@ try {
   );
   assert(serverMetadata.client_id_metadata_document_supported === false, "CIMD was enabled");
   assert(
-    !(serverMetadata.grant_types_supported as string[]).includes(
+    !serverMetadata.grant_types_supported.includes(
       "urn:ietf:params:oauth:grant-type:token-exchange",
     ),
     "token exchange was enabled",
@@ -506,8 +579,7 @@ try {
   });
   assert(invalidAuthorizeGet.status === 400, "authorize GET accepted a malformed request id");
   assert(
-    ((await invalidAuthorizeGet.json()) as { error?: { code?: string } }).error?.code ===
-      "invalid_request_id",
+    oauthErrorSchema.parse(await invalidAuthorizeGet.json()).error?.code === "invalid_request_id",
     "authorize GET request-id error drifted",
   );
   const invalidAuthorizePost = await fetch(noGrant.url, {
@@ -522,8 +594,7 @@ try {
   });
   assert(invalidAuthorizePost.status === 400, "authorize POST accepted a malformed request id");
   assert(
-    ((await invalidAuthorizePost.json()) as { error?: { code?: string } }).error?.code ===
-      "invalid_request_id",
+    oauthErrorSchema.parse(await invalidAuthorizePost.json()).error?.code === "invalid_request_id",
     "authorize POST request-id error drifted",
   );
 
@@ -624,8 +695,7 @@ try {
   );
   assert(bothCredentials.status === 401, "ambiguous credentials were not denied");
   assert(
-    ((await bothCredentials.json()) as { error?: { code?: string } }).error?.code ===
-      "credential_ambiguity",
+    oauthErrorSchema.parse(await bothCredentials.json()).error?.code === "credential_ambiguity",
     "ambiguous credential error drifted",
   );
   const invalidBearerAndIdentity = await rpc(
@@ -636,7 +706,7 @@ try {
   );
   assert(
     invalidBearerAndIdentity.status === 401 &&
-      ((await invalidBearerAndIdentity.json()) as { error?: { code?: string } }).error?.code ===
+      oauthErrorSchema.parse(await invalidBearerAndIdentity.json()).error?.code ===
         "credential_ambiguity",
     "credential ambiguity depended on bearer validity",
   );
@@ -689,9 +759,9 @@ try {
     },
   });
   assert(spoofedProjectResult.isError === true, "MCP accepted undeclared identity arguments");
-  const spoofedProjectError = JSON.parse(toolText(spoofedProjectResult)) as {
-    error?: { code?: string; requestId?: string };
-  };
+  const spoofedProjectError = spoofedProjectErrorSchema.parse(
+    JSON.parse(toolText(spoofedProjectResult)),
+  );
   assert(
     spoofedProjectError.error?.code === "invalid_mcp_arguments" &&
       spoofedProjectError.error.requestId === requestId,
@@ -705,7 +775,7 @@ try {
       idempotencyKey: "oauth-standard-client-project",
     },
   });
-  const project = JSON.parse(toolText(projectResult)) as { projectId: string };
+  const project = projectSchema.parse(JSON.parse(toolText(projectResult)));
   assert(/^prj_[0-9a-f]{32}$/u.test(project.projectId), "standard client project failed");
 
   const artifact = new Uint8Array(
@@ -725,10 +795,7 @@ try {
       contentDigest,
     },
   });
-  const revision = JSON.parse(toolText(uploadResult)) as {
-    revisionId: string;
-    artifactBytes: number;
-  };
+  const revision = revisionSchema.parse(JSON.parse(toolText(uploadResult)));
   assert(
     revision.revisionId === `rev_sha256_${artifactDigest}` &&
       revision.artifactBytes === artifact.byteLength,
@@ -766,10 +833,9 @@ try {
       idempotencyKey: "oauth-modern-client-project",
     },
   });
-  const modernProject = JSON.parse(toolText(modernProjectResult)) as { projectId?: string };
+  const modernProject = modernProjectSchema.parse(JSON.parse(toolText(modernProjectResult)));
   assert(
-    typeof modernProject.projectId === "string" &&
-      /^prj_[0-9a-f]{32}$/u.test(modernProject.projectId),
+    modernProject.projectId !== undefined && /^prj_[0-9a-f]{32}$/u.test(modernProject.projectId),
     "modern client project failed",
   );
   await modernClient.close();
@@ -801,9 +867,7 @@ try {
       params: { name, arguments: arguments_ },
     });
     assert(denialResponse.status === 200, `${name} did not return an MCP tool result`);
-    const denialBody = (await denialResponse.json()) as {
-      result?: { isError?: boolean; content?: Array<{ text?: string }> };
-    };
+    const denialBody = denialBodySchema.parse(await denialResponse.json());
     const denialText = denialBody.result?.content?.[0]?.text ?? "";
     assert(
       denialBody.result?.isError === true &&

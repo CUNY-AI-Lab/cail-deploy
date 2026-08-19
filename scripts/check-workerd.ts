@@ -1,3 +1,25 @@
+import { z } from "zod";
+
+const workerdResultSchema = z
+  .object({
+    mainModule: z.string().optional(),
+    moduleCount: z.number().optional(),
+    workflowId: z.string().optional(),
+    workflowStatus: z.string().optional(),
+    preparedResponse: z.string().optional(),
+    inheritedEntrypointRejected: z.boolean().optional(),
+    stalledUploadAbort: z
+      .object({
+        outcome: z.string().optional(),
+        status: z.number().optional(),
+        code: z.string().optional(),
+        cancellations: z.number().optional(),
+        locked: z.boolean().optional(),
+      })
+      .optional(),
+  })
+  .passthrough();
+
 const socket = Bun.listen({
   hostname: "127.0.0.1",
   port: 0,
@@ -26,21 +48,7 @@ try {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/`);
       if (!response.ok) throw new Error(`workerd health check returned status ${response.status}`);
-      const result = (await response.json()) as {
-        mainModule?: string;
-        moduleCount?: number;
-        workflowId?: string;
-        workflowStatus?: string;
-        preparedResponse?: string;
-        inheritedEntrypointRejected?: boolean;
-        stalledUploadAbort?: {
-          outcome?: string;
-          status?: number;
-          code?: string;
-          cancellations?: number;
-          locked?: boolean;
-        };
-      };
+      const result = workerdResultSchema.parse(await response.json());
       if (
         !result.mainModule ||
         !result.moduleCount ||

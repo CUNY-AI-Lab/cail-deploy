@@ -26,7 +26,9 @@ describe("release Workflow recovery", () => {
     const create = mock(async () => ({ id: releaseId }));
 
     await ensureWorkflowInstance(
-      { RELEASE_WORKFLOW: { get, create } as unknown as TestWorkflowBinding },
+      // SAFETY: this fixture implements the deterministic Workflow get/create
+      // seam used by ensureWorkflowInstance.
+      { RELEASE_WORKFLOW: { get, create } as TestWorkflowBinding },
       releaseId,
       params,
     );
@@ -44,7 +46,9 @@ describe("release Workflow recovery", () => {
     const get = mock(async () => ({ id: releaseId }));
 
     await ensureWorkflowInstance(
-      { RELEASE_WORKFLOW: { get, create } as unknown as TestWorkflowBinding },
+      // SAFETY: this fixture implements the deterministic Workflow get/create
+      // seam used by ensureWorkflowInstance.
+      { RELEASE_WORKFLOW: { get, create } as TestWorkflowBinding },
       releaseId,
       params,
     );
@@ -68,7 +72,9 @@ describe("release Workflow recovery", () => {
     });
 
     await ensureWorkflowInstance(
-      { RELEASE_WORKFLOW: { get, create } as unknown as TestWorkflowBinding },
+      // SAFETY: this fixture implements the deterministic Workflow get/create
+      // seam used by ensureWorkflowInstance.
+      { RELEASE_WORKFLOW: { get, create } as TestWorkflowBinding },
       releaseId,
       params,
     );
@@ -88,7 +94,9 @@ describe("release Workflow recovery", () => {
     });
 
     await ensureWorkflowInstance(
-      { RELEASE_WORKFLOW: { get, create } as unknown as TestWorkflowBinding },
+      // SAFETY: this fixture implements the deterministic Workflow get/create
+      // seam used by ensureWorkflowInstance.
+      { RELEASE_WORKFLOW: { get, create } as TestWorkflowBinding },
       releaseId,
       params,
     );
@@ -111,10 +119,12 @@ describe("release Workflow recovery", () => {
     try {
       await ensureWorkflowInstance(
         {
+          // SAFETY: this fixture implements the deterministic Workflow get/create
+          // seam used by ensureWorkflowInstance.
           RELEASE_WORKFLOW: {
             get,
             create,
-          } as unknown as TestWorkflowBinding,
+          } as TestWorkflowBinding,
         },
         releaseId,
         params,
@@ -129,8 +139,11 @@ describe("release Workflow recovery", () => {
       message:
         "We saved your release but couldn't start it. Check the release status first, then reuse the same Idempotency-Key if you need to retry.",
     });
+    // SAFETY: ensureWorkflowInstance reports its failure as an Error with an
+    // AggregateError cause, established by the API snapshot above.
     const cause = (captured as Error).cause;
     expect(cause).toBeInstanceOf(AggregateError);
+    // SAFETY: the preceding instance check establishes the AggregateError cause.
     expect((cause as AggregateError).errors).toEqual([createFailure, recoveryFailure]);
     expect(create).toHaveBeenCalledTimes(1);
     expect(get).toHaveBeenCalledTimes(1);
@@ -140,6 +153,8 @@ describe("release Workflow recovery", () => {
     const createFailure = new Error("PRIVATE_WORKFLOW_CREATE_FAILURE");
     const privateSentinel = new Error("PRIVATE_WORKFLOW_RECOVERY_SENTINEL");
     let traps = 0;
+    // SAFETY: a null-prototype proxy is deliberately hostile failure input;
+    // this test proves finalization never inspects it.
     const recoveryFailure = new Proxy(Object.create(null) as object, {
       get() {
         traps += 1;
@@ -165,10 +180,12 @@ describe("release Workflow recovery", () => {
     try {
       await ensureWorkflowInstance(
         {
+          // SAFETY: this fixture implements the deterministic Workflow get/create
+          // seam used by ensureWorkflowInstance.
           RELEASE_WORKFLOW: {
             get,
             create,
-          } as unknown as TestWorkflowBinding,
+          } as TestWorkflowBinding,
         },
         releaseId,
         params,
@@ -183,6 +200,8 @@ describe("release Workflow recovery", () => {
       message:
         "We saved your release but couldn't start it. Check the release status first, then reuse the same Idempotency-Key if you need to retry.",
     });
+    // SAFETY: API snapshot and instance assertion below establish the nested
+    // AggregateError contract before reading its errors.
     const cause = (captured as Error).cause as AggregateError;
     expect(cause).toBeInstanceOf(AggregateError);
     expect(cause.errors[0]).toBe(createFailure);
@@ -206,10 +225,12 @@ describe("release Workflow recovery", () => {
     try {
       await ensureWorkflowInstance(
         {
+          // SAFETY: this fixture implements the deterministic Workflow get/create
+          // seam used by ensureWorkflowInstance.
           RELEASE_WORKFLOW: {
             get,
             create,
-          } as unknown as TestWorkflowBinding,
+          } as TestWorkflowBinding,
         },
         releaseId,
         params,
@@ -222,8 +243,11 @@ describe("release Workflow recovery", () => {
       status: 503,
       code: "workflow_start_failed",
     });
+    // SAFETY: ensureWorkflowInstance reports its failure as an Error with an
+    // AggregateError cause, established by the status/code assertion above.
     const cause = (captured as Error).cause;
     expect(cause).toBeInstanceOf(AggregateError);
+    // SAFETY: the preceding instance check establishes the AggregateError cause.
     expect((cause as AggregateError).errors).toEqual([createFailure, recoveryFailure]);
   });
 
@@ -331,6 +355,8 @@ describe("release Workflow recovery", () => {
         artifactDigest: "c".repeat(64),
       },
     }));
+    // SAFETY: this replay fixture implements the DB, R2 head, and Workflow
+    // seams consumed by the idempotency replay path.
     const env = {
       DB: {
         prepare(sql: string) {
@@ -339,7 +365,9 @@ describe("release Workflow recovery", () => {
       },
       ARTIFACTS: { head },
       RELEASE_WORKFLOW: { get, create },
-    } as unknown as Env;
+      // SAFETY: this replay fixture implements the DB, R2 head, and Workflow
+      // seams consumed by the idempotency replay path.
+    } as Env;
     const replayRequestId = "22222222-2222-4222-8222-222222222222";
     const request = new Request(`https://deploy.test/v1/projects/${projectId}/releases`, {
       method: "POST",
@@ -359,8 +387,11 @@ describe("release Workflow recovery", () => {
       id: releaseId,
       params,
     });
-    expect((create.mock.calls[0]?.[0] as { params: ReleaseWorkflowParams }).params.requestId).toBe(
-      originalRequestId,
-    );
+    const firstCreateCall = create.mock.calls[0];
+    if (!firstCreateCall) throw new Error("workflow create call was not recorded");
+    // SAFETY: ensureWorkflowInstance was called with the deterministic workflow
+    // payload asserted immediately above.
+    const firstCreateArgs = firstCreateCall[0] as { params: ReleaseWorkflowParams };
+    expect(firstCreateArgs.params.requestId).toBe(originalRequestId);
   });
 });

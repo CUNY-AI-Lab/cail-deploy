@@ -31,6 +31,8 @@ class SqliteD1 {
       bind(...values: unknown[]) {
         return {
           async first<T>() {
+            // SAFETY: SQLite returns the row shape requested by each test
+            // query; the generic caller owns that row contract.
             return (sqlite.prepare(query).get(...values) as T | null) ?? null;
           },
           async run() {
@@ -43,19 +45,28 @@ class SqliteD1 {
   }
 }
 
+interface RevisionHeadOverrides {
+  key?: string;
+  size?: number;
+  checksums?: { sha256?: ArrayBuffer };
+  customMetadata?: Record<string, string>;
+}
+
 function checksumBytes(hex: string): ArrayBuffer {
   const bytes = Uint8Array.from(hex.match(/../gu) ?? [], (pair) => Number.parseInt(pair, 16));
   return bytes.buffer;
 }
 
-function revisionHead(overrides: Record<string, unknown> = {}): R2Object {
+function revisionHead(overrides: RevisionHeadOverrides = {}): R2Object {
+  // SAFETY: the fixture supplies the R2 metadata accessed by revision lookup;
+  // methods not used by this boundary are intentionally absent.
   return {
     key: artifactKey,
     size: 321,
     checksums: { sha256: checksumBytes(digest) },
     customMetadata: { projectId, revisionId, artifactDigest: digest },
     ...overrides,
-  } as unknown as R2Object;
+  } as R2Object;
 }
 
 async function fixture(
@@ -84,6 +95,7 @@ async function fixture(
     createdAt,
   ]);
   const headCalls: string[] = [];
+  // SAFETY: this fixture implements the DB and R2 seams consumed by lookup.
   const env = {
     DB: new SqliteD1(sqlite),
     ARTIFACTS: {
@@ -92,7 +104,7 @@ async function fixture(
         return input.head === undefined ? revisionHead() : input.head;
       },
     },
-  } as unknown as Env;
+  } as Env;
   return { env, sqlite, headCalls };
 }
 
@@ -225,6 +237,8 @@ describe("immutable revision lookup", () => {
       releasePuts = resolve;
     });
     let storedHead: R2Object | null = null;
+    // SAFETY: this fixture implements the DB and concurrent R2 put/head seams
+    // used by the upload idempotency test.
     const env = {
       DB: new SqliteD1(sqlite),
       ARTIFACTS: {
@@ -244,7 +258,7 @@ describe("immutable revision lookup", () => {
           return storedHead?.key === key ? storedHead : null;
         },
       },
-    } as unknown as Env;
+    } as Env;
     const digestHeader = `sha-256=:${btoa(String.fromCharCode(...new Uint8Array(checksum)))}:`;
     const uploadRequest = () =>
       new Request(`https://deploy.test/v1/projects/${projectId}/revisions`, {

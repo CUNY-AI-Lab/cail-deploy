@@ -7,9 +7,12 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import Ajv2020 from "ajv/dist/2020.js";
+import { z } from "zod";
 import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
 import type { Principal } from "../src/auth";
 import { apiErrorSnapshot } from "../src/domain/errors";
+import type { JsonObject, JsonValue } from "../src/domain/json";
+import type { ThrownValue } from "../src/domain/values";
 import type { Env } from "../src/env";
 import {
   createMcpApiRequest,
@@ -29,6 +32,7 @@ const principal: Principal = {
 
 const clients: Client[] = [];
 const modernClients: ModernClient[] = [];
+const delayedReleaseResponseSchema = z.object({ events: z.array(z.json()) }).passthrough();
 const validContentDigest = `sha-256=:${Buffer.alloc(32).toString("base64")}:`;
 const legacyTransportHeaders = {
   Accept: "application/json, text/event-stream",
@@ -81,7 +85,7 @@ function toolText(result: Awaited<ReturnType<Client["callTool"]>>): string {
 
 function modernRequest(
   method: string,
-  params: Record<string, unknown>,
+  params: JsonObject,
   headers: Record<string, string> = {},
   signal?: AbortSignal,
 ): Request {
@@ -193,10 +197,11 @@ const invalidToolArguments = {
 
 describe("MCP tool argument boundary", () => {
   test("serves the stateless 2026-07-28 protocol with the frozen tool surface", async () => {
+    // SAFETY: this discovery-only client never dereferences Env because the request is rejected before dispatch.
     const client = await modernClientAgainst({} as Env);
 
     expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
-    const toolDescriptions: Record<string, string> = {
+    const toolDescriptions = {
       "kale.create_project": "Create a project.",
       "kale.upload_revision": "Upload a new version of your app.",
       "kale.create_release": "Publish a version.",
@@ -205,7 +210,7 @@ describe("MCP tool argument boundary", () => {
       "kale.approve_release": "Approve a release.",
       "kale.reconcile_release": "Finish a release whose publication could not be confirmed.",
       "kale.rollback_release": "Roll back to an earlier version.",
-    };
+    } satisfies { [Name in (typeof tools)[number]["name"]]: string };
     expect((await client.listTools()).tools).toEqual(
       tools.map((tool) => ({
         name: tool.name,
@@ -229,12 +234,15 @@ describe("MCP tool argument boundary", () => {
   });
 
   test("keeps advertised draft-2020-12 schemas equivalent to runtime Zod boundaries", async () => {
+    // SAFETY: this discovery-only client never dereferences Env because the request is rejected before dispatch.
     const advertised = await (await modernClientAgainst({} as Env)).listTools();
     const advertisedByName = new Map(advertised.tools.map((tool) => [tool.name, tool.inputSchema]));
     const validator = new Ajv2020({ strict: false });
 
     for (const tool of tools) {
-      const validate = validator.compile(advertisedByName.get(tool.name) as object);
+      const advertisedSchema = advertisedByName.get(tool.name);
+      if (!advertisedSchema) throw new Error(`Missing advertised schema for ${tool.name}`);
+      const validate = validator.compile(advertisedSchema);
       const valid = validToolArguments[tool.name];
       expect(validate(valid), `${tool.name} valid argument`).toBe(true);
       expect(tool.schema.safeParse(valid).success, `${tool.name} runtime valid argument`).toBe(
@@ -250,9 +258,32 @@ describe("MCP tool argument boundary", () => {
     }
   });
 
+  test("keeps the augmented create-project schema strict at the JSON Schema boundary", () => {
+    const createTool = tools.find((tool) => tool.name === "kale.create_project");
+    if (!createTool) throw new Error("create-project tool schema is missing");
+    // SAFETY: the MCP tool contract exposes a JSON Schema object after the
+    // canonical parser in inputSchemaFor has validated its root shape.
+    const schema = createTool.inputSchema as {
+      additionalProperties?: boolean;
+      properties?: { name?: { pattern?: string } };
+      type?: string;
+    };
+    expect(schema.type).toBe("object");
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties?.name?.pattern).toBe("^\\s*(?:\\S|\\S[\\s\\S]{0,78}\\S)\\s*$");
+    // SAFETY: Ajv accepts the MCP Tool input schema as its documented JSON
+    // Schema object after the canonical root parser has validated it.
+    const validate = new Ajv2020({ strict: false }).compile(createTool.inputSchema as object);
+    expect(validate({ name: "Example", idempotencyKey: "strict-boundary" })).toBe(true);
+    expect(validate({ name: "Example", idempotencyKey: "strict-boundary", unexpected: true })).toBe(
+      false,
+    );
+  });
+
   test("exposes reconciliation to OAuth-only MCP clients", async () => {
     const projectId = validToolArguments["kale.reconcile_release"].projectId;
     const releaseId = validToolArguments["kale.reconcile_release"].releaseId;
+    // SAFETY: this fixture implements only the reconciliation DB reads; the test rejects before any other Env binding is read.
     const env = {
       DB: {
         prepare(sql: string) {
@@ -282,7 +313,7 @@ describe("MCP tool argument boundary", () => {
           };
         },
       },
-    } as unknown as Env;
+    } as Env;
     const result = await (await standardClientAgainst(env)).callTool({
       name: "kale.reconcile_release",
       arguments: validToolArguments["kale.reconcile_release"],
@@ -300,6 +331,7 @@ describe("MCP tool argument boundary", () => {
 
   test("returns the owner-scoped live preview through MCP without response cookies", async () => {
     const projectId = validToolArguments["kale.preview_project"].projectId;
+    // SAFETY: this fixture implements the owner/release DB reads and preview dispatcher used by this boundary test.
     const env = {
       DB: {
         prepare(sql: string) {
@@ -336,7 +368,7 @@ describe("MCP tool argument boundary", () => {
           };
         },
       },
-    } as unknown as Env;
+    } as Env;
 
     const result = await (await standardClientAgainst(env)).callTool({
       name: "kale.preview_project",
@@ -354,6 +386,7 @@ describe("MCP tool argument boundary", () => {
   test("matches create-project trim and Unicode code-point length boundaries", () => {
     const createTool = tools.find((tool) => tool.name === "kale.create_project");
     if (!createTool) throw new Error("create-project tool schema is missing");
+    // SAFETY: the advertised create-project input schema is the object schema returned by the MCP tool contract.
     const validate = new Ajv2020({ strict: false }).compile(createTool.inputSchema as object);
     for (const name of [
       "a".repeat(80),
@@ -399,6 +432,7 @@ describe("MCP tool argument boundary", () => {
 
   test("accepts same-origin modern requests and rejects hostile boundary claims", async () => {
     let envReads = 0;
+    // SAFETY: the hostile proxy intentionally throws on every Env read to prove origin checks run first.
     const env = new Proxy({} as Env, {
       get() {
         envReads += 1;
@@ -443,6 +477,7 @@ describe("MCP tool argument boundary", () => {
 
   test("serves MCP only at its exact protected-resource path", async () => {
     for (const path of ["/mcpx", "/mcp/extra"]) {
+      // SAFETY: this path-rejection test supplies an empty Env because routing must fail before any binding lookup.
       const response = await handleMcpWithPrincipal(
         new Request(`https://deploy.invalid${path}`, {
           method: "POST",
@@ -480,6 +515,7 @@ describe("MCP tool argument boundary", () => {
       },
     ] as const;
     for (const { headers, status, message } of cases) {
+      // SAFETY: media validation must reject this request before any Env binding is accessed.
       const response = await handleMcpWithPrincipal(
         new Request("https://deploy.invalid/mcp", { method: "POST", headers, body }),
         {} as Env,
@@ -495,6 +531,7 @@ describe("MCP tool argument boundary", () => {
       });
     }
 
+    // SAFETY: malformed JSON is rejected before the handler reads any Env binding.
     const malformed = await handleMcpWithPrincipal(
       new Request("https://deploy.invalid/mcp", {
         method: "POST",
@@ -529,6 +566,7 @@ describe("MCP tool argument boundary", () => {
       },
     ] as const;
     for (const { body, error, id, status } of cases) {
+      // SAFETY: malformed legacy requests are rejected before dispatch and therefore do not need Env bindings.
       const response = await handleMcpWithPrincipal(
         new Request("https://deploy.invalid/mcp", {
           method: "POST",
@@ -545,8 +583,10 @@ describe("MCP tool argument boundary", () => {
   });
 
   test("keeps legacy and modern tool discovery byte-equivalent", async () => {
+    // SAFETY: discovery-only clients never dereference Env because no API call is dispatched.
     const modern = await modernClientAgainst({} as Env);
     const modernTools = (await modern.listTools()).tools;
+    // SAFETY: the legacy tools/list path is also discovery-only and does not dereference Env.
     const legacy = await handleLegacyMcpMessage(
       { jsonrpc: "2.0", id: "legacy-tools", method: "tools/list" },
       "https://deploy.invalid/mcp",
@@ -555,12 +595,14 @@ describe("MCP tool argument boundary", () => {
       principal,
       new AbortController().signal,
     );
-    const payload = (await legacy.json()) as { result: { tools: unknown[] } };
+    // SAFETY: the legacy tools/list response is produced by the adapter's fixed JSON-RPC envelope.
+    const payload = (await legacy.json()) as { result: { tools: JsonValue[] } };
     expect(payload.result.tools).toEqual(modernTools);
   });
 
   test("standard SDK calls keep invalid tool arguments inside correlated MCP errors", async () => {
     let envReads = 0;
+    // SAFETY: the hostile proxy intentionally throws on every Env read to prove argument validation runs first.
     const env = new Proxy({} as Env, {
       get() {
         envReads += 1;
@@ -689,6 +731,7 @@ describe("MCP tool argument boundary", () => {
 
   test("rejects oversized artifactBase64 before decoding or API access", async () => {
     let envReads = 0;
+    // SAFETY: the hostile proxy proves size/argument validation runs before API access.
     const env = new Proxy({} as Env, {
       get() {
         envReads += 1;
@@ -697,6 +740,7 @@ describe("MCP tool argument boundary", () => {
     });
     const originalAtob = globalThis.atob;
     let atobCalls = 0;
+    // SAFETY: the wrapper preserves the platform atob string-to-string signature while counting calls.
     globalThis.atob = ((value: string) => {
       atobCalls += 1;
       return originalAtob(value);
@@ -727,6 +771,7 @@ describe("MCP tool argument boundary", () => {
       );
 
       expect(response.status).toBe(200);
+      // SAFETY: the size-rejection response is the fixed JSON-RPC envelope emitted by the MCP adapter.
       const result = (await response.json()) as {
         result: { content: [{ text: string }]; isError: boolean };
       };
@@ -747,6 +792,7 @@ describe("MCP tool argument boundary", () => {
 
   test("rejects base64 that decodes beyond the artifact byte limit before allocation", async () => {
     let envReads = 0;
+    // SAFETY: the hostile proxy proves size/argument validation runs before API access.
     const env = new Proxy({} as Env, {
       get() {
         envReads += 1;
@@ -755,6 +801,7 @@ describe("MCP tool argument boundary", () => {
     });
     const originalAtob = globalThis.atob;
     let atobCalls = 0;
+    // SAFETY: the wrapper preserves the platform atob string-to-string signature while counting calls.
     globalThis.atob = ((value: string) => {
       atobCalls += 1;
       return originalAtob(value);
@@ -785,6 +832,7 @@ describe("MCP tool argument boundary", () => {
       );
 
       expect(response.status).toBe(200);
+      // SAFETY: the size-rejection response is the fixed JSON-RPC envelope emitted by the MCP adapter.
       const result = (await response.json()) as {
         result: { content: [{ text: string }]; isError: boolean };
       };
@@ -802,6 +850,7 @@ describe("MCP tool argument boundary", () => {
     let cancelled = false;
     let envReads = 0;
     let decoderReads = 0;
+    // SAFETY: the hostile proxy proves Content-Length rejection occurs before Env access.
     const env = new Proxy({} as Env, {
       get() {
         envReads += 1;
@@ -816,6 +865,7 @@ describe("MCP tool argument boundary", () => {
         return textDecoderDescriptor?.value;
       },
     });
+    // SAFETY: this RequestInit intentionally uses a streaming body and Cloudflare's duplex extension to exercise size cancellation.
     const request = new Request("https://deploy.invalid/mcp", {
       method: "POST",
       body: new ReadableStream<Uint8Array>({
@@ -854,6 +904,7 @@ describe("MCP tool argument boundary", () => {
   });
 
   test("preserves the MCP size error when cancellation, release, and diagnostics throw", async () => {
+    // SAFETY: this hostile Request fixture supplies only the body-reader methods needed to exercise cleanup failures.
     const request = {
       headers: new Headers({
         ...legacyTransportHeaders,
@@ -869,13 +920,14 @@ describe("MCP tool argument boundary", () => {
           },
         }),
       },
-    } as unknown as Request;
+    } as Request;
     const originalConsoleError = console.error;
     console.error = () => {
       throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
     };
     try {
       await expect(
+        // SAFETY: the request is rejected for size before this empty Env can be read.
         handleMcpWithPrincipal(request, {} as Env, requestId, principal),
       ).rejects.toMatchObject({
         status: 413,
@@ -890,6 +942,7 @@ describe("MCP tool argument boundary", () => {
     let cancelled = false;
     let envReads = 0;
     let decoderReads = 0;
+    // SAFETY: the hostile proxy proves chunked size rejection occurs before Env access.
     const env = new Proxy({} as Env, {
       get() {
         envReads += 1;
@@ -904,6 +957,7 @@ describe("MCP tool argument boundary", () => {
         return textDecoderDescriptor?.value;
       },
     });
+    // SAFETY: this RequestInit intentionally uses a streaming body and Cloudflare's duplex extension to exercise size cancellation.
     const request = new Request("https://deploy.invalid/mcp", {
       method: "POST",
       body: new ReadableStream<Uint8Array>({
@@ -937,6 +991,7 @@ describe("MCP tool argument boundary", () => {
 
   test("preserves a primary MCP read failure when release and diagnostics also fail", async () => {
     const primary = new Error("PRIMARY_MCP_READ_FAILURE");
+    // SAFETY: this hostile Request fixture supplies only the reader methods needed to preserve the primary failure.
     const request = {
       headers: new Headers(legacyTransportHeaders),
       body: {
@@ -949,12 +1004,13 @@ describe("MCP tool argument boundary", () => {
           },
         }),
       },
-    } as unknown as Request;
+    } as Request;
     const originalConsoleError = console.error;
     console.error = () => {
       throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
     };
     try {
+      // SAFETY: this fixture reaches the supplied reader before any Env binding is needed.
       await expect(handleMcpWithPrincipal(request, {} as Env, requestId, principal)).rejects.toBe(
         primary,
       );
@@ -967,7 +1023,7 @@ describe("MCP tool argument boundary", () => {
     const controller = new AbortController();
     const reason = new Error("caller aborted MCP request");
     let cancelCount = 0;
-    let cancelReason: unknown;
+    let cancelReason: ThrownValue;
     const body = new ReadableStream<Uint8Array>({
       pull: () => new Promise<void>(() => undefined),
       cancel(value) {
@@ -975,6 +1031,7 @@ describe("MCP tool argument boundary", () => {
         cancelReason = value;
       },
     });
+    // SAFETY: this RequestInit intentionally uses a streaming body and Cloudflare's duplex extension to test caller abort cleanup.
     const request = new Request("https://deploy.invalid/mcp", {
       method: "POST",
       body,
@@ -983,9 +1040,10 @@ describe("MCP tool argument boundary", () => {
       headers: legacyTransportHeaders,
     } as RequestInit);
 
+    // SAFETY: this cancellation test only needs an empty Env because the request aborts before dispatch.
     const pending = handleMcpWithPrincipal(request, {} as Env, requestId, principal);
     controller.abort(reason);
-    const error = await pending.catch((caught: unknown) => caught);
+    const error = await pending.catch((caught: ThrownValue) => caught);
     expect(apiErrorSnapshot(error)).toEqual({
       status: 499,
       code: "request_cancelled",
@@ -1012,7 +1070,7 @@ describe("MCP tool argument boundary", () => {
       response,
       new AbortController().signal,
       requestId,
-    ).catch((caught: unknown) => caught);
+    ).catch((caught: ThrownValue) => caught);
     expect(apiErrorSnapshot(error)).toEqual({
       status: 502,
       code: "mcp_response_too_large",
@@ -1025,6 +1083,7 @@ describe("MCP tool argument boundary", () => {
 
   test("preserves an internal response read failure when cleanup and diagnostics fail", async () => {
     const primary = new Error("PRIMARY_MCP_RESPONSE_READ_FAILURE");
+    // SAFETY: this hostile Response fixture supplies only the reader methods needed to preserve the primary failure.
     const response = {
       body: {
         getReader: () => ({
@@ -1039,7 +1098,7 @@ describe("MCP tool argument boundary", () => {
           },
         }),
       },
-    } as unknown as Response;
+    } as Response;
     const originalConsoleError = console.error;
     console.error = () => {
       throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
@@ -1057,7 +1116,7 @@ describe("MCP tool argument boundary", () => {
     const controller = new AbortController();
     const reason = new Error("caller aborted MCP response");
     let cancelCount = 0;
-    let cancelReason: unknown;
+    let cancelReason: ThrownValue;
     const body = new ReadableStream<Uint8Array>({
       pull: () => new Promise<void>(() => undefined),
       cancel(value) {
@@ -1067,7 +1126,7 @@ describe("MCP tool argument boundary", () => {
     });
     const pending = readMcpResponseText(new Response(body), controller.signal, requestId);
     controller.abort(reason);
-    const error = await pending.catch((caught: unknown) => caught);
+    const error = await pending.catch((caught: ThrownValue) => caught);
     expect(apiErrorSnapshot(error)).toEqual({
       status: 499,
       code: "request_cancelled",
@@ -1081,7 +1140,7 @@ describe("MCP tool argument boundary", () => {
 
   test("cancels and unlocks a stalled internal MCP response at its deadline", async () => {
     let cancelCount = 0;
-    let cancelReason: unknown;
+    let cancelReason: ThrownValue;
     const body = new ReadableStream<Uint8Array>({
       pull: () => new Promise<void>(() => undefined),
       cancel(value) {
@@ -1094,7 +1153,7 @@ describe("MCP tool argument boundary", () => {
       new AbortController().signal,
       requestId,
       10,
-    ).catch((caught: unknown) => caught);
+    ).catch((caught: ThrownValue) => caught);
     expect(apiErrorSnapshot(error)).toEqual({
       status: 504,
       code: "mcp_operation_timeout",
@@ -1144,6 +1203,7 @@ describe("MCP tool argument boundary", () => {
         streamController.close();
       },
     });
+    // SAFETY: this RequestInit intentionally uses a streaming body and Cloudflare's duplex extension to test adapter cancellation.
     const request = new Request("https://deploy.invalid/mcp", {
       method: "POST",
       headers: legacyTransportHeaders,
@@ -1158,6 +1218,7 @@ describe("MCP tool argument boundary", () => {
     const dispatchStarted = new Promise<void>((resolve) => {
       resolveDispatchStarted = resolve;
     });
+    // SAFETY: this fixture implements only the DB read that starts the deliberate late-rejection race.
     const env = {
       DB: {
         prepare() {
@@ -1179,9 +1240,9 @@ describe("MCP tool argument boundary", () => {
           };
         },
       },
-    } as unknown as Env;
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown): void => {
+    } as Env;
+    const unhandled: ThrownValue[] = [];
+    const onUnhandled = (reason: ThrownValue): void => {
       unhandled.push(reason);
     };
     process.on("unhandledRejection", onUnhandled);
@@ -1201,9 +1262,10 @@ describe("MCP tool argument boundary", () => {
       const response = await pending;
       expect(response.status).toBe(200);
       expect(requestBody.locked).toBe(false);
+      // SAFETY: this adapter response is the fixed JSON-RPC envelope generated for the cancellation path.
       const payload = (await response.json()) as {
         jsonrpc: string;
-        id: unknown;
+        id: JsonValue;
         result: { content: [{ text: string }]; isError: boolean };
       };
       expect(payload.jsonrpc).toBe("2.0");
@@ -1244,6 +1306,7 @@ describe("MCP tool argument boundary", () => {
     const dispatchStarted = new Promise<void>((resolve) => {
       resolveDispatchStarted = resolve;
     });
+    // SAFETY: this fixture implements only the DB read that starts the deliberate late-rejection race.
     const env = {
       DB: {
         prepare() {
@@ -1265,9 +1328,9 @@ describe("MCP tool argument boundary", () => {
           };
         },
       },
-    } as unknown as Env;
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown): void => {
+    } as Env;
+    const unhandled: ThrownValue[] = [];
+    const onUnhandled = (reason: ThrownValue): void => {
       unhandled.push(reason);
     };
     process.on("unhandledRejection", onUnhandled);
@@ -1296,6 +1359,7 @@ describe("MCP tool argument boundary", () => {
     const controller = new AbortController();
     const lateError = new Error("LATE_LEGACY_DISPATCH_REJECTION");
     let lateRejected = false;
+    // SAFETY: this fixture implements only the DB read that starts the deliberate late-rejection race.
     const env = {
       DB: {
         prepare() {
@@ -1314,7 +1378,7 @@ describe("MCP tool argument boundary", () => {
           };
         },
       },
-    } as unknown as Env;
+    } as Env;
     const pending = handleLegacyMcpMessage(
       {
         jsonrpc: "2.0",
@@ -1334,6 +1398,7 @@ describe("MCP tool argument boundary", () => {
     );
     controller.abort(new Error("caller stopped legacy dispatch"));
     const response = await pending;
+    // SAFETY: this adapter response is the fixed JSON-RPC envelope generated for the cancellation path.
     const payload = (await response.json()) as { result: { content: [{ text: string }] } };
     expect(JSON.parse(payload.result.content[0].text).error.code).toBe("request_cancelled");
     await Bun.sleep(50);
@@ -1342,6 +1407,7 @@ describe("MCP tool argument boundary", () => {
 
   test("returns a stable 504 when the whole legacy dispatch exceeds an injected deadline", async () => {
     let lateRejected = false;
+    // SAFETY: this fixture implements only the DB read that starts the deliberate deadline race.
     const env = {
       DB: {
         prepare() {
@@ -1360,7 +1426,7 @@ describe("MCP tool argument boundary", () => {
           };
         },
       },
-    } as unknown as Env;
+    } as Env;
     const response = await handleLegacyMcpMessage(
       {
         jsonrpc: "2.0",
@@ -1378,6 +1444,7 @@ describe("MCP tool argument boundary", () => {
       new AbortController().signal,
       10,
     );
+    // SAFETY: this adapter response is the fixed JSON-RPC envelope generated for the deadline path.
     const payload = (await response.json()) as { result: { content: [{ text: string }] } };
     expect(JSON.parse(payload.result.content[0].text)).toEqual({
       error: {
@@ -1410,6 +1477,7 @@ describe("MCP tool argument boundary", () => {
       created_at: "2026-08-01T00:00:00.000Z",
       updated_at: "2026-08-01T00:00:00.000Z",
     };
+    // SAFETY: this fixture implements the project/release/event reads needed by the delayed response race.
     const env = {
       DB: {
         prepare(sql: string) {
@@ -1429,9 +1497,9 @@ describe("MCP tool argument boundary", () => {
           };
         },
       },
-    } as unknown as Env;
+    } as Env;
     let cancelCount = 0;
-    let cancelReason: unknown;
+    let cancelReason: ThrownValue;
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode("{}"));
@@ -1445,13 +1513,8 @@ describe("MCP tool argument boundary", () => {
     const originalResponseJson = Response.json;
     let apiResponseIntercepted = false;
     Object.defineProperty(Response, "json", {
-      value: (value: unknown, init?: ResponseInit) => {
-        if (
-          !apiResponseIntercepted &&
-          typeof value === "object" &&
-          value !== null &&
-          "events" in value
-        ) {
+      value: (value: JsonValue, init?: ResponseInit) => {
+        if (!apiResponseIntercepted && delayedReleaseResponseSchema.safeParse(value).success) {
           apiResponseIntercepted = true;
           const busyUntil = Date.now() + 40;
           let spins = 0;
@@ -1459,7 +1522,7 @@ describe("MCP tool argument boundary", () => {
           void spins;
           return new Response(body, { status: 200 });
         }
-        return Reflect.apply(originalResponseJson, Response, [value, init]);
+        return originalResponseJson.call(Response, value, init);
       },
     });
     try {
@@ -1480,6 +1543,7 @@ describe("MCP tool argument boundary", () => {
         new AbortController().signal,
         10,
       );
+      // SAFETY: this adapter response is the fixed JSON-RPC envelope generated for the deadline path.
       const payload = (await response.json()) as { result: { content: [{ text: string }] } };
       expect(JSON.parse(payload.result.content[0].text)).toEqual({
         error: {

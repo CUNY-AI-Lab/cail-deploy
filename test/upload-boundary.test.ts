@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { JsonValue } from "../src/domain/json";
 import { parseArtifactJsonBytes, readArtifactBody } from "../src/api";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
@@ -9,6 +10,8 @@ function streamingRequest(
   contentLength?: number,
   signal?: AbortSignal,
 ): Request {
+  // SAFETY: ReadableStream request bodies require the Workers `duplex` init
+  // extension, which is present in the runtime but omitted from RequestInit.
   return new Request("https://deploy.test/v1/projects/project/revisions", {
     method: "POST",
     body,
@@ -80,6 +83,8 @@ describe("revision upload body boundary", () => {
   });
 
   test("preserves the size error when cancellation, release, and diagnostics throw", async () => {
+    // SAFETY: this malformed object implements exactly the body reader methods
+    // exercised by the oversized-upload cleanup path.
     const request = {
       headers: new Headers({ "Content-Length": String(maxArtifactBytes + 1) }),
       body: {
@@ -92,7 +97,7 @@ describe("revision upload body boundary", () => {
           },
         }),
       },
-    } as unknown as Request;
+    } as Request;
     const originalConsoleError = console.error;
     console.error = () => {
       throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
@@ -138,9 +143,9 @@ describe("revision upload body boundary", () => {
   });
 
   test("preserves the chunked overflow error when cancellation rejects", async () => {
-    const diagnostics: unknown[] = [];
+    const diagnostics: JsonValue[] = [];
     const originalConsoleError = console.error;
-    console.error = (diagnostic: unknown) => {
+    console.error = (diagnostic: JsonValue) => {
       diagnostics.push(diagnostic);
     };
     const request = streamingRequest(
@@ -173,6 +178,8 @@ describe("revision upload body boundary", () => {
 
   test("preserves a primary read failure when release and diagnostics also fail", async () => {
     const primary = new Error("PRIMARY_ARTIFACT_READ_FAILURE");
+    // SAFETY: this fixture implements only the request body reader methods
+    // needed to inject a primary read failure and release failure.
     const request = {
       headers: new Headers(),
       body: {
@@ -185,7 +192,7 @@ describe("revision upload body boundary", () => {
           },
         }),
       },
-    } as unknown as Request;
+    } as Request;
     const originalConsoleError = console.error;
     console.error = () => {
       throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
@@ -226,9 +233,9 @@ describe("revision upload body boundary", () => {
 
   test("contains rejecting cancellation and throwing diagnostics on caller abort", async () => {
     const controller = new AbortController();
-    const diagnostics: unknown[] = [];
+    const diagnostics: JsonValue[] = [];
     const originalConsoleError = console.error;
-    console.error = (diagnostic: unknown) => {
+    console.error = (diagnostic: JsonValue) => {
       diagnostics.push(diagnostic);
       throw new Error("PRIVATE_DIAGNOSTIC_FAILURE");
     };

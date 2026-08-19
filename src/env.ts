@@ -2,11 +2,12 @@ import {
   CAIL_EVENT_CATALOG,
   createAnalyticsEngineSink,
   createCailLogger,
-  type CailLogEnvironment,
   type CailLogger,
   fanoutSinks,
   workersStructuredSink,
 } from "@cuny-ai-lab/cail-log";
+import type { OAuthPrincipalProps } from "./oauth-principal";
+import { z } from "zod";
 
 export const CAIL_LOG_SERVICE = "kale-release-control-plane" as const;
 export const CAIL_LOG_PRODUCT = "kale-deploy" as const;
@@ -24,10 +25,11 @@ export type LoggingContext = Readonly<{
 }>;
 
 /** Accept only the deployment labels owned by this service. */
-export function parseCailEnvironment(value: unknown): CailEnvironment | null {
-  return typeof value === "string" && CAIL_ENVIRONMENTS.includes(value as CailEnvironment)
-    ? (value as CailEnvironment)
-    : null;
+const cailEnvironmentSchema = z.enum(CAIL_ENVIRONMENTS);
+
+export function parseCailEnvironment(value: string | null | undefined): CailEnvironment | null {
+  const parsed = cailEnvironmentSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 export interface TestWorkflowInstance {
@@ -87,7 +89,7 @@ export interface OAuthHelpersLike {
     userId: string;
     metadata: Record<string, never>;
     scope: string[];
-    props: unknown;
+    props: OAuthPrincipalProps;
   }): Promise<{ redirectTo: string }>;
 }
 
@@ -146,7 +148,7 @@ export function readLoggingContext(
     const logger = createCailLogger({
       service: CAIL_LOG_SERVICE,
       release,
-      env: environment as CailLogEnvironment,
+      env: environment,
       sourceClass: "platform",
       subjectVersion: CAIL_LOG_SUBJECT_VERSION,
       catalog: CAIL_EVENT_CATALOG,

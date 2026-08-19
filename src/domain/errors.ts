@@ -31,11 +31,13 @@ export class ApiError extends Error {
   }
 }
 
-export function apiErrorSnapshot(error: unknown): ApiErrorSnapshot | undefined {
+export function apiErrorSnapshot<T>(error: T): ApiErrorSnapshot | undefined {
+  // SAFETY: WeakMap#get is an identity-only lookup and returns undefined for
+  // primitive keys in every supported Worker, Bun, and Node runtime.
   return apiErrorSnapshots.get(error as object);
 }
 
-export function errorResponse(error: unknown, requestId: string): Response {
+export function errorResponse<T>(error: T, requestId: string): Response {
   const apiError = apiErrorSnapshot(error) ?? internalErrorSnapshot;
   return Response.json(
     { error: { code: apiError.code, message: apiError.message, requestId } },

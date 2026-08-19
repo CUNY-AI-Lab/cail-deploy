@@ -19,6 +19,7 @@ import {
   sha256Hex,
 } from "./domain/digests";
 import { ApiError, apiErrorSnapshot } from "./domain/errors";
+import { jsonValueSchema, parseJsonValue, type JsonValue } from "./domain/json";
 import type { Env, ReleaseWorkflowParams } from "./env";
 import {
   emitReleaseAdmission,
@@ -38,7 +39,8 @@ import {
   requireRelease,
 } from "./storage";
 import type { RevisionRow } from "./storage";
-import type { PreparedEnvelope } from "./workflow";
+import { parsePreparedEnvelope } from "./domain/prepared-envelope";
+import { z } from "zod";
 
 const ARTIFACT_MEDIA_TYPE = "application/vnd.cuny.kale.artifact.v1+json";
 export const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
@@ -102,14 +104,15 @@ export async function ensureWorkflowInstance(
 }
 
 function workflowParams(release: ReleaseRow): ReleaseWorkflowParams {
-  return {
+  const workflow: ReleaseWorkflowParams = {
     projectId: release.project_id,
     releaseId: release.release_id,
     revisionId: release.revision_id,
     requestId: release.request_id,
-    ...(release.operational_subject ? { logSubject: release.operational_subject } : {}),
     admittedAt: release.admitted_at,
   };
+  if (release.operational_subject) workflow.logSubject = release.operational_subject;
+  return workflow;
 }
 
 async function releaseReplayResponse(
@@ -121,14 +124,11 @@ async function releaseReplayResponse(
 ): Promise<Response | null> {
   const replay = await idempotentResponse(env, projectId, operation, key, requestDigest);
   if (!replay) return null;
-  const replayReleaseId =
-    typeof replay === "object" &&
-    replay !== null &&
-    "releaseId" in replay &&
-    typeof replay.releaseId === "string" &&
-    RELEASE_PATTERN.test(replay.releaseId)
-      ? replay.releaseId
-      : null;
+  const replayReleaseResult = z
+    .object({ releaseId: z.string().regex(RELEASE_PATTERN) })
+    .passthrough()
+    .safeParse(replay);
+  const replayReleaseId = replayReleaseResult.success ? replayReleaseResult.data.releaseId : null;
   if (!replayReleaseId) {
     throw new ApiError(
       500,
@@ -157,17 +157,19 @@ function requiredIdempotencyKey(request: Request): string {
   return key;
 }
 
-async function jsonBody(request: Request): Promise<unknown> {
+async function jsonBody(request: Request): Promise<JsonValue> {
   try {
-    return await request.json();
+    return jsonValueSchema.parse(await request.json());
   } catch {
     throw new ApiError(400, "invalid_json", "The request body must be valid JSON.");
   }
 }
 
-export function parseArtifactJsonBytes(bytes: Uint8Array): unknown {
+export function parseArtifactJsonBytes(bytes: Uint8Array): JsonValue {
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return jsonValueSchema.parse(
+      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+    );
   } catch {
     throw new ApiError(400, "artifact_json_invalid", "Your upload must be valid UTF-8 JSON.");
   }
@@ -440,14 +442,7 @@ async function uploadRevision(
   );
 }
 
-function revisionResponse(revision: RevisionRow): {
-  projectId: string;
-  revisionId: string;
-  artifactDigest: string;
-  artifactBytes: number;
-  status: "ready" | "failed";
-  createdAt: string;
-} {
+function revisionResponse(revision: RevisionRow) {
   return {
     projectId: revision.project_id,
     revisionId: revision.revision_id,
@@ -540,8 +535,8 @@ async function startRelease(
   await requireConsistentRevisionArtifact(env, revision);
 
   const key = requiredIdempotencyKey(request);
-  const requestShape = { revisionId, approval, rollbackOfReleaseId };
-  const requestDigest = await sha256Hex(canonicalJson(requestShape));
+  const releaseRequestDigestInput = { revisionId, approval, rollbackOfReleaseId };
+  const requestDigest = await sha256Hex(canonicalJson(releaseRequestDigestInput));
   const operation = rollbackOfReleaseId ? `rollback:${rollbackOfReleaseId}` : "create_release";
   const replay = await releaseReplayResponse(env, projectId, operation, key, requestDigest);
   if (replay) return replay;
@@ -594,14 +589,15 @@ async function startRelease(
     throw cause;
   }
   emitReleaseAdmission(env, releaseId, requestId, logSubject);
-  await ensureWorkflowInstance(env, releaseId, {
+  const workflow: ReleaseWorkflowParams = {
     projectId,
     releaseId,
     revisionId,
     requestId,
-    ...(logSubject ? { logSubject } : {}),
     admittedAt: now,
-  });
+  };
+  if (logSubject) workflow.logSubject = logSubject;
+  await ensureWorkflowInstance(env, releaseId, workflow);
   return Response.json(response, { status: 202 });
 }
 
@@ -610,7 +606,7 @@ export interface ReleaseEventHistoryEntry {
   type: string;
   occurredAt: string;
   actorSubject: string | null;
-  detail: unknown;
+  detail: JsonValue | null;
 }
 
 export async function readReleaseEventHistory(
@@ -681,7 +677,7 @@ export async function readReleaseEventHistory(
     type: event.type,
     occurredAt: event.occurred_at,
     actorSubject: event.actor_subject,
-    detail: event.detail_json === null ? null : (JSON.parse(event.detail_json) as unknown),
+    detail: event.detail_json === null ? null : parseJsonValue(event.detail_json),
   }));
 }
 
@@ -950,7 +946,7 @@ async function reconcileRelease(
         env,
         projectId,
         release.revision_id,
-        JSON.parse(json) as PreparedEnvelope,
+        parsePreparedEnvelope(JSON.parse(json)),
       );
     } catch (cause) {
       if (apiErrorSnapshot(cause)?.code !== "publication_rejected") throw cause;

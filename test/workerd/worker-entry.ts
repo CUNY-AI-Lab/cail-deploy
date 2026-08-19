@@ -3,6 +3,7 @@ import { prepareAndSmokeWorker } from "../../src/adapters/cloudflare/worker-bund
 import { ensureWorkflowInstance, readArtifactBody } from "../../src/api";
 import { artifactSchema } from "../../src/domain/contracts";
 import { apiErrorSnapshot } from "../../src/domain/errors";
+import type { ThrownValue } from "../../src/domain/values";
 import type { ReleaseWorkflowParams, TestWorkflowBinding, WorkerLoaderLike } from "../../src/env";
 
 const artifactBytes =
@@ -16,6 +17,12 @@ const workflowParams: ReleaseWorkflowParams = {
   requestId: "55555555-5555-4555-8555-555555555555",
   admittedAt: "2026-07-23T00:00:00.000Z",
 };
+
+interface RejectedUploadResult {
+  outcome: "rejected";
+  status?: number;
+  code?: string;
+}
 
 export class AdmissionWorkflow extends WorkflowEntrypoint<unknown, ReleaseWorkflowParams> {
   override async run(): Promise<void> {}
@@ -39,6 +46,8 @@ async function stalledUploadAbortGate(): Promise<{
       return new Promise<void>(() => undefined);
     },
   });
+  // SAFETY: ReadableStream request bodies require the Workers `duplex` init
+  // extension, which is present in the runtime but omitted from RequestInit.
   const request = new Request("https://deploy.invalid/v1/projects/project/revisions", {
     method: "POST",
     body,
@@ -47,12 +56,14 @@ async function stalledUploadAbortGate(): Promise<{
   } as RequestInit);
   const resultPromise = readArtifactBody(request, "99999999-9999-4999-8999-999999999999").then(
     () => ({ outcome: "resolved" }),
-    (error: unknown) => {
+    (error: ThrownValue) => {
       const snapshot = apiErrorSnapshot(error);
-      return {
-        outcome: "rejected",
-        ...(snapshot ? { status: snapshot.status, code: snapshot.code } : {}),
-      };
+      const rejected: RejectedUploadResult = { outcome: "rejected" };
+      if (snapshot) {
+        rejected.status = snapshot.status;
+        rejected.code = snapshot.code;
+      }
+      return rejected;
     },
   );
 
@@ -88,8 +99,10 @@ export default {
     const preparedResponse = await env.LOADER.load({ ...prepared, globalOutbound: null })
       .getEntrypoint()
       .fetch(new Request("https://dynamic-worker.invalid/"));
+    // SAFETY: the workerd binding implements the TestWorkflowBinding methods
+    // used by ensureWorkflowInstance in this integration gate.
     const workflowEnv = {
-      RELEASE_WORKFLOW: env.RELEASE_WORKFLOW as unknown as TestWorkflowBinding,
+      RELEASE_WORKFLOW: env.RELEASE_WORKFLOW as TestWorkflowBinding,
     };
     await ensureWorkflowInstance(workflowEnv, workflowId, workflowParams);
     await ensureWorkflowInstance(workflowEnv, workflowId, workflowParams);

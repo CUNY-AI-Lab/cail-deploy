@@ -1,7 +1,20 @@
+import { z } from "zod";
+import type { JsonObject, JsonValue } from "./json";
+
+const jsonObjectContract = z.record(z.string(), z.json());
+const jsonObjectSchema = z.custom<JsonObject>(
+  (value) => jsonObjectContract.safeParse(value).success,
+);
+
 const encoder = new TextEncoder();
 
 export async function sha256Hex(input: ArrayBuffer | Uint8Array | string): Promise<string> {
-  const bytes = typeof input === "string" ? encoder.encode(input) : input;
+  const bytes =
+    input instanceof Uint8Array
+      ? input
+      : input instanceof ArrayBuffer
+        ? new Uint8Array(input)
+        : encoder.encode(input);
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(new Uint8Array(bytes));
   const digest = await crypto.subtle.digest("SHA-256", copy.buffer);
@@ -22,15 +35,16 @@ export function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export function canonicalJson(value: unknown): string {
+export function canonicalJson(value: JsonValue): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+  const object = jsonObjectSchema.safeParse(value);
+  if (object.success) {
+    const entries = Object.entries(object.data).sort(([left], [right]) =>
       left.localeCompare(right),
     );
     return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
   }
-  return JSON.stringify(value);
+  return JSON.stringify(value) ?? "null";
 }
 
 export function opaqueId(prefix: "prj" | "rel"): string {

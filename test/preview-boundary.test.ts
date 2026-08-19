@@ -15,6 +15,8 @@ function previewEnv(input: {
   fetch: (request: Request) => Promise<Response>;
   timeout?: string;
 }): Env {
+  // SAFETY: this fixture implements only the DB and dispatcher seams exercised
+  // by preview; absent production bindings are irrelevant to this boundary.
   return {
     PREVIEW_TIMEOUT_MS: input.timeout,
     DB: {
@@ -48,7 +50,7 @@ function previewEnv(input: {
         return { fetch: input.fetch };
       },
     },
-  } as unknown as Env;
+  } as Env;
 }
 
 function previewRequest(signal?: AbortSignal): Request {
@@ -149,7 +151,10 @@ describe("live preview operational boundary", () => {
       status: 503,
       code: "preview_unavailable",
     });
+    // SAFETY: the timeout response contract stores the platform DOMException
+    // as its cause, established by the preceding toMatchObject assertion.
     expect((captured as Error).cause).toBeInstanceOf(DOMException);
+    // SAFETY: the preceding instance check establishes the DOMException cause.
     expect(((captured as Error).cause as DOMException).name).toBe("TimeoutError");
   });
 

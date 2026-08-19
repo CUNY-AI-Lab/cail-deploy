@@ -1,12 +1,51 @@
-import { createWorker } from "@cloudflare/worker-bundler";
+import { createWorker, type Modules } from "@cloudflare/worker-bundler";
+import { z } from "zod";
 import type { Artifact } from "../../domain/contracts";
+import { jsonValueSchema, type JsonValue } from "../../domain/json";
 import type { WorkerLoaderLike } from "../../env";
+
+interface WorkerModuleRecord {
+  js?: string;
+  cjs?: string;
+  text?: string;
+  json?: JsonValue;
+}
+
+const workerModuleContract = z
+  .object({
+    js: z.string().optional(),
+    cjs: z.string().optional(),
+    text: z.string().optional(),
+    json: jsonValueSchema.optional(),
+  })
+  .passthrough();
+const workerModuleSchema = z.custom<WorkerModuleRecord>(
+  (value) => workerModuleContract.safeParse(value).success,
+);
 
 export interface PreparedWorker {
   mainModule: string;
   modules: Record<string, string>;
   compatibilityDate: string;
   compatibilityFlags: string[];
+}
+
+export function normalizeWorkerModules(bundledModules: Modules): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(bundledModules).map(([path, source]) => {
+      const text = z.string().safeParse(source);
+      if (text.success) return [path, text.data];
+      const module = workerModuleSchema.safeParse(source);
+      if (!module.success) {
+        throw new Error(`Worker Bundler returned an unsupported module type for ${path}.`);
+      }
+      if (module.data.js !== undefined) return [path, module.data.js];
+      if (module.data.cjs !== undefined) return [path, module.data.cjs];
+      if (module.data.text !== undefined) return [path, module.data.text];
+      if (module.data.json !== undefined) return [path, JSON.stringify(module.data.json)];
+      throw new Error(`Worker Bundler returned an unsupported module type for ${path}.`);
+    }),
+  );
 }
 
 export async function prepareAndSmokeWorker(
@@ -17,16 +56,7 @@ export async function prepareAndSmokeWorker(
     files: artifact.files,
     entryPoint: artifact.entrypoint,
   });
-  const modules = Object.fromEntries(
-    Object.entries(bundled.modules).map(([path, source]) => {
-      if (typeof source === "string") return [path, source];
-      if (source.js !== undefined) return [path, source.js];
-      if (source.cjs !== undefined) return [path, source.cjs];
-      if (source.text !== undefined) return [path, source.text];
-      if (source.json !== undefined) return [path, JSON.stringify(source.json)];
-      throw new Error(`Worker Bundler returned an unsupported module type for ${path}.`);
-    }),
-  );
+  const modules = normalizeWorkerModules(bundled.modules);
   const prepared = {
     mainModule: bundled.mainModule,
     modules,

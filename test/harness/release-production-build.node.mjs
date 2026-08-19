@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createTestIdentityIssuer, TEST_SUBJECTS } from "@cuny-ai-lab/cail-identity/testing";
 import { createTestHarness } from "wrangler";
+import { z } from "zod";
 
 const DEPLOY_WORKER = "kale-release-control-plane-release-workerd-test";
 const PROVIDER_WORKER = "kale-release-control-plane-wfp-api-test";
@@ -13,6 +14,23 @@ const PROVIDER_CONTROL = {
 const INITIAL_REQUEST_ID = "11111111-1111-4111-8111-111111111111";
 const TEST_TIMEOUT_MS = 60_000;
 const root = new URL("../..", import.meta.url).pathname.replace(/\/$/u, "");
+
+const preparedEnvelopeSchema = z
+  .object({
+    schemaVersion: z.literal("kale.prepared-worker.v1"),
+    projectId: z.string().regex(/^prj_[0-9a-f]{32}$/u),
+    releaseId: z.string().regex(/^rel_[0-9a-f]{32}$/u),
+    revisionId: z.string().regex(/^rev_sha256_[0-9a-f]{64}$/u),
+    mainModule: z.string().min(1),
+    modules: z.record(z.string(), z.string()).refine((modules) => Object.keys(modules).length > 0),
+    compatibilityDate: z.iso.date(),
+    compatibilityFlags: z.array(z.string()),
+  })
+  .strict();
+
+function isText(value) {
+  return z.string().safeParse(value).success;
+}
 
 function identityHeaders(jwt) {
   return { "X-CAIL-Identity-JWT": jwt };
@@ -50,38 +68,31 @@ function releaseActionId(releaseId) {
 }
 
 async function readPreparedObject(env, preparedKey, preparedDigest) {
-  assert.equal(typeof preparedKey, "string");
+  assert.equal(isText(preparedKey), true);
   assert.match(preparedKey, /^prepared\/prj_[0-9a-f]{32}\/rel_[0-9a-f]{32}\/[0-9a-f]{64}\.json$/u);
-  assert.equal(typeof preparedDigest, "string");
+  assert.equal(isText(preparedDigest), true);
   assert.match(preparedDigest, /^[0-9a-f]{64}$/u);
   const object = await env.ARTIFACTS.get(preparedKey);
   assert.ok(object, `prepared object ${preparedKey} was not retained in R2`);
   const bytes = new Uint8Array(await object.arrayBuffer());
   const observedDigest = sha256Hex(bytes);
   assert.equal(observedDigest, preparedDigest, "prepared bytes failed their D1 digest");
-  const envelope = JSON.parse(new TextDecoder().decode(bytes));
-  assert.equal(envelope.schemaVersion, "kale.prepared-worker.v1");
-  assert.equal(typeof envelope.projectId, "string");
-  assert.equal(typeof envelope.releaseId, "string");
-  assert.equal(typeof envelope.revisionId, "string");
-  assert.equal(typeof envelope.mainModule, "string");
-  assert.ok(envelope.modules && typeof envelope.modules === "object");
-  assert.ok(Object.keys(envelope.modules).length > 0);
-  assert.equal(typeof envelope.modules[envelope.mainModule], "string");
+  const envelope = preparedEnvelopeSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
+  assert.equal(isText(envelope.modules[envelope.mainModule]), true);
   return { bytes, digest: observedDigest, envelope };
 }
 
 function moduleSha256(envelope) {
   return Object.fromEntries(
     Object.entries(envelope.modules).map(([name, source]) => {
-      assert.equal(typeof source, "string", `prepared module ${name} was not text`);
+      assert.equal(isText(source), true, `prepared module ${name} was not text`);
       return [name, sha256Hex(source)];
     }),
   );
 }
 
 function parseFlattenedLogMessage(message) {
-  if (typeof message !== "string" || !message.trimStart().startsWith("{")) return null;
+  if (!isText(message) || !message.trimStart().startsWith("{")) return null;
   const fields = {};
   for (const line of message.split("\n")) {
     const match = line.trim().match(/^(?:'([^']+)'|([A-Za-z_][A-Za-z0-9_.-]*)): (.*?)(?:,)?$/u);
@@ -437,8 +448,8 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
   assert.equal(durableRelease.rollback_of_release_id, null);
   assert.equal(durableRelease.operational_subject, null);
   assert.equal(durableRelease.status, "awaiting_approval");
-  assert.equal(typeof durableRelease.prepared_key, "string");
-  assert.equal(typeof durableRelease.prepared_digest, "string");
+  assert.equal(isText(durableRelease.prepared_key), true);
+  assert.equal(isText(durableRelease.prepared_digest), true);
   const preparedAtApproval = await readPreparedObject(
     env,
     durableRelease.prepared_key,

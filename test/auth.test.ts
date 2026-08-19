@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import {
   createTestIdentityIssuer,
   TEST_OPERATIONAL_SUBJECTS,
@@ -15,6 +16,8 @@ import { operationalLogSubject } from "../src/operational-events";
 const audience = "cail:deploy";
 
 function env(overrides: Partial<Env>): Env {
+  // SAFETY: this fixture supplies the authentication fields required by the
+  // tested handler; each test adds only the boundary-specific overrides.
   return {
     AUTH_MODE: "cail-jwt",
     CAIL_ENVIRONMENT: "test",
@@ -97,10 +100,12 @@ describe("CAIL identity boundary", () => {
     for (const jwksJson of [
       JSON.stringify({ keys: [] }),
       JSON.stringify({
-        keys: [
-          ...(JSON.parse(issuer.jwksJson) as { keys: unknown[] }).keys,
-          ...(JSON.parse(issuer.jwksJson) as { keys: unknown[] }).keys,
-        ],
+        keys: (() => {
+          const keys = z
+            .object({ keys: z.array(z.json()) })
+            .parse(JSON.parse(issuer.jwksJson)).keys;
+          return [...keys, ...keys];
+        })(),
       }),
     ]) {
       await expect(

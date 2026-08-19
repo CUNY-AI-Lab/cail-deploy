@@ -1,9 +1,11 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { publishWorker } from "./adapters/cloudflare/wfp";
-import { type PreparedWorker, prepareAndSmokeWorker } from "./adapters/cloudflare/worker-bundler";
+import { prepareAndSmokeWorker } from "./adapters/cloudflare/worker-bundler";
 import { type Artifact, artifactSchema } from "./domain/contracts";
 import { canonicalJson, sha256Hex } from "./domain/digests";
 import { ApiError, apiErrorSnapshot } from "./domain/errors";
+import { jsonValueSchema } from "./domain/json";
+import { type PreparedEnvelope, parsePreparedEnvelope } from "./domain/prepared-envelope";
 import type { Env, ReleaseWorkflowParams } from "./env";
 import { emitReleaseTerminal } from "./operational-events";
 import {
@@ -15,19 +17,11 @@ import {
   transitionReleaseStatus,
 } from "./storage";
 import { finalizeWorkflowFailure } from "./workflow-failure";
-
-interface PreparedEnvelope extends PreparedWorker {
-  schemaVersion: "kale.prepared-worker.v1";
-  projectId: string;
-  releaseId: string;
-  revisionId: string;
-}
-
 function artifactIntegrityFailure(message: string): ApiError {
   return new ApiError(500, "artifact_integrity_failed", message);
 }
 
-function terminalFailureType(error: unknown): "artifact_integrity_failed" | "release_failed" {
+function terminalFailureType<T>(error: T): "artifact_integrity_failed" | "release_failed" {
   return apiErrorSnapshot(error)?.code === "artifact_integrity_failed"
     ? "artifact_integrity_failed"
     : "release_failed";
@@ -52,7 +46,7 @@ async function loadVerifiedArtifact(
   } catch (cause) {
     throw new ApiError(500, "artifact_integrity_failed", "Revision JSON is invalid.", { cause });
   }
-  const artifact = artifactSchema.parse(parsed) as Artifact;
+  const artifact = artifactSchema.parse(parsed);
   if (artifact.requestedBindings.length > 0) {
     throw new Error("Binding requests are not supported by this isolated publication service.");
   }
@@ -68,16 +62,13 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
       );
       if (validating.state === "fenced") return;
       const initialRelease = await requireRelease(this.env, projectId, releaseId);
-      const preparedState = initialRelease.rollback_of_release_id
+      const rollbackOfReleaseId = initialRelease.rollback_of_release_id;
+      const preparedState = rollbackOfReleaseId
         ? await step.do("reuse retained rollback artifact", async () => {
             if (await hasTerminalReleaseOutcome(this.env, releaseId)) {
               return { outcome: "fenced" as const };
             }
-            const source = await requireRelease(
-              this.env,
-              projectId,
-              initialRelease.rollback_of_release_id as string,
-            );
+            const source = await requireRelease(this.env, projectId, rollbackOfReleaseId);
             if (
               !source.prepared_key ||
               !source.prepared_digest ||
@@ -120,7 +111,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
               revisionId,
               ...prepared,
             };
-            const preparedJson = canonicalJson(envelope);
+            const preparedJson = canonicalJson(jsonValueSchema.parse(envelope));
             const preparedDigest = await sha256Hex(preparedJson);
             const preparedKey = `prepared/${projectId}/${releaseId}/${preparedDigest}.json`;
             if (await hasTerminalReleaseOutcome(this.env, releaseId)) {
@@ -201,7 +192,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
               this.env,
               projectId,
               revisionId,
-              JSON.parse(retainedJson) as PreparedEnvelope,
+              parsePreparedEnvelope(JSON.parse(retainedJson)),
             );
           } catch (error) {
             if (apiErrorSnapshot(error)?.code === "publication_ambiguous") {
@@ -291,5 +282,3 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
     }
   }
 }
-
-export type { PreparedEnvelope };

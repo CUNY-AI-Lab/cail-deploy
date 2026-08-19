@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { JsonValue } from "../src/domain/json";
 import { finalizeWorkflowFailure } from "../src/workflow-failure";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
@@ -6,9 +7,9 @@ const releaseId = "rel_22222222222222222222222222222222";
 
 describe("Workflow terminal failure finalization", () => {
   test("preserves the primary failure and retains finalization failure secondarily", async () => {
-    const diagnostics: unknown[] = [];
+    const diagnostics: JsonValue[] = [];
     const originalConsoleError = console.error;
-    console.error = (diagnostic: unknown) => {
+    console.error = (diagnostic: JsonValue) => {
       diagnostics.push(diagnostic);
     };
     const originalCause = new Error("original cause");
@@ -33,7 +34,11 @@ describe("Workflow terminal failure finalization", () => {
 
       expect(thrown).toBe(primary);
       expect(primary.cause).toBeInstanceOf(AggregateError);
+      // SAFETY: the preceding assertion proves the cause is the AggregateError
+      // produced by finalization, so its cause and errors fields are available.
       expect((primary.cause as AggregateError).cause).toBe(originalCause);
+      // SAFETY: the preceding assertion proves the cause is the AggregateError
+      // produced by finalization, so its errors field contains the secondary failure.
       expect((primary.cause as AggregateError).errors).toEqual([secondary]);
       expect(diagnostics).toEqual([
         {
@@ -73,9 +78,9 @@ describe("Workflow terminal failure finalization", () => {
   });
 
   test("a throwing primary diagnostic sink cannot replace the workflow failure", async () => {
-    const diagnostics: unknown[] = [];
+    const diagnostics: JsonValue[] = [];
     const originalConsoleError = console.error;
-    console.error = (diagnostic: unknown) => {
+    console.error = (diagnostic: JsonValue) => {
       diagnostics.push(diagnostic);
       throw new Error("private diagnostic sink failure");
     };
@@ -98,6 +103,7 @@ describe("Workflow terminal failure finalization", () => {
 
       expect(thrown).toBe(primary);
       expect(primary.cause).toBeInstanceOf(AggregateError);
+      // SAFETY: the preceding instance check establishes AggregateError before reading errors.
       expect((primary.cause as AggregateError).errors).toEqual([secondary]);
       expect(diagnostics).toEqual([
         {
@@ -114,9 +120,9 @@ describe("Workflow terminal failure finalization", () => {
   });
 
   test("a throwing unattached diagnostic sink cannot replace the workflow failure", async () => {
-    const diagnostics: unknown[] = [];
+    const diagnostics: JsonValue[] = [];
     const originalConsoleError = console.error;
-    console.error = (diagnostic: unknown) => {
+    console.error = (diagnostic: JsonValue) => {
       diagnostics.push(diagnostic);
       if (diagnostics.length === 2) {
         throw new Error("private unattached diagnostic sink failure");

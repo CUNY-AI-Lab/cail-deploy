@@ -11,7 +11,7 @@ export type DeployDiagnostic =
   | "workflow_finalization_diagnostic_unattached"
   | "workflow_terminal_finalization_failed";
 
-const diagnosticVocabulary: Record<DeployDiagnostic, { event: string; error: string }> = {
+const diagnosticVocabulary = {
   mcp_body_cancel_failed: {
     event: "deploy.mcp.request.body_cancel_failed",
     error: "body_cancel_failed",
@@ -56,7 +56,7 @@ const diagnosticVocabulary: Record<DeployDiagnostic, { event: string; error: str
     event: "deploy.workflow.terminal_finalization_failed",
     error: "terminal_finalization_failed",
   },
-};
+} satisfies Record<DeployDiagnostic, { event: string; error: string }>;
 
 export type DiagnosticContext =
   | {
@@ -67,22 +67,30 @@ export type DiagnosticContext =
       boundary: "wfp_response";
     };
 
+interface DeployDiagnosticRecord {
+  event: string;
+  error: string;
+  requestId?: string;
+  releaseId?: string;
+}
+
 export function emitDeployDiagnostic(kind: DeployDiagnostic, context: DiagnosticContext): void {
   const vocabulary = diagnosticVocabulary[kind];
   try {
-    console.error({
+    const diagnostic: DeployDiagnosticRecord = {
       event: vocabulary.event,
       error: vocabulary.error,
-      ...("requestId" in context ? { requestId: context.requestId } : {}),
-      ...("releaseId" in context && context.releaseId ? { releaseId: context.releaseId } : {}),
-    });
+    };
+    if ("requestId" in context) diagnostic.requestId = context.requestId;
+    if ("releaseId" in context && context.releaseId) diagnostic.releaseId = context.releaseId;
+    console.error(diagnostic);
   } catch {
     // Diagnostics are observational and cannot replace the primary result.
   }
 }
 
-export function observeDetachedCleanup(
-  cleanup: () => unknown,
+export function observeDetachedCleanup<T>(
+  cleanup: () => T,
   kind: DeployDiagnostic,
   context: DiagnosticContext,
 ): void {

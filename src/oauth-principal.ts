@@ -1,5 +1,6 @@
 import type { Principal } from "./auth";
 import { SUBJECT_PATTERN } from "./domain/contracts";
+import { z } from "zod";
 
 const OPERATIONAL_SUBJECT_PATTERN = /^cail-v1-[0-9a-f]{32}$/u;
 export const OAUTH_REQUIRED_SCOPE = "cail:deploy";
@@ -10,44 +11,50 @@ export interface OAuthPrincipalProps {
   scope: string[];
 }
 
+export type OAuthPrincipalInput = {
+  subject?: string;
+  operationalSubject?: string;
+  scope?: string[];
+  callerSubject?: string;
+} | null;
+
 export type OAuthPrincipalResult =
   | { kind: "ok"; principal: Principal }
   | { kind: "insufficient_scope" }
   | { kind: "invalid" };
 
-export function oauthPrincipalFromProps(props: unknown): OAuthPrincipalResult {
-  if (typeof props !== "object" || props === null || Array.isArray(props)) {
-    return { kind: "invalid" };
-  }
-  if (
-    Object.keys(props).some(
-      (key) => key !== "subject" && key !== "operationalSubject" && key !== "scope",
-    )
-  ) {
-    return { kind: "invalid" };
-  }
-  const candidate = props as Partial<OAuthPrincipalProps>;
-  if (
-    !Array.isArray(candidate.scope) ||
-    candidate.scope.length !== 1 ||
-    candidate.scope[0] !== OAUTH_REQUIRED_SCOPE
-  ) {
+const oauthPrincipalPropsSchema = z
+  .object({
+    subject: z.string().optional(),
+    operationalSubject: z.string().optional(),
+    scope: z.array(z.string()).optional().catch(undefined),
+  })
+  .strict();
+
+export function oauthPrincipalFromProps(props: OAuthPrincipalInput): OAuthPrincipalResult {
+  const parsed = oauthPrincipalPropsSchema.safeParse(props);
+  if (!parsed.success) return { kind: "invalid" };
+  const candidate = parsed.data;
+  if (candidate.scope?.length !== 1 || candidate.scope[0] !== OAUTH_REQUIRED_SCOPE) {
     return { kind: "insufficient_scope" };
   }
-  if (!SUBJECT_PATTERN.test(candidate.subject ?? "")) return { kind: "invalid" };
+  if (candidate.subject === undefined || !SUBJECT_PATTERN.test(candidate.subject)) {
+    return { kind: "invalid" };
+  }
   if (
     candidate.operationalSubject !== undefined &&
     !OPERATIONAL_SUBJECT_PATTERN.test(candidate.operationalSubject)
   ) {
     return { kind: "invalid" };
   }
+  const principal: Principal = {
+    subject: candidate.subject,
+    authentication: "oauth-access-token",
+  };
+  if (candidate.operationalSubject) principal.operationalSubject = candidate.operationalSubject;
   return {
     kind: "ok",
-    principal: {
-      subject: candidate.subject as string,
-      ...(candidate.operationalSubject ? { operationalSubject: candidate.operationalSubject } : {}),
-      authentication: "oauth-access-token",
-    },
+    principal,
   };
 }
 
