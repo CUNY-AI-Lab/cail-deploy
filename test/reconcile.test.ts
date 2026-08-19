@@ -43,6 +43,8 @@ class SqliteD1 {
           query,
           values,
           async first<T>() {
+            // SAFETY: SQLite returns the row shape requested by each test query;
+            // the generic caller owns that row contract.
             return (sqlite.prepare(query).get(...values) as T | null) ?? null;
           },
           async run() {
@@ -53,6 +55,8 @@ class SqliteD1 {
             return {
               success: true,
               meta: { changes: 0 },
+              // SAFETY: SQLite returns the row shape requested by each test query;
+              // the generic caller owns that row contract.
               results: sqlite.prepare(query).all(...values) as T[],
             };
           },
@@ -67,6 +71,8 @@ class SqliteD1 {
     return this.sqlite.transaction(() =>
       statements.map(({ query, values }) => {
         const result = this.sqlite.prepare(query).run(...values);
+        // SAFETY: D1 batch results use literal success/results fields required
+        // by the adapter seam under test.
         return { success: true as const, meta: { changes: result.changes }, results: [] as [] };
       }),
     )();
@@ -120,6 +126,8 @@ async function fixture(status: "publishing" | "reconciling") {
     ],
   );
   const db = new SqliteD1(sqlite);
+  // SAFETY: this fixture implements the DB, retained R2 object, and config
+  // fields consumed by reconciliation.
   const env = {
     DB: db,
     ARTIFACTS: {
@@ -131,7 +139,7 @@ async function fixture(status: "publishing" | "reconciling") {
     WFP_ACCOUNT_ID: "account",
     WFP_NAMESPACE: "namespace",
     WFP_PUBLISH_TIMEOUT_MS: "1000",
-  } as unknown as Env;
+  } as Env;
   return { db, env, prepared, preparedDigest };
 }
 
@@ -179,6 +187,8 @@ describe("release reconciliation authority", () => {
   for (const status of ["publishing", "reconciling"] as const) {
     test(`recovers retained prepared bytes from ${status} and replays without republishing`, async () => {
       const { db, env } = await fixture(status);
+      // SAFETY: the test provider stub returns the Response contract consumed
+      // by reconciliation and restores the original fetch after each test.
       globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
       const first = await handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
@@ -215,6 +225,7 @@ describe("release reconciliation authority", () => {
 
   test("a deterministic provider rejection terminally fails reconciliation", async () => {
     const { db, env } = await fixture("reconciling");
+    // SAFETY: this provider stub deliberately returns a deterministic rejection.
     globalThis.fetch = mock(async () => new Response(null, { status: 400 })) as typeof fetch;
 
     await expect(
@@ -240,9 +251,13 @@ describe("release reconciliation authority", () => {
   for (const retainedFailure of ["missing", "digest mismatch"] as const) {
     test(`releases reconciliation authority after retained bytes are ${retainedFailure}`, async () => {
       const { db, env } = await fixture("reconciling");
+      // SAFETY: this provider stub must never be called for a missing or corrupt
+      // retained artifact.
       globalThis.fetch = mock(async () => {
         throw new Error("provider must not be called");
       }) as typeof fetch;
+      // SAFETY: the replacement R2 seam returns the retained-artifact failure
+      // selected by this adversarial table row.
       env.ARTIFACTS = {
         get: async () =>
           retainedFailure === "missing" ? null : { text: async () => "wrong prepared bytes" },
@@ -269,6 +284,8 @@ describe("release reconciliation authority", () => {
   test("permits only one concurrent provider action", async () => {
     const { env } = await fixture("reconciling");
     let unblock: (() => void) | undefined;
+    // SAFETY: this provider stub exposes a gate so the test can exercise one
+    // concurrent reconciliation action.
     globalThis.fetch = mock(
       async () =>
         new Promise<Response>((resolve) => {
@@ -300,6 +317,8 @@ describe("release reconciliation authority", () => {
   test("takes over an aged active claim and completes from retained authority", async () => {
     const { db, env, preparedDigest } = await fixture("publishing");
     await seedActiveClaim(db, preparedDigest, "2000-01-01T00:00:00.000Z");
+    // SAFETY: the provider stub returns the valid publication envelope expected
+    // by the one-winner concurrency test.
     globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
     const response = await handleApiForPrincipal(reconcileRequest(), env, principal, requestId);
@@ -311,6 +330,7 @@ describe("release reconciliation authority", () => {
   test("excludes takeover while an active claim lease is fresh", async () => {
     const { db, env, preparedDigest } = await fixture("reconciling");
     await seedActiveClaim(db, preparedDigest, new Date().toISOString());
+    // SAFETY: this provider stub returns a valid publication envelope.
     globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
     await expect(
@@ -326,6 +346,8 @@ describe("release reconciliation authority", () => {
     const { db, env, preparedDigest } = await fixture("reconciling");
     await seedActiveClaim(db, preparedDigest, "2000-01-01T00:00:00.000Z");
     let unblock: (() => void) | undefined;
+    // SAFETY: this provider stub exposes a gate so the test can exercise one
+    // concurrent reconciliation action.
     globalThis.fetch = mock(
       async () =>
         new Promise<Response>((resolve) => {
@@ -358,6 +380,8 @@ describe("release reconciliation authority", () => {
     const { db, env } = await fixture("reconciling");
     let resolveExpired: ((response: Response) => void) | undefined;
     let calls = 0;
+    // SAFETY: this provider stub delays the first response to exercise stale
+    // holder fencing and returns a valid envelope for takeover.
     globalThis.fetch = mock(async () => {
       calls += 1;
       if (calls === 1) {
@@ -411,6 +435,7 @@ describe("release reconciliation authority", () => {
   test("same-request takeover fences stale success until the newer holder completes", async () => {
     const { db, env } = await fixture("reconciling");
     const resolvers: Array<(response: Response) => void> = [];
+    // SAFETY: this provider stub records both stale and current holder requests.
     globalThis.fetch = mock(
       async () =>
         new Promise<Response>((resolve) => {
@@ -433,6 +458,8 @@ describe("release reconciliation authority", () => {
       await Bun.sleep(1);
     }
     expect(resolvers).toHaveLength(2);
+    // SAFETY: the query selects exactly the two idempotency columns asserted
+    // below, so this row contract is known at the SQLite boundary.
     const renewed = db.sqlite
       .query("SELECT response_json, created_at FROM idempotency WHERE project_id = ?")
       .get(projectId) as { response_json: string; created_at: string };
@@ -466,6 +493,7 @@ describe("release reconciliation authority", () => {
   test("same-request takeover prevents stale failure cleanup from releasing the newer claim", async () => {
     const { db, env } = await fixture("reconciling");
     const resolvers: Array<(response: Response) => void> = [];
+    // SAFETY: this provider stub records both stale and current holder requests.
     globalThis.fetch = mock(
       async () =>
         new Promise<Response>((resolve) => {
@@ -488,6 +516,8 @@ describe("release reconciliation authority", () => {
       await Bun.sleep(1);
     }
     expect(resolvers).toHaveLength(2);
+    // SAFETY: the query selects exactly the two idempotency columns asserted
+    // below, so this row contract is known at the SQLite boundary.
     const renewed = db.sqlite
       .query("SELECT response_json, created_at FROM idempotency WHERE project_id = ?")
       .get(projectId) as { response_json: string; created_at: string };
@@ -511,6 +541,7 @@ describe("release reconciliation authority", () => {
   test("preserves publication failure cause and permits one later deterministic retry", async () => {
     const { env } = await fixture("publishing");
     const providerFailure = new Error("PRIVATE_PROVIDER_FAILURE");
+    // SAFETY: this provider stub injects the primary publication failure.
     globalThis.fetch = mock(async () => {
       throw providerFailure;
     }) as typeof fetch;
@@ -526,6 +557,7 @@ describe("release reconciliation authority", () => {
       cause: providerFailure,
     });
 
+    // SAFETY: this retry provider stub returns a valid publication envelope.
     globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
     const retry = await handleApiForPrincipal(
       reconcileRequest(),
@@ -540,11 +572,17 @@ describe("release reconciliation authority", () => {
   test("claim cleanup and a hostile diagnostic sink cannot replace publication failure", async () => {
     const { env } = await fixture("publishing");
     const providerFailure = new Error("PRIVATE_PROVIDER_FAILURE");
+    // SAFETY: this provider stub injects the publication failure while the DB
+    // seam below injects cleanup failure.
     globalThis.fetch = mock(async () => {
       throw providerFailure;
     }) as typeof fetch;
-    const db = env.DB as unknown as SqliteD1;
+    // SAFETY: fixture() installs SqliteD1 as env.DB; this assertion recovers
+    // that concrete test adapter to inject cleanup failure.
+    const db = env.DB as SqliteD1;
     const originalPrepare = db.prepare.bind(db);
+    // SAFETY: this replacement preserves SqliteD1.prepare's returned statement
+    // contract while overriding only the retryable-claim cleanup operation.
     db.prepare = ((query: string) => {
       const prepared = originalPrepare(query);
       return {
@@ -587,6 +625,7 @@ describe("release reconciliation authority", () => {
 
   test("does not overwrite or fabricate live after a terminal race", async () => {
     const { db, env } = await fixture("reconciling");
+    // SAFETY: this provider stub creates a terminal race before publication.
     globalThis.fetch = mock(async () => {
       expect(await appendTerminalStatus(env, releaseId, "failed", "release.failed")).toBe(true);
       return successfulProviderResponse();
@@ -611,6 +650,7 @@ describe("release reconciliation authority", () => {
   test("rejects incompatible and terminal states before provider action", async () => {
     const { db, env } = await fixture("publishing");
     db.sqlite.run("UPDATE releases SET status = 'live' WHERE release_id = ?", [releaseId]);
+    // SAFETY: this provider stub returns a valid publication envelope.
     globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
     await expect(
@@ -630,6 +670,7 @@ describe("release reconciliation authority", () => {
     ]);
     const artifactGet = mock(async () => null);
     env.ARTIFACTS.get = artifactGet;
+    // SAFETY: this provider stub must not run after an event-only terminal fence.
     globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
     await expect(
@@ -648,6 +689,7 @@ describe("release reconciliation authority", () => {
       subject: `cail-${"f".repeat(32)}`,
       authentication: "cail-identity-jwt",
     };
+    // SAFETY: this provider stub must not run for a cross-subject request.
     globalThis.fetch = mock(async () => successfulProviderResponse()) as typeof fetch;
 
     await expect(

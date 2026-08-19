@@ -7,11 +7,12 @@ import {
   createProjectSchema,
   createReleaseSchema,
   PROJECT_PATTERN,
+  releaseApprovalSchema,
   RELEASE_PATTERN,
-  rollbackSchema,
 } from "./domain/contracts";
 import { parseContentDigest } from "./domain/digests";
 import { ApiError, apiErrorSnapshot, errorResponse } from "./domain/errors";
+import { jsonValueSchema, type JsonValue } from "./domain/json";
 import type { Env } from "./env";
 
 const idempotencyKeySchema = z
@@ -64,40 +65,31 @@ const rollbackReleaseArgumentsSchema = z
   .object({
     projectId: projectIdSchema,
     releaseId: releaseIdSchema,
-    approval: rollbackSchema.shape.approval,
+    approval: releaseApprovalSchema,
     idempotencyKey: idempotencyKeySchema,
   })
   .strict();
 
-function inputSchemaFor(
-  schema: z.ZodType,
-  override?: (generated: Record<string, unknown>) => void,
-): Tool["inputSchema"] {
+function inputSchemaFor(schema: z.ZodType, addProjectNamePattern = false): Tool["inputSchema"] {
   const generated = z.toJSONSchema(schema, { target: "draft-2020-12" });
   if (generated.type !== "object") {
     throw new Error("MCP tool arguments must use an object JSON Schema.");
   }
-  override?.(generated as Record<string, unknown>);
-  return generated as unknown as Tool["inputSchema"];
-}
-
-function createProjectInputSchemaOverride(generated: Record<string, unknown>): void {
-  const properties = generated.properties;
-  if (typeof properties !== "object" || properties === null) {
-    throw new Error("MCP create-project schema must expose object properties.");
+  if (addProjectNamePattern) {
+    const properties = generated.properties;
+    const name = properties?.name;
+    if (!properties || !(properties instanceof Object) || !name || !(name instanceof Object)) {
+      throw new Error("MCP create-project schema must expose a name property.");
+    }
+    // Zod trims before checking non-emptiness and the project contract bounds
+    // the trimmed value to 80 Unicode code points. JSON Schema pattern uses the
+    // same ECMA-262 code-point regex model, so one closed expression mirrors
+    // both checks without advertising whitespace-only or overlong names.
+    name.pattern = "^\\s*(?:\\S|\\S[\\s\\S]{0,78}\\S)\\s*$";
   }
-  const name = (properties as Record<string, unknown>).name;
-  if (typeof name !== "object" || name === null) {
-    throw new Error("MCP create-project schema must expose a name property.");
-  }
-  // Zod trims before checking non-emptiness and the project contract bounds
-  // the trimmed value to 80 Unicode code points. JSON Schema's `pattern` uses
-  // the same ECMA-262 code-point regex model, so one closed expression mirrors
-  // both checks without advertising whitespace-only or overlong names.
-  (properties as Record<string, unknown>).name = {
-    ...(name as Record<string, unknown>),
-    pattern: "^\\s*(?:\\S|\\S[\\s\\S]{0,78}\\S)\\s*$",
-  };
+  // SAFETY: z.toJSONSchema emits a JSON Schema object; the runtime guard above
+  // proves the root is an object schema required by MCP's Tool contract.
+  return generated as Tool["inputSchema"];
 }
 
 const toolDefinitions = [
@@ -114,10 +106,7 @@ const toolDefinitions = [
 export const tools = toolDefinitions.map(({ name, schema }) => ({
   name,
   schema,
-  inputSchema: inputSchemaFor(
-    schema,
-    name === "kale.create_project" ? createProjectInputSchemaOverride : undefined,
-  ),
+  inputSchema: inputSchemaFor(schema, name === "kale.create_project"),
 }));
 
 function invalidToolArguments(): ApiError {
@@ -128,7 +117,7 @@ function invalidToolArguments(): ApiError {
   );
 }
 
-function parseToolArguments<T>(schema: z.ZodType<T>, value: unknown): T {
+function parseToolArguments<T, V>(schema: z.ZodType<T>, value: V): T {
   const result = schema.safeParse(value);
   if (!result.success) throw invalidToolArguments();
   return result.data;
@@ -139,11 +128,15 @@ function base64DecodedLength(value: string): number {
   return (value.length / 4) * 3 - padding;
 }
 
-function rejectOversizedArtifactArgument(value: unknown): void {
-  if (typeof value !== "object" || value === null) return;
-  const artifactBase64 = (value as Record<string, unknown>).artifactBase64;
+function rejectOversizedArtifactArgument<V>(value: V): void {
+  const parsed = z
+    .object({ artifactBase64: z.string().optional().catch(undefined) })
+    .passthrough()
+    .safeParse(value);
+  if (!parsed.success) return;
+  const artifactBase64 = parsed.data.artifactBase64;
   if (
-    typeof artifactBase64 === "string" &&
+    artifactBase64 !== undefined &&
     (artifactBase64.length > MAX_ARTIFACT_BASE64_CHARS ||
       (artifactBase64.length % 4 === 0 && base64DecodedLength(artifactBase64) > MAX_ARTIFACT_BYTES))
   ) {
@@ -164,14 +157,16 @@ function decodeArtifactBase64(value: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-function requestCancelled(requestId: string, cause: unknown): ApiError {
+function requestCancelled<T>(requestId: string, cause: T): ApiError {
   return new ApiError(499, "request_cancelled", "The request was cancelled.", { cause });
 }
 
-function cancelMcpBody(
+type Cancellation = <T>(reason?: T) => void;
+
+function cancelMcpBody<T>(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   requestId: string,
-  reason?: unknown,
+  reason?: T,
 ): void {
   observeDetachedCleanup(() => reader.cancel(reason), "mcp_body_cancel_failed", { requestId });
 }
@@ -191,7 +186,7 @@ async function readMcpChunk(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   signal: AbortSignal,
   requestId: string,
-  cancel: (reason?: unknown) => void,
+  cancel: Cancellation,
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
   if (signal.aborted) {
     const error = requestCancelled(requestId, signal.reason);
@@ -219,7 +214,7 @@ async function readMcpChunk(
   });
 }
 
-export async function readMcpMessage(request: Request, requestId: string): Promise<unknown> {
+export async function readMcpMessage(request: Request, requestId: string): Promise<JsonValue> {
   const tooLarge = () => new ApiError(413, "mcp_request_too_large", "The request is too large.");
   const declaredLength = request.headers.get("Content-Length");
   if (
@@ -241,7 +236,7 @@ export async function readMcpMessage(request: Request, requestId: string): Promi
   const chunks: Uint8Array[] = [];
   let total = 0;
   let cancellationStarted = false;
-  const cancel = (reason?: unknown) => {
+  const cancel: Cancellation = (reason) => {
     if (cancellationStarted) return;
     cancellationStarted = true;
     cancelMcpBody(reader, requestId, reason);
@@ -269,16 +264,18 @@ export async function readMcpMessage(request: Request, requestId: string): Promi
     offset += chunk.byteLength;
   }
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+    return jsonValueSchema.parse(
+      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+    );
   } catch (cause) {
     throw new ApiError(400, "invalid_mcp", "The request body must be valid JSON.", { cause });
   }
 }
 
-function cancelMcpResponse(
+function cancelMcpResponse<T>(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   requestId: string,
-  reason?: unknown,
+  reason?: T,
 ): void {
   observeDetachedCleanup(() => reader.cancel(reason), "mcp_response_cancel_failed", { requestId });
 }
@@ -330,7 +327,7 @@ export async function readMcpResponseText(
   let text = "";
   let complete = false;
   let cancellationStarted = false;
-  const cancel = (reason?: unknown) => {
+  const cancel: Cancellation = (reason) => {
     if (cancellationStarted) return;
     cancellationStarted = true;
     cancelMcpResponse(reader, requestId, reason);
@@ -367,7 +364,7 @@ export async function readMcpResponseText(
   }
 }
 
-async function errorToolResult(error: unknown, requestId: string): Promise<CallToolResult> {
+async function errorToolResult<T>(error: T, requestId: string): Promise<CallToolResult> {
   const text = await errorResponse(error, requestId).text();
   return { content: [{ type: "text", text }], isError: true };
 }
@@ -447,7 +444,9 @@ export function createMcpApiRequest(
   body: BodyInit | undefined,
   signal: AbortSignal,
 ): Request {
-  return new Request(new URL(path, requestUrl), { method, headers, body, signal });
+  const init: RequestInit = { method, headers, signal };
+  if (body !== undefined) init.body = body;
+  return new Request(new URL(path, requestUrl), init);
 }
 
 interface McpOperation {
@@ -493,7 +492,7 @@ function operationAbortError(operation: McpOperation, requestId: string): ApiErr
   return requestCancelled(requestId, operation.callerSignal.reason);
 }
 
-function observeLateMcpResponse(response: Response, requestId: string, reason: unknown): void {
+function observeLateMcpResponse<T>(response: Response, requestId: string, reason: T): void {
   if (!response.body) return;
   observeDetachedCleanup(() => response.body?.cancel(reason), "mcp_response_cancel_failed", {
     requestId,
@@ -540,9 +539,9 @@ async function dispatchMcpApi(
   });
 }
 
-async function callKaleTool(
+async function callKaleTool<T>(
   name: string,
-  argumentsValue: unknown,
+  argumentsValue: T,
   requestUrl: string,
   env: Env,
   requestId: string,
@@ -659,7 +658,7 @@ async function callKaleTool(
   }
 }
 
-const TOOL_DESCRIPTIONS: Record<(typeof toolDefinitions)[number]["name"], string> = {
+const TOOL_DESCRIPTIONS = {
   "kale.create_project": "Create a project.",
   "kale.upload_revision": "Upload a new version of your app.",
   "kale.create_release": "Publish a version.",
@@ -668,7 +667,7 @@ const TOOL_DESCRIPTIONS: Record<(typeof toolDefinitions)[number]["name"], string
   "kale.approve_release": "Approve a release.",
   "kale.reconcile_release": "Finish a release whose publication could not be confirmed.",
   "kale.rollback_release": "Roll back to an earlier version.",
-};
+} satisfies Record<(typeof toolDefinitions)[number]["name"], string>;
 
 function listedTools() {
   return tools.map((tool) => ({
@@ -678,7 +677,11 @@ function listedTools() {
   }));
 }
 
-function legacyToolResponse(id: unknown, result: CallToolResult, requestId: string): Response {
+function legacyToolResponse(
+  id: string | number | null | undefined,
+  result: CallToolResult,
+  requestId: string,
+): Response {
   return Response.json(
     { jsonrpc: "2.0", id, result },
     {
@@ -691,7 +694,7 @@ function legacyToolResponse(id: unknown, result: CallToolResult, requestId: stri
 }
 
 function legacyProtocolError(
-  id: unknown,
+  id: string | number | null | undefined,
   code: number,
   message: string,
   requestId: string,
@@ -712,7 +715,7 @@ function legacyProtocolError(
 }
 
 export async function handleLegacyMcpMessage(
-  parsedBody: unknown,
+  parsedBody: JsonValue,
   requestUrl: string,
   env: Env,
   requestId: string,
@@ -720,22 +723,28 @@ export async function handleLegacyMcpMessage(
   signal: AbortSignal,
   operationDeadlineMs = MAX_MCP_OPERATION_MS,
 ): Promise<Response> {
-  if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
+  const messageResult = z
+    .object({
+      jsonrpc: z.string().optional(),
+      id: z.union([z.string(), z.number(), z.null()]).optional(),
+      method: z.string().optional(),
+      params: z
+        .object({ name: z.string().optional(), arguments: z.json().optional() })
+        .passthrough()
+        .optional(),
+    })
+    .passthrough()
+    .safeParse(parsedBody);
+  if (!messageResult.success) {
     return legacyProtocolError(null, -32600, "Invalid Request", requestId);
   }
-  const message = parsedBody as {
-    jsonrpc?: string;
-    id?: unknown;
-    method?: string;
-    params?: Record<string, unknown>;
-  };
+  const message = messageResult.data;
   if (message.jsonrpc !== "2.0") {
     return legacyProtocolError(message.id, -32600, "Invalid Request", requestId);
   }
   if (
     message.method !== "notifications/initialized" &&
-    typeof message.id !== "string" &&
-    typeof message.id !== "number"
+    (message.id === undefined || message.id === null)
   ) {
     return legacyProtocolError(null, -32600, "Invalid Request", requestId);
   }
@@ -764,7 +773,7 @@ export async function handleLegacyMcpMessage(
     return legacyProtocolError(message.id, -32601, "Method not found", requestId, 200);
   }
   const name = message.params?.name;
-  if (typeof name !== "string") {
+  if (name === undefined) {
     return legacyToolResponse(
       message.id,
       await errorToolResult(invalidToolArguments(), requestId),

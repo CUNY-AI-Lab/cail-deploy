@@ -42,7 +42,7 @@ class McpOAuthApiHandler extends WorkerEntrypoint<Env, OAuthPrincipalProps> {
       if (request.headers.has("X-CAIL-Identity-JWT")) {
         throw new ApiError(401, "credential_ambiguity", "Send one sign-in credential, not two.");
       }
-      const principalResult = oauthPrincipalFromProps(this.ctx.props as unknown);
+      const principalResult = oauthPrincipalFromProps(this.ctx.props);
       if (principalResult.kind === "insufficient_scope") {
         return insufficientScopeResponse(resourceMetadataUrl(this.env), requestId);
       }
@@ -97,12 +97,20 @@ export function createOAuthProviderOptions(env: Env): OAuthProviderOptions<Env> 
     clientRegistrationEndpoint: `${baseUrl}/oauth/register`,
     scopesSupported: [OAUTH_REQUIRED_SCOPE],
     accessTokenTTL: 3600,
-    tokenExchangeCallback: ({ props, requestedScope }) => ({
-      accessTokenProps: {
-        ...(props as OAuthPrincipalProps),
+    tokenExchangeCallback: ({ props, requestedScope }) => {
+      const principalResult = oauthPrincipalFromProps(props);
+      if (principalResult.kind !== "ok") {
+        throw new ApiError(401, "invalid_credential", "Your sign-in isn't valid. Sign in again.");
+      }
+      const accessTokenProps: OAuthPrincipalProps = {
+        subject: principalResult.principal.subject,
         scope: requestedScope,
-      },
-    }),
+      };
+      if (principalResult.principal.operationalSubject) {
+        accessTokenProps.operationalSubject = principalResult.principal.operationalSubject;
+      }
+      return { accessTokenProps };
+    },
     allowPlainPKCE: false,
     allowImplicitFlow: false,
     allowTokenExchangeGrant: false,

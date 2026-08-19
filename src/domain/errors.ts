@@ -11,6 +11,10 @@ const internalErrorSnapshot: ApiErrorSnapshot = Object.freeze({
   message: "The request could not be completed.",
 });
 
+function isObjectLike<T>(value: T): value is T & object {
+  return value !== null && Object(value) === value;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -31,11 +35,12 @@ export class ApiError extends Error {
   }
 }
 
-export function apiErrorSnapshot(error: unknown): ApiErrorSnapshot | undefined {
-  return apiErrorSnapshots.get(error as object);
+export function apiErrorSnapshot<T>(error: T): ApiErrorSnapshot | undefined {
+  if (!isObjectLike(error)) return undefined;
+  return apiErrorSnapshots.get(error);
 }
 
-export function errorResponse(error: unknown, requestId: string): Response {
+export function errorResponse<T>(error: T, requestId: string): Response {
   const apiError = apiErrorSnapshot(error) ?? internalErrorSnapshot;
   return Response.json(
     { error: { code: apiError.code, message: apiError.message, requestId } },

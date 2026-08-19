@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import type { JsonValue } from "../src/domain/json";
 
 interface WranglerConfig {
   compatibility_flags?: string[];
   observability?: {
     enabled?: boolean;
-    logs?: Record<string, unknown>;
-    traces?: Record<string, unknown>;
+    logs?: Record<string, JsonValue>;
+    traces?: Record<string, JsonValue>;
   };
   analytics_engine_datasets?: Array<{ binding?: string; dataset?: string }>;
-  vars?: Record<string, unknown>;
+  vars?: Record<string, JsonValue>;
 }
 
 const configs = [
@@ -23,6 +24,8 @@ const configs = [
 const allConfigs = [...configs, "wrangler.production.jsonc"] as const;
 
 async function loadConfig(path: string): Promise<WranglerConfig> {
+  // SAFETY: Wrangler JSONC is parsed at this file boundary and this named
+  // contract covers every field asserted by the configuration tests.
   return Bun.JSONC.parse(await Bun.file(path).text()) as WranglerConfig;
 }
 

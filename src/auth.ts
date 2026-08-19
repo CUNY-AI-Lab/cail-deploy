@@ -3,31 +3,31 @@ import { trustedIdentityIssuers } from "./identity-issuers";
 import { SUBJECT_PATTERN } from "./domain/contracts";
 import { ApiError } from "./domain/errors";
 import type { Env } from "./env";
+import { z } from "zod";
 
 /** This service's own audience, named by tokens presented at its ingress. */
 export const SERVICE_AUDIENCE = "cail:deploy";
 
 function testPrincipals(env: Env): Record<string, string> | null {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(env.TEST_PRINCIPALS_JSON ?? "{}");
+    const parsed = z
+      .record(z.string(), z.string())
+      .safeParse(JSON.parse(env.TEST_PRINCIPALS_JSON ?? "{}"));
+    if (!parsed.success) return null;
+    const entries = Object.entries(parsed.data);
+    if (entries.length === 0) return null;
+    if (
+      entries.some(
+        ([credential, subject]) =>
+          !/^[A-Za-z0-9._~-]+$/u.test(credential) || !SUBJECT_PATTERN.test(subject),
+      )
+    ) {
+      return null;
+    }
+    return parsed.data;
   } catch {
     return null;
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-  const entries = Object.entries(parsed);
-  if (entries.length === 0) return null;
-  if (
-    entries.some(
-      ([credential, subject]) =>
-        !/^[A-Za-z0-9._~-]+$/u.test(credential) ||
-        typeof subject !== "string" ||
-        !SUBJECT_PATTERN.test(subject),
-    )
-  ) {
-    return null;
-  }
-  return Object.fromEntries(entries) as Record<string, string>;
 }
 
 /**

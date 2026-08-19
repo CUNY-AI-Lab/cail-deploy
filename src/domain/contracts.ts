@@ -51,14 +51,15 @@ export const createProjectSchema = z
       ),
   })
   .strict();
+export const releaseApprovalSchema = z.enum(["required", "automatic"]);
 export const createReleaseSchema = z
   .object({
     revisionId: z.string().regex(REVISION_PATTERN),
-    approval: z.enum(["required", "automatic"]),
+    approval: releaseApprovalSchema,
   })
   .strict();
 export const approvalSchema = z.object({ decision: z.literal("approved") }).strict();
-export const rollbackSchema = z.object({ approval: z.enum(["required", "automatic"]) }).strict();
+export const rollbackSchema = z.object({ approval: releaseApprovalSchema }).strict();
 
 export type Artifact = z.infer<typeof artifactSchema>;
 export type CreateRelease = z.infer<typeof createReleaseSchema>;

@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import { TEST_SUBJECTS } from "@cuny-ai-lab/cail-identity/testing";
 import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
 import type { Principal } from "../src/auth";
 import { ApiError, errorResponse } from "../src/domain/errors";
+import type { ThrownValue } from "../src/domain/values";
 import type { Env } from "../src/env";
 import { workerHandler } from "../src/handler";
 
@@ -26,6 +28,8 @@ function hostileValue(label: string): HostileValue {
     throw sentinel;
   };
   return {
+    // SAFETY: a null-prototype proxy is deliberately hostile input for the
+    // error boundary; it must never be inspected by production formatting.
     value: new Proxy(Object.create(null) as object, {
       get: trap,
       getOwnPropertyDescriptor: trap,
@@ -43,14 +47,15 @@ async function errorEnvelope(response: Response): Promise<{
   message: string;
   requestId: string;
 }> {
-  return (
-    (await response.json()) as {
-      error: { code: string; message: string; requestId: string };
-    }
-  ).error;
+  const body = z
+    .object({
+      error: z.object({ code: z.string(), message: z.string(), requestId: z.string() }),
+    })
+    .parse(await response.json());
+  return body.error;
 }
 
-function rejectingEnv(rejection: () => unknown): Env {
+function rejectingEnv(rejection: () => ThrownValue): Env {
   const statement = {
     bind() {
       return statement;
@@ -59,6 +64,8 @@ function rejectingEnv(rejection: () => unknown): Env {
       throw rejection();
     },
   };
+  // SAFETY: the test D1 adapter intentionally implements only prepare/bind/
+  // first, the exact seam exercised by error-boundary failures.
   return {
     AUTH_MODE: "test",
     CAIL_ENVIRONMENT: "test",
@@ -68,7 +75,7 @@ function rejectingEnv(rejection: () => unknown): Env {
       prepare() {
         return statement;
       },
-    } as unknown as D1Database,
+    } as D1Database,
   } as Env;
 }
 
@@ -223,12 +230,14 @@ describe("owned API error boundary", () => {
       requestId,
       principal,
     );
-    const body = (await response.json()) as {
-      result: {
-        content: [{ text: string }];
-        isError: boolean;
-      };
-    };
+    const body = z
+      .object({
+        result: z.object({
+          content: z.tuple([z.object({ text: z.string() })]),
+          isError: z.boolean(),
+        }),
+      })
+      .parse(await response.json());
 
     expect(response.status).toBe(200);
     expect(response.headers.get("X-CAIL-Request-Id")).toBe(requestId);

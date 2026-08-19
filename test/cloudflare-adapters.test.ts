@@ -6,6 +6,7 @@ import {
 } from "../src/adapters/cloudflare/wfp";
 import { sendApprovalEvent } from "../src/api";
 import type { Env } from "../src/env";
+import type { ThrownValue } from "../src/domain/values";
 import type { ReleaseRow } from "../src/storage";
 
 const originalFetch = globalThis.fetch;
@@ -26,6 +27,8 @@ const prepared = {
 };
 
 async function publishWithResponse(response: Response, timeout = "1000"): Promise<string> {
+  // SAFETY: this fixture supplies the WfP configuration and local fetch seam
+  // consumed by publishWorker; unrelated production bindings are absent.
   return publishWorker(
     {
       CLOUDFLARE_API_TOKEN: "test-only",
@@ -33,23 +36,27 @@ async function publishWithResponse(response: Response, timeout = "1000"): Promis
       WFP_NAMESPACE: "namespace",
       WFP_PUBLISH_TIMEOUT_MS: timeout,
       WFP_API: { fetch: async () => response },
-    } as unknown as Env,
+    } as Env,
     projectId,
     revisionId,
     prepared,
   );
 }
 
-function providerEnvelope(result: Record<string, unknown>, id = true): Record<string, unknown> {
+interface ProviderResult {
+  startup_time_ms: number;
+  etag?: string;
+  id?: string;
+}
+
+function providerEnvelope(result: ProviderResult, id = true) {
+  const providerResult: ProviderResult = { startup_time_ms: 1, ...result };
+  if (id) providerResult.id = expectedPublicationName;
   return {
     errors: [],
     messages: [],
     success: true,
-    result: {
-      startup_time_ms: 1,
-      ...result,
-      ...(id ? { id: expectedPublicationName } : {}),
-    },
+    result: providerResult,
   };
 }
 
@@ -80,6 +87,8 @@ describe("Cloudflare volatile boundaries", () => {
   });
 
   test("a hanging WfP PUT becomes an ambiguous publication at the configured deadline", async () => {
+    // SAFETY: this fetch stub intentionally waits for the publisher's abort
+    // signal and is typed to the platform fetch contract.
     globalThis.fetch = mock(
       async (input: RequestInfo | URL) =>
         new Promise<Response>((_resolve, reject) => {
@@ -96,6 +105,8 @@ describe("Cloudflare volatile boundaries", () => {
 
     let captured: unknown;
     try {
+      // SAFETY: this fixture supplies the WfP configuration consumed by the
+      // timeout path; no service binding is needed for the fetch stub.
       await publishWorker(
         {
           CLOUDFLARE_API_TOKEN: "test-only",
@@ -117,7 +128,10 @@ describe("Cloudflare volatile boundaries", () => {
       message:
         "We could not confirm whether this release published. Check the release status. If it is still publishing, use the reconcile action.",
     });
+    // SAFETY: the publisher timeout contract stores the platform DOMException
+    // as its cause, established by the preceding error shape assertion.
     expect((captured as Error).cause).toBeInstanceOf(DOMException);
+    // SAFETY: the preceding instance check establishes the DOMException cause.
     expect(((captured as Error).cause as DOMException).name).toBe("TimeoutError");
   });
 
@@ -129,13 +143,15 @@ describe("Cloudflare volatile boundaries", () => {
         return Response.json(providerEnvelope({ etag: "publication" }));
       }),
     };
+    // SAFETY: the local WfP API binding supplies the exact fetch seam used by
+    // this request-shape test.
     const result = await publishWorker(
       {
         CLOUDFLARE_API_TOKEN: "test-only",
         WFP_ACCOUNT_ID: "account",
         WFP_NAMESPACE: "namespace",
         WFP_API,
-      } as unknown as Env,
+      } as Env,
       projectId,
       revisionId,
       {
@@ -158,7 +174,8 @@ describe("Cloudflare volatile boundaries", () => {
     const form = await captured?.formData();
     const metadata = form?.get("metadata");
     expect(metadata).toBeInstanceOf(File);
-    expect(JSON.parse(await (metadata as File).text())).toEqual({
+    if (!(metadata instanceof File)) throw new Error("publisher metadata part was not a File");
+    expect(JSON.parse(await metadata.text())).toEqual({
       main_module: "index.js",
       compatibility_date: "2026-07-22",
       compatibility_flags: ["nodejs_compat"],
@@ -244,7 +261,7 @@ describe("Cloudflare volatile boundaries", () => {
 
   test("non-2xx response cleanup is nonblocking and cannot replace provider classification", async () => {
     const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown): void => {
+    const onUnhandled = (reason: ThrownValue): void => {
       unhandled.push(reason);
     };
     process.on("unhandledRejection", onUnhandled);
@@ -262,6 +279,8 @@ describe("Cloudflare volatile boundaries", () => {
         console.error = () => {
           throw new Error("PRIVATE_DIAGNOSTIC_FAILURE");
         };
+        // SAFETY: this reader fixture implements exactly the cancel/release
+        // methods exercised by non-2xx cleanup.
         const reader = {
           cancel: () => {
             cancels += 1;
@@ -271,7 +290,7 @@ describe("Cloudflare volatile boundaries", () => {
             releases += 1;
             throw new Error("PRIVATE_RELEASE_FAILURE");
           },
-        } as unknown as ReadableStreamDefaultReader<Uint8Array>;
+        } as ReadableStreamDefaultReader<Uint8Array>;
         const startedAt = performance.now();
         await expect(publishWithResponse(responseWithReader(503, reader))).rejects.toMatchObject({
           code: "publication_ambiguous",
@@ -295,6 +314,8 @@ describe("Cloudflare volatile boundaries", () => {
     console.error = () => {
       throw new Error("PRIVATE_DIAGNOSTIC_FAILURE");
     };
+    // SAFETY: this reader fixture injects a primary read rejection while
+    // implementing the cleanup methods under test.
     const reader = {
       read: () => Promise.reject(primary),
       cancel: () => {
@@ -305,7 +326,7 @@ describe("Cloudflare volatile boundaries", () => {
         releases += 1;
         throw new Error("PRIVATE_RELEASE_FAILURE");
       },
-    } as unknown as ReadableStreamDefaultReader<Uint8Array>;
+    } as ReadableStreamDefaultReader<Uint8Array>;
     let captured: unknown;
     try {
       await publishWithResponse(responseWithReader(200, reader));
@@ -318,6 +339,7 @@ describe("Cloudflare volatile boundaries", () => {
       message:
         "We could not confirm whether this release published. Check the release status. If it is still publishing, use the reconcile action.",
     });
+    // SAFETY: publication failure formatting preserves the injected Error cause.
     expect((captured as Error).cause).toBe(primary);
     expect(cancels).toBe(1);
     expect(releases).toBe(1);
@@ -325,10 +347,13 @@ describe("Cloudflare volatile boundaries", () => {
 
   test("WfP names use the full revision digest and 4xx is deterministic rejection", async () => {
     expect(publicationName(revisionId)).toBe(expectedPublicationName);
+    // SAFETY: this provider stub returns a deterministic 4xx rejection.
     globalThis.fetch = mock(
       async () => new Response("provider-secret-debug-body", { status: 400 }),
     ) as typeof fetch;
     try {
+      // SAFETY: this fixture supplies the WfP configuration consumed by the
+      // deterministic rejection path.
       await publishWorker(
         {
           CLOUDFLARE_API_TOKEN: "test-only",
@@ -347,6 +372,7 @@ describe("Cloudflare volatile boundaries", () => {
       throw new Error("Expected the publication to fail.");
     } catch (error) {
       expect(error).toMatchObject({ code: "publication_rejected" });
+      // SAFETY: the catch branch receives the Error produced by publishWorker.
       expect((error as Error).message).not.toContain("provider-secret-debug-body");
     }
   });
@@ -356,9 +382,12 @@ describe("Cloudflare volatile boundaries", () => {
     const sendEvent = mock(async () => {
       throw providerFailure;
     });
+    // SAFETY: this fixture supplies only the Workflow sendEvent seam used by
+    // approval delivery.
     const env = {
       RELEASE_WORKFLOW: { get: async () => ({ sendEvent }) },
-    } as unknown as Env;
+    } as Env;
+    // SAFETY: sendApprovalEvent reads only these two ReleaseRow fields.
     const release = {
       workflow_instance_id: "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       revision_id: `rev_sha256_${"b".repeat(64)}`,

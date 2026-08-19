@@ -1,5 +1,7 @@
 import { ApiError } from "./domain/errors";
+import { parseJsonValue, type JsonObject, type JsonValue } from "./domain/json";
 import type { Env } from "./env";
+import { z } from "zod";
 
 export interface ProjectRow {
   project_id: string;
@@ -68,13 +70,10 @@ const NONTERMINAL_RELEASE_STATUSES = [
 
 const TERMINAL_RELEASE_EVENT_TYPES = ["release.live", "release.failed"] as const;
 
-const TERMINAL_EVENT_STATUS: Record<
-  (typeof TERMINAL_RELEASE_EVENT_TYPES)[number],
-  "live" | "failed"
-> = {
+const TERMINAL_EVENT_STATUS = {
   "release.live": "live",
   "release.failed": "failed",
-};
+} satisfies Record<(typeof TERMINAL_RELEASE_EVENT_TYPES)[number], "live" | "failed">;
 
 const RECONCILIATION_KEY = "prepared-publication";
 
@@ -99,10 +98,15 @@ function reconciliationOperation(releaseId: string): string {
   return `reconcile:${releaseId}`;
 }
 
+const reconciliationClaimSchema = z.union([
+  z.object({ state: z.literal("active"), requestId: z.string() }).strict(),
+  z.object({ state: z.literal("complete"), publicationName: z.string() }).strict(),
+  z.object({ state: z.literal("retryable") }).strict(),
+]);
+
 function parseReconciliationClaim(value: string): ReconciliationClaim {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(value);
+    return reconciliationClaimSchema.parse(JSON.parse(value));
   } catch (cause) {
     throw new ApiError(
       500,
@@ -111,36 +115,6 @@ function parseReconciliationClaim(value: string): ReconciliationClaim {
       { cause },
     );
   }
-  if (typeof parsed !== "object" || parsed === null) {
-    throw new ApiError(
-      500,
-      "reconciliation_record_invalid",
-      "Something went wrong processing this release. Try again.",
-    );
-  }
-  const record = parsed as Record<string, unknown>;
-  if (
-    record.state === "active" &&
-    typeof record.requestId === "string" &&
-    Object.keys(record).length === 2
-  ) {
-    return { state: "active", requestId: record.requestId };
-  }
-  if (
-    record.state === "complete" &&
-    typeof record.publicationName === "string" &&
-    Object.keys(record).length === 2
-  ) {
-    return { state: "complete", publicationName: record.publicationName };
-  }
-  if (record.state === "retryable" && Object.keys(record).length === 1) {
-    return { state: "retryable" };
-  }
-  throw new ApiError(
-    500,
-    "reconciliation_record_invalid",
-    "Something went wrong processing this release. Try again.",
-  );
 }
 
 async function reconciliationRow(
@@ -609,7 +583,7 @@ export interface ReleaseTransitionOptions {
   from: readonly ReleaseStatus[];
   to: ReleaseStatus;
   type: string;
-  detail?: Record<string, unknown>;
+  detail?: JsonObject;
   actorSubject?: string;
   set?: {
     preparedKey?: string;
@@ -650,7 +624,7 @@ async function transitionStateAfterFence(
   if (
     row.matching_event === 1 &&
     row.status === status &&
-    TERMINAL_RELEASE_EVENT_TYPES.includes(type as (typeof TERMINAL_RELEASE_EVENT_TYPES)[number])
+    TERMINAL_RELEASE_EVENT_TYPES.some((terminalType) => terminalType === type)
   ) {
     return { state: "already_applied" };
   }
@@ -689,9 +663,9 @@ export async function transitionReleaseStatus(
       "Something went wrong processing this release. Try again.",
     );
   }
-  const terminalStatus = Object.hasOwn(TERMINAL_EVENT_STATUS, options.type)
-    ? TERMINAL_EVENT_STATUS[options.type as keyof typeof TERMINAL_EVENT_STATUS]
-    : undefined;
+  const terminalStatus = Object.entries(TERMINAL_EVENT_STATUS).find(
+    ([eventType]) => eventType === options.type,
+  )?.[1];
   if (terminalStatus !== undefined && terminalStatus !== options.to) {
     throw new ApiError(
       500,
@@ -766,10 +740,7 @@ export async function transitionReleaseStatus(
   return transitionStateAfterFence(env, options.releaseId, options.to, options.type);
 }
 
-const NONTERMINAL_PREDECESSORS: Record<
-  Exclude<ReleaseStatus, (typeof TERMINAL_RELEASE_STATUSES)[number]>,
-  readonly ReleaseStatus[]
-> = {
+const NONTERMINAL_PREDECESSORS = {
   validating: ["queued"],
   building: ["validating"],
   prepared: ["validating", "building"],
@@ -777,14 +748,17 @@ const NONTERMINAL_PREDECESSORS: Record<
   publishing: ["prepared", "awaiting_approval"],
   reconciling: ["publishing"],
   queued: [],
-};
+} satisfies Record<
+  Exclude<ReleaseStatus, (typeof TERMINAL_RELEASE_STATUSES)[number]>,
+  readonly ReleaseStatus[]
+>;
 
 export async function appendReleaseStatus(
   env: Env,
   releaseId: string,
   status: Exclude<ReleaseStatus, (typeof TERMINAL_RELEASE_STATUSES)[number]>,
   type: string,
-  detail: Record<string, unknown> = {},
+  detail: JsonObject = {},
   actorSubject?: string,
 ): Promise<ReleaseTransitionResult> {
   const from = NONTERMINAL_PREDECESSORS[status];
@@ -810,7 +784,7 @@ export async function appendTerminalStatus(
   releaseId: string,
   status: "live" | "failed",
   type: "release.live" | "release.failed",
-  detail: Record<string, unknown> = {},
+  detail: JsonObject = {},
 ): Promise<boolean> {
   const result = await transitionReleaseStatus(env, {
     releaseId,
@@ -828,7 +802,7 @@ export async function idempotentResponse(
   operation: string,
   key: string,
   requestDigest: string,
-): Promise<unknown | null> {
+): Promise<JsonValue | null> {
   const row = await env.DB.prepare(
     "SELECT request_digest, response_json FROM idempotency WHERE project_id = ? AND operation = ? AND idempotency_key = ?",
   )
@@ -842,5 +816,5 @@ export async function idempotentResponse(
       "The Idempotency-Key header was already used with different values.",
     );
   }
-  return JSON.parse(row.response_json) as unknown;
+  return parseJsonValue(row.response_json);
 }

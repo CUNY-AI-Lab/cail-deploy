@@ -45,6 +45,8 @@ class BarrierD1 {
           values,
           async first<T>() {
             await waitForPreflight();
+            // SAFETY: SQLite returns the row shape requested by each test
+            // query; the generic caller owns that row contract.
             return (sqlite.prepare(query).get(...values) as T | null) ?? null;
           },
           async run() {
@@ -108,10 +110,12 @@ async function fixture(): Promise<{
   );
   const d1 = new BarrierD1(sqlite);
   const sendEvent = mock(async () => {});
+  // SAFETY: this fixture supplies the D1 and Workflow methods used by the
+  // approval handler; unrelated production bindings are intentionally absent.
   const env = {
     DB: d1,
     RELEASE_WORKFLOW: { get: async () => ({ sendEvent }) },
-  } as unknown as Env;
+  } as Env;
   return { d1, env, sendEvent };
 }
 

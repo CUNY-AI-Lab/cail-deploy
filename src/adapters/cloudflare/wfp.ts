@@ -2,6 +2,7 @@ import { emitDeployDiagnostic, observeDetachedCleanup } from "../../diagnostics"
 import { ApiError, apiErrorSnapshot } from "../../domain/errors";
 import type { Env } from "../../env";
 import type { PreparedWorker } from "./worker-bundler";
+import { z } from "zod";
 
 const DEFAULT_PUBLISH_TIMEOUT_MS = 30_000;
 const MIN_PUBLISH_TIMEOUT_MS = 1_000;
@@ -120,29 +121,29 @@ async function readResponseText(response: Response, signal: AbortSignal): Promis
   }
 }
 
-function validPublicationEnvelope(value: unknown, expectedName: string): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const envelope = value as Record<string, unknown>;
-  if (
-    envelope.success !== true ||
-    !Array.isArray(envelope.errors) ||
-    !Array.isArray(envelope.messages) ||
-    typeof envelope.result !== "object" ||
-    envelope.result === null
-  ) {
-    return false;
-  }
-  const result = envelope.result as Record<string, unknown>;
-  if (
-    typeof result.startup_time_ms !== "number" ||
-    !Number.isFinite(result.startup_time_ms) ||
-    result.startup_time_ms < 0
-  ) {
-    return false;
-  }
-  return (
-    !Object.hasOwn(result, "id") || (typeof result.id === "string" && result.id === expectedName)
-  );
+const publicationEnvelopeSchema = z
+  .object({
+    success: z.literal(true),
+    errors: z.array(z.json()),
+    messages: z.array(z.json()),
+    result: z
+      .object({
+        startup_time_ms: z.number().finite().nonnegative(),
+        id: z.string().optional(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+type PublicationEnvelopeInput = z.input<typeof publicationEnvelopeSchema>;
+
+function validPublicationEnvelope(
+  value: PublicationEnvelopeInput | null,
+  expectedName: string,
+): boolean {
+  const parsed = publicationEnvelopeSchema.safeParse(value);
+  if (!parsed.success) return false;
+  return parsed.data.result.id === undefined || parsed.data.result.id === expectedName;
 }
 
 export function publicationName(revisionId: string): string {
@@ -217,7 +218,7 @@ export async function publishWorker(
     const code = response.status >= 500 ? "publication_ambiguous" : "publication_rejected";
     throw new ApiError(502, code, "We could not publish this release.");
   }
-  let envelope: unknown;
+  let envelope: PublicationEnvelopeInput | null;
   try {
     envelope = JSON.parse(await readResponseText(response, signal));
   } catch (cause) {

@@ -39,7 +39,7 @@ const STATE_KEY = "state";
 const API_PATTERN =
   /^\/client\/v4\/accounts\/([^/]+)\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/u;
 
-function json(value: unknown, status = 200): Response {
+function json(value: JsonValue, status = 200): Response {
   return Response.json(value, { status });
 }
 
@@ -70,11 +70,9 @@ async function sha256(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function providerEnvelope(
-  success: boolean,
-  result: unknown,
-  errors: unknown[] = [],
-): Record<string, unknown> {
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+function providerEnvelope(success: boolean, result: JsonValue, errors: JsonValue[] = []) {
   return { success, result, errors, messages: [] };
 }
 
@@ -84,27 +82,27 @@ async function control(request: Request, env: Env): Promise<Response> {
   }
   const url = new URL(request.url);
   if (request.method === "POST" && url.pathname === "/__control/reset") {
-    const input = (await request.json()) as { responseModes?: unknown };
-    const acceptedModes = new Set<ResponseMode>([
-      "http-503",
-      "identity-mismatch",
-      "invalid-utf8",
-      "malformed-json",
-      "oversized",
-      "stalled",
-      "success-false",
-      "valid",
-      "valid-without-id",
-    ]);
-    if (
-      !Array.isArray(input.responseModes) ||
-      !input.responseModes.every(
-        (value): value is ResponseMode =>
-          typeof value === "string" && acceptedModes.has(value as ResponseMode),
-      )
-    ) {
+    const inputResult = z
+      .object({
+        responseModes: z.array(
+          z.enum([
+            "http-503",
+            "identity-mismatch",
+            "invalid-utf8",
+            "malformed-json",
+            "oversized",
+            "stalled",
+            "success-false",
+            "valid",
+            "valid-without-id",
+          ]),
+        ),
+      })
+      .safeParse(await request.json());
+    if (!inputResult.success) {
       return json({ error: "invalid_control" }, 400);
     }
+    const input = inputResult.data;
     const next: ControlState = {
       errors: [],
       observations: [],
@@ -152,39 +150,28 @@ async function publish(request: Request, env: Env): Promise<Response> {
     return json(providerEnvelope(false, null, [{ code, message }]), status);
   };
   const metadataPart = form.get("metadata");
-  if (
-    !metadataPart ||
-    typeof metadataPart === "string" ||
-    metadataPart.type !== "application/json"
-  ) {
-    return reject(
-      `invalid metadata part type=${typeof metadataPart === "string" ? "string" : metadataPart?.type}`,
-      400,
-      10001,
-    );
+  const metadataPartKind =
+    metadataPart === null ? "null" : metadataPart instanceof File ? metadataPart.type : "string";
+  if (!(metadataPart instanceof File) || metadataPart.type !== "application/json") {
+    return reject(`invalid metadata part type=${metadataPartKind}`, 400, 10001);
   }
-  const metadata = JSON.parse(await metadataPart.text()) as {
-    main_module?: unknown;
-    compatibility_date?: unknown;
-    compatibility_flags?: unknown;
-    bindings?: unknown;
-  };
-  const revisionBinding =
-    Array.isArray(metadata.bindings) &&
-    metadata.bindings.length === 1 &&
-    typeof metadata.bindings[0] === "object" &&
-    metadata.bindings[0] !== null
-      ? (metadata.bindings[0] as Record<string, unknown>)
-      : undefined;
-  if (
-    typeof metadata.main_module !== "string" ||
-    typeof metadata.compatibility_date !== "string" ||
-    !Array.isArray(metadata.compatibility_flags) ||
-    !metadata.compatibility_flags.every((value) => typeof value === "string") ||
-    revisionBinding?.type !== "plain_text" ||
-    revisionBinding.name !== "KALE_REVISION_ID" ||
-    typeof revisionBinding.text !== "string"
-  ) {
+  const metadataResult = z
+    .object({
+      main_module: z.string(),
+      compatibility_date: z.string(),
+      compatibility_flags: z.array(z.string()),
+      bindings: z.array(
+        z.object({ type: z.string(), name: z.string(), text: z.string() }).passthrough(),
+      ),
+    })
+    .passthrough()
+    .safeParse(JSON.parse(await metadataPart.text()));
+  if (!metadataResult.success) {
+    return reject("invalid worker metadata", 400, 10002);
+  }
+  const metadata = metadataResult.data;
+  const revisionBinding = metadata.bindings.length === 1 ? metadata.bindings[0] : undefined;
+  if (revisionBinding?.type !== "plain_text" || revisionBinding.name !== "KALE_REVISION_ID") {
     return reject(`invalid worker metadata ${JSON.stringify(metadata)}`, 400, 10002);
   }
 
@@ -195,7 +182,7 @@ async function publish(request: Request, env: Env): Promise<Response> {
     modules.length === 0 ||
     !modules.some(([name]) => name === metadata.main_module) ||
     modules.some(
-      ([, value]) => typeof value === "string" || value.type !== "application/javascript+module",
+      ([, value]) => !(value instanceof File) || value.type !== "application/javascript+module",
     )
   ) {
     return reject(
@@ -206,7 +193,7 @@ async function publish(request: Request, env: Env): Promise<Response> {
   }
   const moduleSha256 = Object.fromEntries(
     await Promise.all(
-      modules.map(async ([name, value]) => [name, await sha256(await (value as File).text())]),
+      modules.map(async ([name, value]) => [name, await sha256(await value.text())]),
     ),
   );
   const responseMode = current.responseModes[call - 1] ?? "valid";
@@ -271,13 +258,9 @@ async function publish(request: Request, env: Env): Promise<Response> {
       }),
     );
   }
-  return json(
-    providerEnvelope(true, {
-      etag: `local-${call}`,
-      startup_time_ms: 1,
-      ...(responseMode === "valid-without-id" ? {} : { id: match[3] }),
-    }),
-  );
+  const result = { etag: `local-${call}`, startup_time_ms: 1 };
+  if (responseMode !== "valid-without-id") result.id = match[3];
+  return json(providerEnvelope(true, result));
 }
 
 export default {
@@ -289,3 +272,4 @@ export default {
     return publish(request, env);
   },
 };
+import { z } from "zod";

@@ -2,10 +2,6 @@ import { emitDeployDiagnostic } from "./diagnostics";
 
 const WORKFLOW_FINALIZATION_FAILURE = Symbol("workflow-terminal-finalization-failure");
 
-type WorkflowFinalizationAggregate = AggregateError & {
-  [WORKFLOW_FINALIZATION_FAILURE]: true;
-};
-
 function emitWorkflowFinalizationDiagnostic(releaseId: string, requestId: string): void {
   emitDeployDiagnostic("workflow_terminal_finalization_failed", { releaseId, requestId });
 }
@@ -14,9 +10,9 @@ function emitUnattachedDiagnostic(releaseId: string, requestId: string): void {
   emitDeployDiagnostic("workflow_finalization_diagnostic_unattached", { releaseId, requestId });
 }
 
-function retainWorkflowFinalizationFailure(
-  primary: unknown,
-  secondary: unknown,
+function retainWorkflowFinalizationFailure<TPrimary, TSecondary>(
+  primary: TPrimary,
+  secondary: TSecondary,
   releaseId: string,
   requestId: string,
 ): void {
@@ -36,7 +32,7 @@ function retainWorkflowFinalizationFailure(
       [...previous, secondary],
       "Workflow terminal finalization also failed.",
       originalCause === undefined ? undefined : { cause: originalCause },
-    ) as WorkflowFinalizationAggregate;
+    );
     Object.defineProperty(aggregate, WORKFLOW_FINALIZATION_FAILURE, {
       value: true,
     });
@@ -50,8 +46,8 @@ function retainWorkflowFinalizationFailure(
   }
 }
 
-export async function finalizeWorkflowFailure(
-  primary: unknown,
+export async function finalizeWorkflowFailure<TPrimary>(
+  primary: TPrimary,
   finalize: () => Promise<void>,
   context: { releaseId: string; requestId: string },
 ): Promise<never> {

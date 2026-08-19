@@ -5,8 +5,10 @@ import {
   originValidationResponse,
 } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
+import { z } from "zod";
 import type { Principal } from "../../auth";
 import { apiErrorSnapshot } from "../../domain/errors";
+import type { JsonValue } from "../../domain/json";
 import type { Env } from "../../env";
 import { createKaleMcpServer, handleLegacyMcpMessage, readMcpMessage } from "../../mcp";
 
@@ -31,8 +33,9 @@ export async function handleMcpWithPrincipal(
   requestId: string,
   principal: Principal,
 ): Promise<Response> {
-  if (typeof request.url === "string") {
-    const url = new URL(request.url);
+  const requestUrl = z.string().url().safeParse(request.url);
+  if (requestUrl.success) {
+    const url = new URL(requestUrl.data);
     if (url.pathname !== "/mcp") {
       return Response.json(
         { error: { code: "route_not_found", message: "The route was not found.", requestId } },
@@ -65,7 +68,7 @@ export async function handleMcpWithPrincipal(
     );
   }
 
-  let parsedBody: unknown;
+  let parsedBody: JsonValue;
   try {
     parsedBody = await readMcpMessage(request, requestId);
   } catch (error) {

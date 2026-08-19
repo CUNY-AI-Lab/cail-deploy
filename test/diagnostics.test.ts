@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import type { JsonValue } from "../src/domain/json";
 import { emitDeployDiagnostic, observeDetachedCleanup } from "../src/diagnostics";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
 
 describe("bounded cleanup diagnostics", () => {
   test("observes synchronous and rejected cleanup without logging raw failures", async () => {
-    const diagnostics: unknown[] = [];
+    const diagnostics: JsonValue[] = [];
     const originalConsoleError = console.error;
-    console.error = (diagnostic: unknown) => {
+    console.error = (diagnostic: JsonValue) => {
       diagnostics.push(diagnostic);
     };
     try {
@@ -76,9 +77,9 @@ describe("bounded cleanup diagnostics", () => {
   });
 
   test("uses fixed privacy-safe vocabulary for MCP response cleanup failures", async () => {
-    const diagnostics: unknown[] = [];
+    const diagnostics: JsonValue[] = [];
     const originalConsoleError = console.error;
-    console.error = (diagnostic: unknown) => {
+    console.error = (diagnostic: JsonValue) => {
       diagnostics.push(diagnostic);
     };
     try {

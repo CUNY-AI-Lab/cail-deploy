@@ -19,7 +19,7 @@ export async function prepareAndSmokeWorker(
   });
   const modules = Object.fromEntries(
     Object.entries(bundled.modules).map(([path, source]) => {
-      if (typeof source === "string") return [path, source];
+      if (!(source instanceof Object)) return [path, source];
       if (source.js !== undefined) return [path, source.js];
       if (source.cjs !== undefined) return [path, source.cjs];
       if (source.text !== undefined) return [path, source.text];

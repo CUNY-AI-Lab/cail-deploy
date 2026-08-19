@@ -8,6 +8,7 @@ import {
   readReleaseEventHistory,
 } from "../src/api";
 import { apiErrorSnapshot } from "../src/domain/errors";
+import type { ThrownValue } from "../src/domain/values";
 import { CONSUME_CONSENT_NONCE_SQL } from "../src/oauth-consent";
 import {
   appendReleaseStatus,
@@ -25,9 +26,13 @@ class SqliteD1 {
         query,
         values,
         async first<T>() {
+          // SAFETY: each test query selects the row shape requested by its
+          // generic caller from SQLite.
           return (db.prepare(query).get(...values) as T | null) ?? null;
         },
         async all<T>() {
+          // SAFETY: each test query selects the row shape requested by its
+          // generic caller from SQLite.
           return { results: db.prepare(query).all(...values) as T[] };
         },
       }),
@@ -90,7 +95,8 @@ describe("durable release invariants", () => {
         insert.run(releaseId, sequence, "release.progress", now, "{}");
       }
     })();
-    const d1 = new SqliteD1(db) as unknown as Parameters<typeof readReleaseEventHistory>[0];
+    // SAFETY: SqliteD1 implements the D1 methods used by readReleaseEventHistory.
+    const d1 = new SqliteD1(db) as Parameters<typeof readReleaseEventHistory>[0];
     const exact = await readReleaseEventHistory(d1, releaseId);
     expect(exact).toHaveLength(MAX_RELEASE_EVENT_COUNT);
     expect(exact[0]?.sequence).toBe(1);
@@ -98,7 +104,7 @@ describe("durable release invariants", () => {
 
     insert.run(releaseId, MAX_RELEASE_EVENT_COUNT + 1, "release.progress", now, "{}");
     const countError = await readReleaseEventHistory(d1, releaseId).catch(
-      (error: unknown) => error,
+      (error: ThrownValue) => error,
     );
     expect(apiErrorSnapshot(countError)?.code).toBe("release_history_too_large");
 
@@ -110,7 +116,9 @@ describe("durable release invariants", () => {
       now,
       JSON.stringify({ payload: "x".repeat(MAX_RELEASE_EVENT_HISTORY_BYTES) }),
     );
-    const byteError = await readReleaseEventHistory(d1, releaseId).catch((error: unknown) => error);
+    const byteError = await readReleaseEventHistory(d1, releaseId).catch(
+      (error: ThrownValue) => error,
+    );
     expect(apiErrorSnapshot(byteError)?.code).toBe("release_history_too_large");
   });
 
@@ -153,7 +161,8 @@ describe("durable release invariants", () => {
       "INSERT INTO release_events (release_id, sequence, type, occurred_at, actor_subject, detail_json) VALUES (?, ?, ?, ?, NULL, ?)",
     );
     insert.run(releaseId, 1, "release.progress", now, null);
-    const d1 = new SqliteD1(db) as unknown as Parameters<typeof readReleaseEventHistory>[0];
+    // SAFETY: SqliteD1 implements the D1 methods used by readReleaseEventHistory.
+    const d1 = new SqliteD1(db) as Parameters<typeof readReleaseEventHistory>[0];
     expect(await readReleaseEventHistory(d1, releaseId)).toEqual([
       {
         sequence: 1,
@@ -186,7 +195,9 @@ describe("durable release invariants", () => {
     );
 
     insert.run(releaseId, 2, "release.progress", now, "{}");
-    const overflow = await readReleaseEventHistory(d1, releaseId).catch((error: unknown) => error);
+    const overflow = await readReleaseEventHistory(d1, releaseId).catch(
+      (error: ThrownValue) => error,
+    );
     expect(apiErrorSnapshot(overflow)?.code).toBe("release_history_too_large");
   });
 
@@ -334,9 +345,10 @@ describe("durable release invariants", () => {
         now,
       ],
     );
+    // SAFETY: this fixture provides the D1 methods consumed by appendTerminalStatus.
     const env = {
       DB: new SqliteD1(db),
-    } as unknown as Parameters<typeof appendTerminalStatus>[0];
+    } as Parameters<typeof appendTerminalStatus>[0];
     const releaseId = "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     expect(await appendTerminalStatus(env, releaseId, "live", "release.live")).toBe(true);
@@ -383,9 +395,10 @@ describe("durable release invariants", () => {
         "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'automatic', 'publishing', ?, ?, ?, ?, ?)",
         [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
       );
+      // SAFETY: this fixture provides the D1 methods consumed by appendTerminalStatus.
       const env = {
         DB: new SqliteD1(db),
-      } as unknown as Parameters<typeof appendTerminalStatus>[0];
+      } as Parameters<typeof appendTerminalStatus>[0];
 
       expect(await appendTerminalStatus(env, releaseId, status, type)).toBe(true);
       expect(
@@ -428,9 +441,10 @@ describe("durable release invariants", () => {
       "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'automatic', 'live', ?, ?, ?, ?, ?)",
       [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
     );
+    // SAFETY: this fixture provides the D1 methods consumed by appendTerminalStatus.
     const env = {
       DB: new SqliteD1(db),
-    } as unknown as Parameters<typeof appendTerminalStatus>[0];
+    } as Parameters<typeof appendTerminalStatus>[0];
 
     expect(() =>
       db.run("UPDATE releases SET status = 'reconciling' WHERE release_id = ?", [releaseId]),
@@ -500,9 +514,10 @@ describe("durable release invariants", () => {
       "INSERT INTO releases (release_id, project_id, revision_id, approval, status, workflow_instance_id, request_id, admitted_at, created_at, updated_at) VALUES (?, ?, ?, 'automatic', 'queued', ?, ?, ?, ?, ?)",
       [releaseId, projectId, revisionId, releaseId, "request", now, now, now],
     );
+    // SAFETY: this fixture provides the D1 methods consumed by appendTerminalStatus.
     const env = {
       DB: new SqliteD1(db),
-    } as unknown as Parameters<typeof appendTerminalStatus>[0];
+    } as Parameters<typeof appendTerminalStatus>[0];
 
     expect(await appendReleaseStatus(env, releaseId, "validating", "release.validating")).toEqual({
       state: "applied",
@@ -554,9 +569,10 @@ describe("durable release invariants", () => {
       "INSERT INTO release_events (release_id, sequence, type, occurred_at) VALUES (?, 1, 'release.awaiting_approval', ?)",
       [releaseId, now],
     );
+    // SAFETY: this fixture provides the D1 methods consumed by appendReleaseStatus.
     const env = {
       DB: new SqliteD1(db),
-    } as unknown as Parameters<typeof appendReleaseStatus>[0];
+    } as Parameters<typeof appendReleaseStatus>[0];
 
     expect(await appendReleaseStatus(env, releaseId, "publishing", "release.publishing")).toEqual({
       state: "applied",
@@ -620,9 +636,10 @@ describe("durable release invariants", () => {
         return super.batch(statements);
       }
     }
+    // SAFETY: this fixture provides the D1 methods consumed by appendReleaseStatus.
     const env = {
       DB: new BarrierD1(db),
-    } as unknown as Parameters<typeof appendReleaseStatus>[0];
+    } as Parameters<typeof appendReleaseStatus>[0];
 
     const first = appendReleaseStatus(env, releaseId, "validating", "release.validating");
     await firstBatchBarrier;
@@ -705,7 +722,7 @@ describe("OAuth consent nonce invariants", () => {
   });
 
   test("changed subject, client, request, and expired nonce do not consume", async () => {
-    const variants = [
+    const variants: Array<[string, string, string, string]> = [
       [
         "cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "client-a",
@@ -747,13 +764,7 @@ describe("OAuth consent nonce invariants", () => {
       expect(
         db
           .prepare(CONSUME_CONSENT_NONCE_SQL)
-          .run(
-            `ocn_${"a".repeat(32)}`,
-            subject as string,
-            clientId as string,
-            digest as string,
-            now as string,
-          ).changes,
+          .run(`ocn_${"a".repeat(32)}`, subject, clientId, digest, now).changes,
       ).toBe(0);
     }
   });

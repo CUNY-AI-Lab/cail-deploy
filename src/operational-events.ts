@@ -84,9 +84,14 @@ export function emitReleaseTerminal(
     });
     return;
   }
-  context.logger.emit(CAIL_EVENTS.ACTION_TERMINAL, {
-    ...common,
-    terminal: { outcome: "error", reason: "upstream_failure" },
-    ...(errorType ? { error_type: errorType } : {}),
-  });
+  const terminal = { outcome: "error" as const, reason: "upstream_failure" as const };
+  if (errorType) {
+    context.logger.emit(CAIL_EVENTS.ACTION_TERMINAL, {
+      ...common,
+      terminal,
+      error_type: errorType,
+    });
+    return;
+  }
+  context.logger.emit(CAIL_EVENTS.ACTION_TERMINAL, { ...common, terminal });
 }

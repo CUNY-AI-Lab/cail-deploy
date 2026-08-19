@@ -1,27 +1,31 @@
 import { describe, expect, test } from "bun:test";
 import { readLoggingContext, type Env } from "../src/env";
 import { emitReleaseAdmission, emitReleaseTerminal } from "../src/operational-events";
+import type { JsonValue } from "../src/domain/json";
 
 const releaseId = "rel_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa";
 const operationalSubject = `cail-v1-${"b".repeat(32)}`;
+// SAFETY: this fixture supplies the environment fields consumed by the event sink.
 const env = {
   AUTH_MODE: "test",
   CAIL_ENVIRONMENT: "test",
   SERVICE_RELEASE: "8baede9",
 } as Env;
 
-function captureEvents(run: () => void): {
-  records: unknown[];
-  diagnostics: unknown[];
-} {
-  const records: unknown[] = [];
-  const diagnostics: unknown[] = [];
+interface CapturedEvents {
+  records: JsonValue[];
+  diagnostics: JsonValue[];
+}
+
+function captureEvents(run: () => void): CapturedEvents {
+  const records: JsonValue[] = [];
+  const diagnostics: JsonValue[] = [];
   const originalConsoleLog = console.log;
   const originalConsoleError = console.error;
-  console.log = (record: unknown) => {
+  console.log = (record: JsonValue) => {
     records.push(record);
   };
-  console.error = (diagnostic: unknown) => {
+  console.error = (diagnostic: JsonValue) => {
     diagnostics.push(diagnostic);
   };
   try {
@@ -100,6 +104,8 @@ describe("release operational event contract", () => {
   });
 
   test("joins a production event with exact resource and correlation fields", () => {
+    // SAFETY: this fixture changes only the deployment label while retaining the
+    // environment fields required by readLoggingContext.
     const productionEnv = { ...env, CAIL_ENVIRONMENT: "production" } as Env;
     const requestId = "11111111-1111-4111-8111-111111111111";
     const { records, diagnostics } = captureEvents(() => {
@@ -123,11 +129,13 @@ describe("release operational event contract", () => {
 
   test("fans privacy-safe release events into the fleet diagnostic dataset", () => {
     const points: unknown[] = [];
+    // SAFETY: this fixture changes only the deployment label and diagnostic
+    // sink while retaining every Env field consumed by the event path.
     const productionEnv = {
       ...env,
       CAIL_ENVIRONMENT: "production",
       CAIL_FLEET_EVENTS: {
-        writeDataPoint(point: unknown) {
+        writeDataPoint(point: JsonValue) {
           points.push(point);
         },
       },
@@ -165,7 +173,9 @@ describe("release operational event contract", () => {
     "production ",
     " test",
   ])("rejects missing or non-canonical environment %s without emitting", (environment) => {
-    const invalidEnv = { ...env, CAIL_ENVIRONMENT: environment } as unknown as Env;
+    // SAFETY: each table value deliberately violates the runtime environment
+    // contract so readLoggingContext can prove it fails closed.
+    const invalidEnv = { ...env, CAIL_ENVIRONMENT: environment } as Env;
     expect(readLoggingContext(invalidEnv)).toBeNull();
     const { records, diagnostics } = captureEvents(() => {
       emitReleaseAdmission(invalidEnv, releaseId, "11111111-1111-4111-8111-111111111111");
