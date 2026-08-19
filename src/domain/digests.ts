@@ -1,4 +1,10 @@
-import type { JsonValue } from "./json";
+import { z } from "zod";
+import type { JsonObject, JsonValue } from "./json";
+
+const jsonObjectContract = z.record(z.string(), z.json());
+const jsonObjectSchema = z.custom<JsonObject>(
+  (value) => jsonObjectContract.safeParse(value).success,
+);
 
 const encoder = new TextEncoder();
 
@@ -31,8 +37,11 @@ export function bytesToHex(bytes: Uint8Array): string {
 
 export function canonicalJson(value: JsonValue): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value instanceof Object) {
-    const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+  const object = jsonObjectSchema.safeParse(value);
+  if (object.success) {
+    const entries = Object.entries(object.data).sort(([left], [right]) =>
+      left.localeCompare(right),
+    );
     return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";

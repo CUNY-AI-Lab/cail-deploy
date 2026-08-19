@@ -31,6 +31,13 @@ export const MAX_MCP_OPERATION_MS = 30_000;
 export const MAX_MCP_INTERNAL_RESPONSE_MS = MAX_MCP_OPERATION_MS;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 const SHA256_CONTENT_DIGEST = /^sha-256=:[A-Za-z0-9+/]{43}=:$/u;
+const jsonSchemaPropertySchema = z.record(z.string(), z.json());
+const generatedObjectSchema = z
+  .object({
+    type: z.literal("object"),
+    properties: z.record(z.string(), jsonSchemaPropertySchema).optional(),
+  })
+  .passthrough();
 const createProjectArgumentsSchema = createProjectSchema
   .extend({ idempotencyKey: idempotencyKeySchema })
   .strict();
@@ -72,13 +79,14 @@ const rollbackReleaseArgumentsSchema = z
 
 function inputSchemaFor(schema: z.ZodType, addProjectNamePattern = false): Tool["inputSchema"] {
   const generated = z.toJSONSchema(schema, { target: "draft-2020-12" });
-  if (generated.type !== "object") {
+  const parsedGenerated = generatedObjectSchema.safeParse(generated);
+  if (!parsedGenerated.success) {
     throw new Error("MCP tool arguments must use an object JSON Schema.");
   }
   if (addProjectNamePattern) {
-    const properties = generated.properties;
+    const properties = parsedGenerated.data.properties;
     const name = properties?.name;
-    if (!properties || !(properties instanceof Object) || !name || !(name instanceof Object)) {
+    if (!properties || !name) {
       throw new Error("MCP create-project schema must expose a name property.");
     }
     // Zod trims before checking non-emptiness and the project contract bounds
@@ -87,9 +95,9 @@ function inputSchemaFor(schema: z.ZodType, addProjectNamePattern = false): Tool[
     // both checks without advertising whitespace-only or overlong names.
     name.pattern = "^\\s*(?:\\S|\\S[\\s\\S]{0,78}\\S)\\s*$";
   }
-  // SAFETY: z.toJSONSchema emits a JSON Schema object; the runtime guard above
-  // proves the root is an object schema required by MCP's Tool contract.
-  return generated as Tool["inputSchema"];
+  // SAFETY: the canonical JSON Schema parser proves the root is an object
+  // schema required by MCP's Tool contract and preserves the generated fields.
+  return parsedGenerated.data as Tool["inputSchema"];
 }
 
 const toolDefinitions = [

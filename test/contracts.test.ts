@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { z } from "zod";
 import { artifactSchema, REVISION_PATTERN, releaseStatuses } from "../src/domain/contracts";
-import { bytesToHex, parseContentDigest, sha256Hex } from "../src/domain/digests";
+import { bytesToHex, canonicalJson, parseContentDigest, sha256Hex } from "../src/domain/digests";
+import type { JsonObject } from "../src/domain/json";
 
 const fixturePath = new URL("../fixtures/worker-artifact.v1.json", import.meta.url);
 
@@ -25,6 +26,35 @@ describe("immutable artifact contract", () => {
     if (parsed === null) throw new Error("expected a valid SHA-256 content digest");
     expect(bytesToHex(parsed)).toBe(await sha256Hex(bytes));
     expect(parseContentDigest("sha256=fb711f")).toBeNull();
+  });
+
+  test("canonical JSON gives null-prototype records the same digest as ordinary records", async () => {
+    const ordinary = {
+      nested: { z: "last", a: "first" },
+      z: 3,
+      a: 1,
+    };
+    Object.defineProperty(ordinary.nested, "__proto__", {
+      value: { keep: true },
+      enumerable: true,
+    });
+    // SAFETY: this fixture deliberately models a JSON object parsed into a
+    // null-prototype record; every value remains within the JsonObject contract.
+    const nestedNullPrototype = Object.assign(Object.create(null), { a: "first", z: "last" });
+    Object.defineProperty(nestedNullPrototype, "__proto__", {
+      value: { keep: true },
+      enumerable: true,
+    });
+    const nullPrototype: JsonObject = Object.assign(Object.create(null), {
+      z: 3,
+      nested: nestedNullPrototype,
+      a: 1,
+    });
+    const ordinaryJson = canonicalJson(ordinary);
+    const nullPrototypeJson = canonicalJson(nullPrototype);
+    expect(nullPrototypeJson).toContain('"__proto__":{"keep":true}');
+    expect(nullPrototypeJson).toBe(ordinaryJson);
+    expect(await sha256Hex(nullPrototypeJson)).toBe(await sha256Hex(ordinaryJson));
   });
 
   test("unsafe paths and missing entrypoints fail", async () => {

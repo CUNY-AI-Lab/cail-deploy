@@ -7,6 +7,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import Ajv2020 from "ajv/dist/2020.js";
+import { z } from "zod";
 import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
 import type { Principal } from "../src/auth";
 import { apiErrorSnapshot } from "../src/domain/errors";
@@ -31,6 +32,7 @@ const principal: Principal = {
 
 const clients: Client[] = [];
 const modernClients: ModernClient[] = [];
+const delayedReleaseResponseSchema = z.object({ events: z.array(z.json()) }).passthrough();
 const validContentDigest = `sha-256=:${Buffer.alloc(32).toString("base64")}:`;
 const legacyTransportHeaders = {
   Accept: "application/json, text/event-stream",
@@ -254,6 +256,28 @@ describe("MCP tool argument boundary", () => {
         ).toBe(false);
       }
     }
+  });
+
+  test("keeps the augmented create-project schema strict at the JSON Schema boundary", () => {
+    const createTool = tools.find((tool) => tool.name === "kale.create_project");
+    if (!createTool) throw new Error("create-project tool schema is missing");
+    // SAFETY: the MCP tool contract exposes a JSON Schema object after the
+    // canonical parser in inputSchemaFor has validated its root shape.
+    const schema = createTool.inputSchema as {
+      additionalProperties?: boolean;
+      properties?: { name?: { pattern?: string } };
+      type?: string;
+    };
+    expect(schema.type).toBe("object");
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties?.name?.pattern).toBe("^\\s*(?:\\S|\\S[\\s\\S]{0,78}\\S)\\s*$");
+    // SAFETY: Ajv accepts the MCP Tool input schema as its documented JSON
+    // Schema object after the canonical root parser has validated it.
+    const validate = new Ajv2020({ strict: false }).compile(createTool.inputSchema as object);
+    expect(validate({ name: "Example", idempotencyKey: "strict-boundary" })).toBe(true);
+    expect(validate({ name: "Example", idempotencyKey: "strict-boundary", unexpected: true })).toBe(
+      false,
+    );
   });
 
   test("exposes reconciliation to OAuth-only MCP clients", async () => {
@@ -1490,7 +1514,7 @@ describe("MCP tool argument boundary", () => {
     let apiResponseIntercepted = false;
     Object.defineProperty(Response, "json", {
       value: (value: JsonValue, init?: ResponseInit) => {
-        if (!apiResponseIntercepted && value instanceof Object && "events" in value) {
+        if (!apiResponseIntercepted && delayedReleaseResponseSchema.safeParse(value).success) {
           apiResponseIntercepted = true;
           const busyUntil = Date.now() + 40;
           let spins = 0;

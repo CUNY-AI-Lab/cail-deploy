@@ -15,6 +15,19 @@ const INITIAL_REQUEST_ID = "11111111-1111-4111-8111-111111111111";
 const TEST_TIMEOUT_MS = 60_000;
 const root = new URL("../..", import.meta.url).pathname.replace(/\/$/u, "");
 
+const preparedEnvelopeSchema = z
+  .object({
+    schemaVersion: z.literal("kale.prepared-worker.v1"),
+    projectId: z.string().regex(/^prj_[0-9a-f]{32}$/u),
+    releaseId: z.string().regex(/^rel_[0-9a-f]{32}$/u),
+    revisionId: z.string().regex(/^rev_sha256_[0-9a-f]{64}$/u),
+    mainModule: z.string().min(1),
+    modules: z.record(z.string(), z.string()).refine((modules) => Object.keys(modules).length > 0),
+    compatibilityDate: z.iso.date(),
+    compatibilityFlags: z.array(z.string()),
+  })
+  .strict();
+
 function isText(value) {
   return z.string().safeParse(value).success;
 }
@@ -64,14 +77,7 @@ async function readPreparedObject(env, preparedKey, preparedDigest) {
   const bytes = new Uint8Array(await object.arrayBuffer());
   const observedDigest = sha256Hex(bytes);
   assert.equal(observedDigest, preparedDigest, "prepared bytes failed their D1 digest");
-  const envelope = JSON.parse(new TextDecoder().decode(bytes));
-  assert.equal(envelope.schemaVersion, "kale.prepared-worker.v1");
-  assert.equal(isText(envelope.projectId), true);
-  assert.equal(isText(envelope.releaseId), true);
-  assert.equal(isText(envelope.revisionId), true);
-  assert.equal(isText(envelope.mainModule), true);
-  assert.ok(envelope.modules instanceof Object);
-  assert.ok(Object.keys(envelope.modules).length > 0);
+  const envelope = preparedEnvelopeSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
   assert.equal(isText(envelope.modules[envelope.mainModule]), true);
   return { bytes, digest: observedDigest, envelope };
 }

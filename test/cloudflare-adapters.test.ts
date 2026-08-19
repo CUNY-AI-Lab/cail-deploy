@@ -4,6 +4,7 @@ import {
   publicationTimeoutMs,
   publishWorker,
 } from "../src/adapters/cloudflare/wfp";
+import { normalizeWorkerModules } from "../src/adapters/cloudflare/worker-bundler";
 import { sendApprovalEvent } from "../src/api";
 import type { Env } from "../src/env";
 import type { ThrownValue } from "../src/domain/values";
@@ -72,6 +73,30 @@ function responseWithReader(
 }
 
 describe("Cloudflare volatile boundaries", () => {
+  test("normalizes bundled and transform-only Worker Loader module representations", () => {
+    const json = Object.assign(Object.create(null), { answer: 42 });
+    Object.defineProperty(json, "__proto__", {
+      value: { keep: true },
+      enumerable: true,
+    });
+    expect(
+      normalizeWorkerModules({
+        "bundle.js": "export default {};",
+        "worker.cjs": { cjs: "module.exports = {};" },
+        "notes.txt": { text: "plain text" },
+        "config.json": { json },
+      }),
+    ).toEqual({
+      "bundle.js": "export default {};",
+      "worker.cjs": "module.exports = {};",
+      "notes.txt": "plain text",
+      "config.json": '{"answer":42,"__proto__":{"keep":true}}',
+    });
+    expect(() =>
+      normalizeWorkerModules({ "unsupported.bin": { data: new ArrayBuffer(1) } }),
+    ).toThrow("Worker Bundler returned an unsupported module type for unsupported.bin.");
+  });
+
   test("WfP publication timeout configuration is bounded", () => {
     expect(publicationTimeoutMs(undefined)).toBe(30_000);
     expect(publicationTimeoutMs("1000")).toBe(1_000);
