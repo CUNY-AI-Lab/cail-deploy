@@ -11,10 +11,6 @@ const internalErrorSnapshot: ApiErrorSnapshot = Object.freeze({
   message: "The request could not be completed.",
 });
 
-function isObjectLike<T>(value: T): value is T & object {
-  return value !== null && Object(value) === value;
-}
-
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -36,8 +32,9 @@ export class ApiError extends Error {
 }
 
 export function apiErrorSnapshot<T>(error: T): ApiErrorSnapshot | undefined {
-  if (!isObjectLike(error)) return undefined;
-  return apiErrorSnapshots.get(error);
+  // SAFETY: WeakMap#get is an identity-only lookup and returns undefined for
+  // primitive keys in every supported Worker, Bun, and Node runtime.
+  return apiErrorSnapshots.get(error as object);
 }
 
 export function errorResponse<T>(error: T, requestId: string): Response {
