@@ -1,7 +1,8 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  // This fleet uses the standalone CAIL Doorway issuer. The deployment label
-  // describes this control-plane Worker, not an artifact publication target.
+  // Browser authorization enters through the canonical CAIL Doorway origin.
+  // The deployment label describes this control-plane Worker, not an artifact
+  // publication target.
   "name": "kale-release-control-plane",
   "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
   "main": "src/index.ts",
@@ -24,8 +25,9 @@
     "CAIL_ENVIRONMENT": "production",
     "SERVICE_AUDIENCE": "cail:deploy",
     "PUBLIC_BASE_URL": "https://kale-release-control-plane.ailab-452.workers.dev",
-    "OAUTH_AUTHORIZE_URL": "https://cail-doorway.ailab-452.workers.dev/api/oauth/authorize",
-    "CAIL_IDENTITY_ISSUER": "https://cail-doorway.ailab-452.workers.dev/cail-sso",
+    "OAUTH_AUTHORIZE_URL": "https://tools.ailab.gc.cuny.edu/api/oauth/authorize",
+    "CAIL_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
+    "CAIL_TRUSTED_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
     "WFP_ACCOUNT_ID": "452c33847cf5cb1e46f391fca32fd1b5",
     "WFP_NAMESPACE": "kale-release-control-plane"
   },

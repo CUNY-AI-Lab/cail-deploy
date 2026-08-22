@@ -13,14 +13,15 @@ describe("OAuth public origin boundary", () => {
     expect(validatedOAuthPublicBaseUrl("http://localhost:8787")).toBe("http://localhost:8787");
   });
 
-  test("accepts only the exact Doorway or loopback authorization route", () => {
-    expect(
-      validatedOAuthAuthorizeUrl("https://cail-doorway.ailab-452.workers.dev/api/oauth/authorize"),
-    ).toBe("https://cail-doorway.ailab-452.workers.dev/api/oauth/authorize");
+  test("accepts only the canonical Doorway or loopback authorization route", () => {
+    expect(validatedOAuthAuthorizeUrl("https://tools.ailab.gc.cuny.edu/api/oauth/authorize")).toBe(
+      "https://tools.ailab.gc.cuny.edu/api/oauth/authorize",
+    );
     expect(validatedOAuthAuthorizeUrl("http://127.0.0.1:8787/api/oauth/authorize")).toBe(
       "http://127.0.0.1:8787/api/oauth/authorize",
     );
     for (const value of [
+      "https://cail-doorway.ailab-452.workers.dev/api/oauth/authorize",
       "http://cail-doorway.example/api/oauth/authorize",
       "https://user@cail-doorway.example/api/oauth/authorize",
       "https://cail-doorway.example/oauth/authorize",
