@@ -52,7 +52,11 @@ describe("Wrangler deployment environment bindings", () => {
     const config = await loadConfig("wrangler.production.jsonc");
     expect(config.vars?.CAIL_ENVIRONMENT).toBe("production");
     expect(config.vars?.OAUTH_AUTHORIZE_URL).toBe(
-      "https://cail-doorway.ailab-452.workers.dev/api/oauth/authorize",
+      "https://tools.ailab.gc.cuny.edu/api/oauth/authorize",
+    );
+    expect(config.vars?.CAIL_IDENTITY_ISSUER).toBe("https://tools.ailab.gc.cuny.edu/cail-sso");
+    expect(config.vars?.CAIL_TRUSTED_IDENTITY_ISSUER).toBe(
+      "https://tools.ailab.gc.cuny.edu/cail-sso",
     );
     expect(config.observability).toEqual({
       enabled: true,

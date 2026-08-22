@@ -1,5 +1,7 @@
 import { ApiError } from "../../domain/errors";
 
+export const CANONICAL_DOORWAY_ORIGIN = "https://tools.ailab.gc.cuny.edu" as const;
+
 export function validatedOAuthPublicBaseUrl(value: string): string {
   let url: URL;
   try {
@@ -43,8 +45,9 @@ export function validatedOAuthAuthorizeUrl(value: string): string {
   }
   const loopbackHttp =
     url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost");
+  const canonicalDoorway = url.origin === CANONICAL_DOORWAY_ORIGIN;
   if (
-    (url.protocol !== "https:" && !loopbackHttp) ||
+    (!canonicalDoorway && !loopbackHttp) ||
     url.username ||
     url.password ||
     url.pathname !== "/api/oauth/authorize" ||
