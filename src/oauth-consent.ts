@@ -14,6 +14,25 @@ function authorizationResource(env: Env): string {
   return new URL("/mcp", env.PUBLIC_BASE_URL).toString();
 }
 
+/**
+ * Browser authorization is served by Doorway, even when this handler runs
+ * behind a private service binding.  The request URL seen by Kale can
+ * therefore be an internal Worker URL; the configured Doorway URL is the
+ * only trusted public origin for form actions and same-origin checks.
+ */
+export function authorizationOrigin(env: Pick<Env, "OAUTH_AUTHORIZE_URL">): string {
+  return new URL(env.OAUTH_AUTHORIZE_URL).origin;
+}
+
+export function authorizationActionUrl(
+  env: Pick<Env, "OAUTH_AUTHORIZE_URL">,
+  requestUrl: string,
+): string {
+  const action = new URL(env.OAUTH_AUTHORIZE_URL);
+  action.search = new URL(requestUrl).search;
+  return action.toString();
+}
+
 function requireAuthorizationRequest(
   request: OAuthAuthorizationRequest,
   env: Env,
@@ -122,7 +141,7 @@ button:focus-visible{outline:3px solid #7a5300;outline-offset:0}
 @media (prefers-reduced-motion:reduce){button{transition:none}}
 `.trim();
 
-function consentPage(requestUrl: string, clientName: string, nonce: string): Response {
+function consentPage(actionUrl: string, clientName: string, nonce: string): Response {
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="color-scheme" content="light"><title>Kale Deploy — approve access</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet"><style>${CONSENT_PAGE_STYLE}</style></head>
 <body><main>
@@ -130,7 +149,7 @@ function consentPage(requestUrl: string, clientName: string, nonce: string): Res
 <h1>Let ${escapeHtml(clientName)} deploy your projects?</h1>
 <p>If you allow this, the app will be able to:</p>
 <ul><li>Create projects</li><li>Upload and publish new versions</li><li>Approve, check, and roll back releases</li></ul>
-<form method="post" action="${escapeHtml(requestUrl)}"><input type="hidden" name="consentNonce" value="${escapeHtml(nonce)}">
+<form method="post" action="${escapeHtml(actionUrl)}"><input type="hidden" name="consentNonce" value="${escapeHtml(nonce)}">
 <button type="submit" name="decision" value="approve">Allow</button><button type="submit" name="decision" value="deny">Cancel</button></form>
 </main></body></html>`;
   return new Response(html, {
@@ -186,10 +205,14 @@ export async function handleOAuthAuthorize(
         "INSERT INTO oauth_consent_nonces (nonce, owner_subject, client_id, request_digest, expires_at) VALUES (?, ?, ?, ?, ?)",
       ).bind(nonce, principal.subject, authorization.clientId, digest, expiresAt),
     ]);
-    return consentPage(request.url, client.clientName ?? "the app you're using", nonce);
+    return consentPage(
+      authorizationActionUrl(env, request.url),
+      client.clientName ?? "the app you're using",
+      nonce,
+    );
   }
 
-  if (request.headers.get("Origin") !== new URL(request.url).origin) {
+  if (request.headers.get("Origin") !== authorizationOrigin(env)) {
     throw new ApiError(
       403,
       "invalid_consent_origin",
