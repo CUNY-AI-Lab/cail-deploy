@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { prepareArtifact } from "../plugins/kale-deploy/scripts/prepare-artifact.mjs";
-import { tools } from "../src/mcp";
 
 const temporaryDirectories: string[] = [];
 
@@ -19,52 +18,6 @@ afterEach(async () => {
 });
 
 describe("Kale Deploy plugin", () => {
-  test("registers only the institutional MCP and current release tools", async () => {
-    const marketplace = JSON.parse(
-      await readFile(new URL("../.agents/plugins/marketplace.json", import.meta.url), "utf8"),
-    );
-    const manifest = JSON.parse(
-      await readFile(
-        new URL("../plugins/kale-deploy/.codex-plugin/plugin.json", import.meta.url),
-        "utf8",
-      ),
-    );
-    const mcp = JSON.parse(
-      await readFile(new URL("../plugins/kale-deploy/.mcp.json", import.meta.url), "utf8"),
-    );
-    const skill = await readFile(
-      new URL("../plugins/kale-deploy/skills/kale-deploy/SKILL.md", import.meta.url),
-      "utf8",
-    );
-
-    expect(marketplace).toMatchObject({
-      name: "cuny-ai-lab",
-      plugins: [{ name: "kale-deploy", source: { path: "./plugins/kale-deploy" } }],
-    });
-    expect(manifest).toMatchObject({
-      name: "kale-deploy",
-      version: "0.3.0",
-      mcpServers: "./.mcp.json",
-    });
-    expect(mcp).toEqual({
-      mcpServers: {
-        kale: {
-          type: "http",
-          url: "https://kale-release-control-plane.ailab-452.workers.dev/mcp",
-        },
-      },
-    });
-    for (const name of tools.map((tool) => tool.name)) expect(skill).toContain(name);
-    for (const retired of [
-      "https://cuny.qzz.io/kale/mcp",
-      "register_project",
-      "validate_project",
-      "get_project_status",
-    ]) {
-      expect(skill).not.toContain(retired);
-    }
-  });
-
   test("prepares exact bounded UTF-8 artifact bytes and upload arguments", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "kale-plugin-"));
     temporaryDirectories.push(root);

@@ -102,17 +102,6 @@ const revisionSchema = z
   .object({ revisionId: z.string(), artifactBytes: z.number() })
   .passthrough();
 const modernProjectSchema = z.object({ projectId: z.string().optional() }).passthrough();
-const denialBodySchema = z
-  .object({
-    result: z
-      .object({
-        isError: z.boolean().optional(),
-        content: z.array(z.object({ text: z.string().optional() })).optional(),
-      })
-      .optional(),
-  })
-  .passthrough();
-
 interface ToolResult {
   content?: Array<{ text?: string }>;
   isError?: boolean;
@@ -841,6 +830,16 @@ try {
   await modernClient.close();
 
   const bobToken = await authorize(baseUrl, client.client_id, bobJwt);
+  const bobTransport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+    requestInit: {
+      headers: {
+        Authorization: `Bearer ${bobToken.access_token}`,
+        "X-CAIL-Request-Id": requestId,
+      },
+    },
+  });
+  const bobClient = new Client({ name: "kale-oauth-denial", version: "0.1.0" });
+  await bobClient.connect(bobTransport);
   for (const [name, arguments_] of [
     [
       "kale.upload_revision",
@@ -860,22 +859,16 @@ try {
       },
     ],
   ] as const) {
-    const denialResponse = await rpc(baseUrl, bobToken.access_token, {
-      jsonrpc: "2.0",
-      id: crypto.randomUUID(),
-      method: "tools/call",
-      params: { name, arguments: arguments_ },
-    });
-    assert(denialResponse.status === 200, `${name} did not return an MCP tool result`);
-    const denialBody = denialBodySchema.parse(await denialResponse.json());
-    const denialText = denialBody.result?.content?.[0]?.text ?? "";
+    const denial = await bobClient.callTool({ name, arguments: arguments_ });
+    const denialText = toolText(denial);
     assert(
-      denialBody.result?.isError === true &&
+      denial.isError === true &&
         denialText.includes('"code":"project_not_found"') &&
         denialText.includes(`"requestId":"${requestId}"`),
       `${name} did not preserve 404 concealment/request id`,
     );
   }
+  await bobClient.close();
 
   const downscopedSession = await beginAuthorization(baseUrl, client.client_id, aliceJwt);
   assert(!(downscopedSession instanceof Response), "downscope authorization did not start");

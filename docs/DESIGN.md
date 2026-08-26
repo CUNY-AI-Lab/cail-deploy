@@ -35,9 +35,9 @@ Canonical references:
 
 ## MCP protocol direction
 
-Deploy serves two stateless protocol lanes on the same provider-protected `/mcp` route. The frozen `kale.release.v1` compatibility lane retains its exact JSON behavior and MCP `2025-06-18` negotiation. Modern clients use Cloudflare Agents' `createMcpHandler` factory and MCP SDK v2 with `2026-07-28` negotiation. Both lanes call one tool dispatcher and publish one set of tool schemas.
+Deploy serves one stateless `/mcp` route through Cloudflare Agents' `createMcpHandler`. The maintained handler negotiates both MCP `2026-07-28` and stateless `2025-06-18` clients, so Deploy owns one protocol implementation, one tool dispatcher, and one set of tool schemas.
 
-The repository is also the source of the `cuny-ai-lab` Codex marketplace and its `kale-deploy` plugin. That plugin names this Worker as its only MCP server and teaches only the tools published by this dispatcher. Plugin tests reject the retired service URL and retired GitHub-install tool names so assistant guidance cannot silently route publication through a second control plane.
+The repository is also the source of the `cuny-ai-lab` Codex marketplace and its `kale-deploy` plugin. That plugin names this Worker as its only MCP server and documents the tools published by this dispatcher.
 
 OAuth metadata sends browser authorization to the canonical Doorway origin's
 unlisted `https://tools.ailab.gc.cuny.edu/api/oauth/authorize` route. Doorway
@@ -56,7 +56,7 @@ Release lifecycle events go to Workers Logs and, when the production `CAIL_FLEET
 
 Tool discovery is generated from the same strict Zod schemas that validate calls, using Zod's supported JSON Schema 2020-12 conversion. Representable enums, identifier grammars, length ceilings, canonical base64 syntax, digest form, required keys, and closed object shapes therefore have one maintained source. The create-project runtime bounds the post-trim name in Unicode code points and adds one explicit closed ECMA-262 pattern override for the trim/non-empty boundary that Zod refinements cannot emit; the parity matrix validates the exported schemas with a draft-2020-12 validator. Runtime checks retain the decoded artifact-byte ceiling and digest semantics that JSON Schema cannot express.
 
-The package graph is pinned to `agents@0.20.1`, `@modelcontextprotocol/server@2.0.0`, `@modelcontextprotocol/client@2.0.0`, and the Agents peer `@modelcontextprotocol/sdk@1.30.0`. The frozen `2025-06-18` client conformance lane uses that same exact peer package; no second v1 SDK copy is installed. `0.20.1` is used instead of `0.20.0` because it corrects the Agents peer versions for the published MCP v2 packages. The `2026-07-28` protocol remains a release candidate, so the modern lane is additive and disposable: the provider, legacy lane, D1/R2 authority, and deployment boundary do not depend on it. `McpAgent`, Durable Objects for MCP sessions, bindings, ingress, and secrets remain absent.
+The package graph is pinned to `agents@0.20.1`, `@modelcontextprotocol/server@2.0.0`, `@modelcontextprotocol/client@2.0.0`, and the Agents peer `@modelcontextprotocol/sdk@1.30.0`. The v1 SDK remains only as an executed client-conformance check for the handler's maintained stateless compatibility. `McpAgent`, custom protocol adapters, Durable Objects for MCP sessions, bindings, ingress, and secrets remain absent.
 
 Reference: [Cloudflare Agents SDK v0.20.0 and MCP SDK v2](https://developers.cloudflare.com/changelog/post/2026-07-27-agents-sdk-v0.20.0-mcp-sdk-v2/)
 
