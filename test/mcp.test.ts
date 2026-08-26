@@ -7,16 +7,14 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import Ajv2020 from "ajv/dist/2020.js";
-import { z } from "zod";
 import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
 import type { Principal } from "../src/auth";
 import { apiErrorSnapshot } from "../src/domain/errors";
-import type { JsonObject, JsonValue } from "../src/domain/json";
+import type { JsonObject } from "../src/domain/json";
 import type { ThrownValue } from "../src/domain/values";
 import type { Env } from "../src/env";
 import {
   createMcpApiRequest,
-  handleLegacyMcpMessage,
   MAX_ARTIFACT_BASE64_CHARS,
   MAX_MCP_BODY_BYTES,
   MAX_MCP_RESPONSE_BYTES,
@@ -32,7 +30,6 @@ const principal: Principal = {
 
 const clients: Client[] = [];
 const modernClients: ModernClient[] = [];
-const delayedReleaseResponseSchema = z.object({ events: z.array(z.json()) }).passthrough();
 const validContentDigest = `sha-256=:${Buffer.alloc(32).toString("base64")}:`;
 const legacyTransportHeaders = {
   Accept: "application/json, text/event-stream",
@@ -550,56 +547,6 @@ describe("MCP tool argument boundary", () => {
     });
   });
 
-  test("returns JSON-RPC errors for malformed legacy requests", async () => {
-    const cases = [
-      {
-        body: { jsonrpc: "2.0", method: "initialize", params: {} },
-        error: { code: -32600, message: "Invalid Request" },
-        id: null,
-        status: 400,
-      },
-      {
-        body: { jsonrpc: "2.0", id: "unknown", method: "unknown", params: {} },
-        error: { code: -32601, message: "Method not found" },
-        id: "unknown",
-        status: 200,
-      },
-    ] as const;
-    for (const { body, error, id, status } of cases) {
-      // SAFETY: malformed legacy requests are rejected before dispatch and therefore do not need Env bindings.
-      const response = await handleMcpWithPrincipal(
-        new Request("https://deploy.invalid/mcp", {
-          method: "POST",
-          headers: legacyTransportHeaders,
-          body: JSON.stringify(body),
-        }),
-        {} as Env,
-        requestId,
-        principal,
-      );
-      expect(response.status).toBe(status);
-      expect(await response.json()).toEqual({ jsonrpc: "2.0", error, id });
-    }
-  });
-
-  test("keeps legacy and modern tool discovery byte-equivalent", async () => {
-    // SAFETY: discovery-only clients never dereference Env because no API call is dispatched.
-    const modern = await modernClientAgainst({} as Env);
-    const modernTools = (await modern.listTools()).tools;
-    // SAFETY: the legacy tools/list path is also discovery-only and does not dereference Env.
-    const legacy = await handleLegacyMcpMessage(
-      { jsonrpc: "2.0", id: "legacy-tools", method: "tools/list" },
-      "https://deploy.invalid/mcp",
-      {} as Env,
-      requestId,
-      principal,
-      new AbortController().signal,
-    );
-    // SAFETY: the legacy tools/list response is produced by the adapter's fixed JSON-RPC envelope.
-    const payload = (await legacy.json()) as { result: { tools: JsonValue[] } };
-    expect(payload.result.tools).toEqual(modernTools);
-  });
-
   test("standard SDK calls keep invalid tool arguments inside correlated MCP errors", async () => {
     let envReads = 0;
     // SAFETY: the hostile proxy intentionally throws on every Env read to prove argument validation runs first.
@@ -747,36 +694,16 @@ describe("MCP tool argument boundary", () => {
     }) as typeof atob;
 
     try {
-      const response = await handleMcpWithPrincipal(
-        new Request("https://deploy.invalid/mcp", {
-          method: "POST",
-          headers: legacyTransportHeaders,
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 7,
-            method: "tools/call",
-            params: {
-              name: "kale.upload_revision",
-              arguments: {
-                projectId: "prj_22222222222222222222222222222222",
-                artifactBase64: "A".repeat(MAX_ARTIFACT_BASE64_CHARS + 1),
-                contentDigest: validContentDigest,
-              },
-            },
-          }),
-        }),
-        env,
-        requestId,
-        principal,
-      );
-
-      expect(response.status).toBe(200);
-      // SAFETY: the size-rejection response is the fixed JSON-RPC envelope emitted by the MCP adapter.
-      const result = (await response.json()) as {
-        result: { content: [{ text: string }]; isError: boolean };
-      };
-      expect(result.result.isError).toBe(true);
-      expect(JSON.parse(result.result.content[0].text)).toEqual({
+      const result = await (await standardClientAgainst(env)).callTool({
+        name: "kale.upload_revision",
+        arguments: {
+          projectId: "prj_22222222222222222222222222222222",
+          artifactBase64: "A".repeat(MAX_ARTIFACT_BASE64_CHARS + 1),
+          contentDigest: validContentDigest,
+        },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(toolText(result))).toEqual({
         error: {
           code: "invalid_mcp_arguments",
           message: "The tool arguments don't match what the tool expects.",
@@ -808,36 +735,16 @@ describe("MCP tool argument boundary", () => {
     }) as typeof atob;
 
     try {
-      const response = await handleMcpWithPrincipal(
-        new Request("https://deploy.invalid/mcp", {
-          method: "POST",
-          headers: legacyTransportHeaders,
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 8,
-            method: "tools/call",
-            params: {
-              name: "kale.upload_revision",
-              arguments: {
-                projectId: "prj_22222222222222222222222222222222",
-                artifactBase64: "A".repeat(MAX_ARTIFACT_BASE64_CHARS),
-                contentDigest: validContentDigest,
-              },
-            },
-          }),
-        }),
-        env,
-        requestId,
-        principal,
-      );
-
-      expect(response.status).toBe(200);
-      // SAFETY: the size-rejection response is the fixed JSON-RPC envelope emitted by the MCP adapter.
-      const result = (await response.json()) as {
-        result: { content: [{ text: string }]; isError: boolean };
-      };
-      expect(result.result.isError).toBe(true);
-      expect(JSON.parse(result.result.content[0].text).error.code).toBe("invalid_mcp_arguments");
+      const result = await (await standardClientAgainst(env)).callTool({
+        name: "kale.upload_revision",
+        arguments: {
+          projectId: "prj_22222222222222222222222222222222",
+          artifactBase64: "A".repeat(MAX_ARTIFACT_BASE64_CHARS),
+          contentDigest: validContentDigest,
+        },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(toolText(result)).error.code).toBe("invalid_mcp_arguments");
       expect(atobCalls).toBe(0);
       expect(envReads).toBe(0);
     } finally {
@@ -1183,111 +1090,6 @@ describe("MCP tool argument boundary", () => {
     expect(request.signal.reason).toBe(reason);
   });
 
-  test("keeps a claimless legacy tools/call correlated when the adapter request is aborted", async () => {
-    const controller = new AbortController();
-    const requestBody = new ReadableStream<Uint8Array>({
-      start(streamController) {
-        streamController.enqueue(
-          new TextEncoder().encode(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              id: "legacy-adapter-abort",
-              method: "tools/call",
-              params: {
-                name: "kale.get_release",
-                arguments: validToolArguments["kale.get_release"],
-              },
-            }),
-          ),
-        );
-        streamController.close();
-      },
-    });
-    // SAFETY: this RequestInit intentionally uses a streaming body and Cloudflare's duplex extension to test adapter cancellation.
-    const request = new Request("https://deploy.invalid/mcp", {
-      method: "POST",
-      headers: legacyTransportHeaders,
-      body: requestBody,
-      duplex: "half",
-      signal: controller.signal,
-    } as RequestInit);
-    const lateError = new Error("PRIVATE_LEGACY_ADAPTER_LATE_REJECTION");
-    let effectCalls = 0;
-    let lateRejected = false;
-    let resolveDispatchStarted!: () => void;
-    const dispatchStarted = new Promise<void>((resolve) => {
-      resolveDispatchStarted = resolve;
-    });
-    // SAFETY: this fixture implements only the DB read that starts the deliberate late-rejection race.
-    const env = {
-      DB: {
-        prepare() {
-          return {
-            bind() {
-              return {
-                first: () => {
-                  effectCalls += 1;
-                  resolveDispatchStarted();
-                  return new Promise<never>((_, reject) => {
-                    setTimeout(() => {
-                      lateRejected = true;
-                      reject(lateError);
-                    }, 35);
-                  });
-                },
-              };
-            },
-          };
-        },
-      },
-    } as Env;
-    const unhandled: ThrownValue[] = [];
-    const onUnhandled = (reason: ThrownValue): void => {
-      unhandled.push(reason);
-    };
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      const pending = handleMcpWithPrincipal(request, env, requestId, principal);
-      await Promise.race([
-        dispatchStarted,
-        Bun.sleep(100).then(() => {
-          throw new Error("legacy adapter dispatch did not start");
-        }),
-      ]);
-      expect(effectCalls).toBe(1);
-      expect(requestBody.locked).toBe(false);
-
-      const reason = new Error("caller stopped claimless legacy adapter request");
-      controller.abort(reason);
-      const response = await pending;
-      expect(response.status).toBe(200);
-      expect(requestBody.locked).toBe(false);
-      // SAFETY: this adapter response is the fixed JSON-RPC envelope generated for the cancellation path.
-      const payload = (await response.json()) as {
-        jsonrpc: string;
-        id: JsonValue;
-        result: { content: [{ text: string }]; isError: boolean };
-      };
-      expect(payload.jsonrpc).toBe("2.0");
-      expect(payload.id).toBe("legacy-adapter-abort");
-      expect(payload.result.isError).toBe(true);
-      expect(JSON.parse(payload.result.content[0].text)).toEqual({
-        error: {
-          code: "request_cancelled",
-          message: "The request was cancelled.",
-          requestId,
-        },
-      });
-
-      await Bun.sleep(50);
-      expect(lateRejected).toBe(true);
-      expect(effectCalls).toBe(1);
-      expect(unhandled).toEqual([]);
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-  });
-
   test("closes the modern HTTP exchange when an adapter request is aborted", async () => {
     const controller = new AbortController();
     const request = modernRequest(
@@ -1352,214 +1154,6 @@ describe("MCP tool argument boundary", () => {
       expect(unhandled).toEqual([]);
     } finally {
       process.off("unhandledRejection", onUnhandled);
-    }
-  });
-
-  test("races a hung legacy API dispatch against caller abort and observes its late rejection", async () => {
-    const controller = new AbortController();
-    const lateError = new Error("LATE_LEGACY_DISPATCH_REJECTION");
-    let lateRejected = false;
-    // SAFETY: this fixture implements only the DB read that starts the deliberate late-rejection race.
-    const env = {
-      DB: {
-        prepare() {
-          return {
-            bind() {
-              return {
-                first: () =>
-                  new Promise<never>((_, reject) => {
-                    setTimeout(() => {
-                      lateRejected = true;
-                      reject(lateError);
-                    }, 30);
-                  }),
-              };
-            },
-          };
-        },
-      },
-    } as Env;
-    const pending = handleLegacyMcpMessage(
-      {
-        jsonrpc: "2.0",
-        id: "legacy-abort",
-        method: "tools/call",
-        params: {
-          name: "kale.get_release",
-          arguments: validToolArguments["kale.get_release"],
-        },
-      },
-      "https://deploy.invalid/mcp",
-      env,
-      requestId,
-      principal,
-      controller.signal,
-      1_000,
-    );
-    controller.abort(new Error("caller stopped legacy dispatch"));
-    const response = await pending;
-    // SAFETY: this adapter response is the fixed JSON-RPC envelope generated for the cancellation path.
-    const payload = (await response.json()) as { result: { content: [{ text: string }] } };
-    expect(JSON.parse(payload.result.content[0].text).error.code).toBe("request_cancelled");
-    await Bun.sleep(50);
-    expect(lateRejected).toBe(true);
-  });
-
-  test("returns a stable 504 when the whole legacy dispatch exceeds an injected deadline", async () => {
-    let lateRejected = false;
-    // SAFETY: this fixture implements only the DB read that starts the deliberate deadline race.
-    const env = {
-      DB: {
-        prepare() {
-          return {
-            bind() {
-              return {
-                first: () =>
-                  new Promise<never>((_, reject) => {
-                    setTimeout(() => {
-                      lateRejected = true;
-                      reject(new Error("LATE_LEGACY_DEADLINE_REJECTION"));
-                    }, 35);
-                  }),
-              };
-            },
-          };
-        },
-      },
-    } as Env;
-    const response = await handleLegacyMcpMessage(
-      {
-        jsonrpc: "2.0",
-        id: "legacy-deadline",
-        method: "tools/call",
-        params: {
-          name: "kale.get_release",
-          arguments: validToolArguments["kale.get_release"],
-        },
-      },
-      "https://deploy.invalid/mcp",
-      env,
-      requestId,
-      principal,
-      new AbortController().signal,
-      10,
-    );
-    // SAFETY: this adapter response is the fixed JSON-RPC envelope generated for the deadline path.
-    const payload = (await response.json()) as { result: { content: [{ text: string }] } };
-    expect(JSON.parse(payload.result.content[0].text)).toEqual({
-      error: {
-        code: "mcp_operation_timeout",
-        message:
-          "That took too long. For release writes, check the release status first, then reuse the same Idempotency-Key if you need to retry.",
-        requestId,
-      },
-    });
-    await Bun.sleep(50);
-    expect(lateRejected).toBe(true);
-  });
-
-  test("cancels a response that resolves after the deadline clock but before its timer callback", async () => {
-    const projectId = validToolArguments["kale.get_release"].projectId;
-    const releaseId = validToolArguments["kale.get_release"].releaseId;
-    const releaseRow = {
-      project_id: projectId,
-      release_id: releaseId,
-      revision_id: `rev_sha256_${"a".repeat(64)}`,
-      approval: "required",
-      status: "queued",
-      workflow_instance_id: releaseId,
-      prepared_digest: null,
-      publication_name: null,
-      rollback_of_release_id: null,
-      operational_subject: null,
-      request_id: requestId,
-      admitted_at: "2026-08-01T00:00:00.000Z",
-      created_at: "2026-08-01T00:00:00.000Z",
-      updated_at: "2026-08-01T00:00:00.000Z",
-    };
-    // SAFETY: this fixture implements the project/release/event reads needed by the delayed response race.
-    const env = {
-      DB: {
-        prepare(sql: string) {
-          return {
-            bind() {
-              return {
-                first: async () => {
-                  if (sql.includes("FROM projects"))
-                    return { project_id: projectId, owner_subject: principal.subject };
-                  if (sql.includes("FROM releases")) return releaseRow;
-                  if (sql.includes("event_count")) return { event_count: 0, event_bytes: 0 };
-                  throw new Error(`Unexpected test SQL: ${sql}`);
-                },
-                all: async () => ({ results: [] }),
-              };
-            },
-          };
-        },
-      },
-    } as Env;
-    let cancelCount = 0;
-    let cancelReason: ThrownValue;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode("{}"));
-      },
-      cancel(reason) {
-        cancelCount += 1;
-        cancelReason = reason;
-      },
-    });
-    const responseJsonDescriptor = Object.getOwnPropertyDescriptor(Response, "json");
-    const originalResponseJson = Response.json;
-    let apiResponseIntercepted = false;
-    Object.defineProperty(Response, "json", {
-      value: (value: JsonValue, init?: ResponseInit) => {
-        if (!apiResponseIntercepted && delayedReleaseResponseSchema.safeParse(value).success) {
-          apiResponseIntercepted = true;
-          const busyUntil = Date.now() + 40;
-          let spins = 0;
-          while (Date.now() < busyUntil) spins += 1;
-          void spins;
-          return new Response(body, { status: 200 });
-        }
-        return originalResponseJson.call(Response, value, init);
-      },
-    });
-    try {
-      const response = await handleLegacyMcpMessage(
-        {
-          jsonrpc: "2.0",
-          id: "legacy-late-response",
-          method: "tools/call",
-          params: {
-            name: "kale.get_release",
-            arguments: validToolArguments["kale.get_release"],
-          },
-        },
-        "https://deploy.invalid/mcp",
-        env,
-        requestId,
-        principal,
-        new AbortController().signal,
-        10,
-      );
-      // SAFETY: this adapter response is the fixed JSON-RPC envelope generated for the deadline path.
-      const payload = (await response.json()) as { result: { content: [{ text: string }] } };
-      expect(JSON.parse(payload.result.content[0].text)).toEqual({
-        error: {
-          code: "mcp_operation_timeout",
-          message:
-            "That took too long. For release writes, check the release status first, then reuse the same Idempotency-Key if you need to retry.",
-          requestId,
-        },
-      });
-      expect(apiResponseIntercepted).toBe(true);
-      await Bun.sleep(0);
-      expect(cancelCount).toBe(1);
-      expect(cancelReason).toBeInstanceOf(Error);
-      expect(body.locked).toBe(false);
-    } finally {
-      if (responseJsonDescriptor) Object.defineProperty(Response, "json", responseJsonDescriptor);
     }
   });
 });

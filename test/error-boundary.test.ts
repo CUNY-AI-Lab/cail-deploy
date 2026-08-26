@@ -1,19 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { TEST_SUBJECTS } from "@cuny-ai-lab/cail-identity/testing";
-import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
-import type { Principal } from "../src/auth";
 import { ApiError, errorResponse } from "../src/domain/errors";
 import type { ThrownValue } from "../src/domain/values";
 import type { Env } from "../src/env";
 import { workerHandler } from "../src/handler";
 
 const requestId = "019f8bdc-342a-76e1-ba71-005d69808f86";
-const principal: Principal = {
-  subject: TEST_SUBJECTS.alice,
-  authentication: "cail-identity-jwt",
-};
-
 interface HostileValue {
   value: object;
   trapCount(): number;
@@ -89,28 +82,6 @@ function projectRequest(correlation = requestId): Request {
       "X-CAIL-Request-Id": correlation,
     },
     body: JSON.stringify({ name: "Typed boundary regression" }),
-  });
-}
-
-function mcpCreateProjectRequest(): Request {
-  return new Request("https://deploy.invalid/mcp", {
-    method: "POST",
-    headers: {
-      Accept: "application/json, text/event-stream",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 7,
-      method: "tools/call",
-      params: {
-        name: "kale.create_project",
-        arguments: {
-          name: "Typed boundary regression",
-          idempotencyKey: "typed-boundary-regression",
-        },
-      },
-    }),
   });
 }
 
@@ -220,37 +191,5 @@ describe("owned API error boundary", () => {
     expect(error.requestId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     );
-  });
-
-  test("contains hostile service rejection inside the correlated MCP tool envelope", async () => {
-    const hostile = hostileValue("MCP_SERVICE");
-    const response = await handleMcpWithPrincipal(
-      mcpCreateProjectRequest(),
-      rejectingEnv(() => hostile.value),
-      requestId,
-      principal,
-    );
-    const body = z
-      .object({
-        result: z.object({
-          content: z.tuple([z.object({ text: z.string() })]),
-          isError: z.boolean(),
-        }),
-      })
-      .parse(await response.json());
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("X-CAIL-Request-Id")).toBe(requestId);
-    expect(response.headers.get("x-request-id")).toBe(requestId);
-    expect(body.result.isError).toBe(true);
-    expect(JSON.parse(body.result.content[0].text)).toEqual({
-      error: {
-        code: "internal_error",
-        message: "The request could not be completed.",
-        requestId,
-      },
-    });
-    expect(body.result.content[0].text).not.toContain(hostile.sentinel.message);
-    expect(hostile.trapCount()).toBe(0);
   });
 });

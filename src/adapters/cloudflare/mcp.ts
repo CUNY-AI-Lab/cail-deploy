@@ -1,7 +1,6 @@
 import {
   hostHeaderValidationResponse,
   isJsonContentType,
-  isLegacyRequest,
   originValidationResponse,
 } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
@@ -10,7 +9,7 @@ import type { Principal } from "../../auth";
 import { apiErrorSnapshot } from "../../domain/errors";
 import type { JsonValue } from "../../domain/json";
 import type { Env } from "../../env";
-import { createKaleMcpServer, handleLegacyMcpMessage, readMcpMessage } from "../../mcp";
+import { createKaleMcpServer, readMcpMessage } from "../../mcp";
 
 function protocolError(status: number, code: number, message: string, requestId: string): Response {
   return Response.json(
@@ -82,21 +81,10 @@ export async function handleMcpWithPrincipal(
     headers: request.headers,
     signal: request.signal,
   });
-  if (await isLegacyRequest(transportRequest, parsedBody)) {
-    return handleLegacyMcpMessage(
-      parsedBody,
-      request.url,
-      env,
-      requestId,
-      principal,
-      request.signal,
-    );
-  }
   const handler = createMcpHandler(
     () => createKaleMcpServer(request.url, env, requestId, principal, request.signal),
     {
       route: "/mcp",
-      legacy: "reject",
       corsOptions: false,
       allowedOriginHostnames: "*",
     },
