@@ -26,9 +26,6 @@ export const MAX_ARTIFACT_BASE64_CHARS = Math.ceil(MAX_ARTIFACT_BYTES / 3) * 4;
 export const MAX_MCP_BODY_BYTES = MAX_ARTIFACT_BASE64_CHARS + 16 * 1024;
 export const MAX_MCP_RESPONSE_BYTES = MAX_MCP_BODY_BYTES;
 export const MAX_MCP_OPERATION_MS = 30_000;
-// Compatibility alias for existing response-reader callers; tool operations
-// use the single MAX_MCP_OPERATION_MS budget for dispatch and response reads.
-export const MAX_MCP_INTERNAL_RESPONSE_MS = MAX_MCP_OPERATION_MS;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 const SHA256_CONTENT_DIGEST = /^sha-256=:[A-Za-z0-9+/]{43}=:$/u;
 const jsonSchemaPropertySchema = z.record(z.string(), z.json());
@@ -303,16 +300,12 @@ export async function readMcpResponseText(
   response: Response,
   signal: AbortSignal,
   requestId: string,
-  timeoutMs = MAX_MCP_INTERNAL_RESPONSE_MS,
+  timeoutMs = MAX_MCP_OPERATION_MS,
   externalDeadlineSignal?: AbortSignal,
   externalDeadlineError?: ApiError,
 ): Promise<string> {
   if (!response.body) return "";
-  if (
-    !Number.isSafeInteger(timeoutMs) ||
-    timeoutMs < 1 ||
-    timeoutMs > MAX_MCP_INTERNAL_RESPONSE_MS
-  ) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_MCP_OPERATION_MS) {
     throw new Error("MCP internal response timeout is outside its safe bounds.");
   }
   const reader = response.body.getReader();
@@ -381,7 +374,7 @@ async function mcpToolResult(
   response: Response,
   requestId: string,
   signal: AbortSignal,
-  timeoutMs = MAX_MCP_INTERNAL_RESPONSE_MS,
+  timeoutMs = MAX_MCP_OPERATION_MS,
   externalDeadlineSignal?: AbortSignal,
   externalDeadlineError?: ApiError,
 ): Promise<CallToolResult> {
