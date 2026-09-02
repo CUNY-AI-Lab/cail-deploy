@@ -2,7 +2,8 @@ import { type CallToolResult, Server, type Tool } from "@modelcontextprotocol/se
 import { z } from "zod";
 import { ARTIFACT_MEDIA_TYPE, handleApiForPrincipal, MAX_ARTIFACT_BYTES } from "./api";
 import type { Principal } from "./auth";
-import { emitDeployDiagnostic, observeDetachedCleanup } from "./diagnostics";
+import { readBoundedStream } from "./bounded-stream";
+import { observeDetachedCleanup } from "./diagnostics";
 import {
   createProjectSchema,
   createReleaseSchema,
@@ -166,133 +167,36 @@ function requestCancelled<T>(requestId: string, cause: T): ApiError {
   return new ApiError(499, "request_cancelled", "The request was cancelled.", { cause });
 }
 
-type Cancellation = <T>(reason?: T) => void;
-
-function cancelMcpBody<T>(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  requestId: string,
-  reason?: T,
-): void {
-  observeDetachedCleanup(() => reader.cancel(reason), "mcp_body_cancel_failed", { requestId });
-}
-
-function releaseMcpBodyReader(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  requestId: string,
-): void {
-  try {
-    reader.releaseLock();
-  } catch {
-    emitDeployDiagnostic("mcp_body_release_failed", { requestId });
-  }
-}
-
-async function readMcpChunk(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  signal: AbortSignal,
-  requestId: string,
-  cancel: Cancellation,
-): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (signal.aborted) {
-    const error = requestCancelled(requestId, signal.reason);
-    cancel(signal.reason);
-    throw error;
-  }
-  return await new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
-    let settled = false;
-    const finish = (continuation: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      continuation();
-    };
-    const onAbort = () => {
-      const error = requestCancelled(requestId, signal.reason);
-      cancel(signal.reason);
-      finish(() => reject(error));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    void reader.read().then(
-      (result) => finish(() => resolve(result)),
-      (cause) => finish(() => reject(cause)),
-    );
-  });
-}
-
 export async function readMcpMessage(request: Request, requestId: string): Promise<JsonValue> {
   const tooLarge = () => new ApiError(413, "mcp_request_too_large", "The request is too large.");
   const declaredLength = request.headers.get("Content-Length");
-  if (
+  const declaredTooLarge =
     declaredLength !== null &&
     /^\d+$/u.test(declaredLength) &&
-    Number(declaredLength) > MAX_MCP_BODY_BYTES
-  ) {
-    if (request.body) {
-      const reader = request.body.getReader();
-      cancelMcpBody(reader, requestId);
-      releaseMcpBodyReader(reader, requestId);
-    }
-    throw tooLarge();
-  }
-  if (!request.body) throw new ApiError(400, "invalid_mcp", "The request body must be valid JSON.");
-
-  const reader = request.body.getReader();
-  const signal = request.signal ?? new AbortController().signal;
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let cancellationStarted = false;
-  const cancel: Cancellation = (reason) => {
-    if (cancellationStarted) return;
-    cancellationStarted = true;
-    cancelMcpBody(reader, requestId, reason);
-  };
-  try {
-    while (true) {
-      const { done, value } = await readMcpChunk(reader, signal, requestId, cancel);
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_MCP_BODY_BYTES) {
-        const error = tooLarge();
-        cancel(error);
-        throw error;
-      }
-      chunks.push(value);
-    }
-  } finally {
-    releaseMcpBodyReader(reader, requestId);
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
+    Number(declaredLength) > MAX_MCP_BODY_BYTES;
+  const invalidBody = () =>
+    new ApiError(400, "invalid_mcp", "The request body must be valid JSON.");
+  const bytes = await readBoundedStream({
+    body: () => request.body,
+    signal: request.signal ?? new AbortController().signal,
+    limit: MAX_MCP_BODY_BYTES,
+    overflowError: tooLarge,
+    abortError: (cause) => requestCancelled(requestId, cause),
+    missingBodyError: invalidBody,
+    cancelDiagnostic: "mcp_body_cancel_failed",
+    releaseDiagnostic: "mcp_body_release_failed",
+    diagnosticContext: { requestId },
+    forwardCancelReason: true,
+    cancelOnError: false,
+    declaredTooLarge,
+    output: "bytes",
+  });
   try {
     return jsonValueSchema.parse(
       JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
     );
   } catch (cause) {
     throw new ApiError(400, "invalid_mcp", "The request body must be valid JSON.", { cause });
-  }
-}
-
-function cancelMcpResponse<T>(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  requestId: string,
-  reason?: T,
-): void {
-  observeDetachedCleanup(() => reader.cancel(reason), "mcp_response_cancel_failed", { requestId });
-}
-
-function releaseMcpResponseReader(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  requestId: string,
-): void {
-  try {
-    reader.releaseLock();
-  } catch {
-    emitDeployDiagnostic("mcp_response_release_failed", { requestId });
   }
 }
 
@@ -304,11 +208,9 @@ export async function readMcpResponseText(
   externalDeadlineSignal?: AbortSignal,
   externalDeadlineError?: ApiError,
 ): Promise<string> {
-  if (!response.body) return "";
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_MCP_OPERATION_MS) {
     throw new Error("MCP internal response timeout is outside its safe bounds.");
   }
-  const reader = response.body.getReader();
   const deadlineError =
     externalDeadlineError ??
     new ApiError(
@@ -323,45 +225,28 @@ export async function readMcpResponseText(
   const readSignal = externalDeadlineSignal
     ? AbortSignal.any([signal, externalDeadlineSignal])
     : AbortSignal.any([signal, deadlineController?.signal ?? new AbortController().signal]);
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let total = 0;
-  let text = "";
-  let complete = false;
-  let cancellationStarted = false;
-  const cancel: Cancellation = (reason) => {
-    if (cancellationStarted) return;
-    cancellationStarted = true;
-    cancelMcpResponse(reader, requestId, reason);
-  };
   try {
-    while (true) {
-      const { done, value } = await readMcpChunk(reader, readSignal, requestId, cancel);
-      if (done) {
-        complete = true;
-        text += decoder.decode();
-        return text;
-      }
-      total += value.byteLength;
-      if (total > MAX_MCP_RESPONSE_BYTES) {
-        const error = new ApiError(
-          502,
-          "mcp_response_too_large",
-          "The response is too large to return.",
-        );
-        cancel(error);
-        throw error;
-      }
-      text += decoder.decode(value, { stream: true });
-    }
+    return await readBoundedStream({
+      body: () => response.body,
+      signal: readSignal,
+      limit: MAX_MCP_RESPONSE_BYTES,
+      overflowError: () =>
+        new ApiError(502, "mcp_response_too_large", "The response is too large to return."),
+      abortError: (cause) => requestCancelled(requestId, cause),
+      cancelDiagnostic: "mcp_response_cancel_failed",
+      releaseDiagnostic: "mcp_response_release_failed",
+      diagnosticContext: { requestId },
+      forwardCancelReason: true,
+      cancelOnError: true,
+      output: "text",
+    });
   } catch (error) {
-    if (!complete) cancel(error);
     if (externalDeadlineSignal?.aborted && !signal.aborted) throw deadlineError;
     if (!externalDeadlineSignal && deadlineController?.signal.aborted && !signal.aborted)
       throw deadlineError;
     throw error;
   } finally {
     if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-    releaseMcpResponseReader(reader, requestId);
   }
 }
 

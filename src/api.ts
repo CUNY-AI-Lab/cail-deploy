@@ -1,7 +1,8 @@
 import { publicationTimeoutMs, publishWorker } from "./adapters/cloudflare/wfp";
 import type { Principal } from "./auth";
 import { authenticate } from "./auth";
-import { emitDeployDiagnostic, observeDetachedCleanup } from "./diagnostics";
+import { readBoundedStream } from "./bounded-stream";
+import { emitDeployDiagnostic } from "./diagnostics";
 import {
   approvalSchema,
   artifactSchema,
@@ -181,74 +182,36 @@ function parsedBody<T>(result: { success: true; data: T } | { success: false }):
   return result.data;
 }
 
-function cancelRequestBody(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  requestId: string,
-): void {
-  observeDetachedCleanup(() => reader.cancel(), "request_body_cancel_failed", { requestId });
-}
-
 function requestCancelled(requestId: string, cause: unknown): ApiError {
   return new ApiError(499, "request_cancelled", "The request was cancelled.", {
     cause,
   });
 }
 
-async function readArtifactChunk(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  signal: AbortSignal,
-  requestId: string,
-  cancel: () => void,
-): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (signal.aborted) {
-    cancel();
-    throw requestCancelled(requestId, signal.reason);
-  }
-
-  return await new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
-    let settled = false;
-    const finish = (continuation: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      continuation();
-    };
-    const onAbort = () => {
-      cancel();
-      finish(() => reject(requestCancelled(requestId, signal.reason)));
-    };
-
-    signal.addEventListener("abort", onAbort, { once: true });
-    void reader.read().then(
-      (result) => finish(() => resolve(result)),
-      (cause) => finish(() => reject(cause)),
-    );
-  });
-}
-
-function releaseRequestBodyReader(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  requestId: string,
-): void {
-  try {
-    reader.releaseLock();
-  } catch {
-    emitDeployDiagnostic("request_body_release_failed", { requestId });
-  }
-}
-
 export async function readArtifactBody(request: Request, requestId: string): Promise<Uint8Array> {
   const declaredLength = request.headers.get("Content-Length");
-  if (
+  const declaredTooLarge =
     declaredLength !== null &&
     /^\d+$/u.test(declaredLength) &&
-    Number(declaredLength) > MAX_ARTIFACT_BYTES
-  ) {
-    if (request.body) {
-      const reader = request.body.getReader();
-      cancelRequestBody(reader, requestId);
-      releaseRequestBodyReader(reader, requestId);
-    }
+    Number(declaredLength) > MAX_ARTIFACT_BYTES;
+  const sizeError = () =>
+    new ApiError(413, "artifact_size_invalid", "Your upload must be between 1 byte and 2 MiB.");
+  const bytes = await readBoundedStream({
+    body: () => request.body,
+    signal: request.signal ?? new AbortController().signal,
+    limit: MAX_ARTIFACT_BYTES,
+    overflowError: sizeError,
+    abortError: (cause) => requestCancelled(requestId, cause),
+    missingBodyError: sizeError,
+    cancelDiagnostic: "request_body_cancel_failed",
+    releaseDiagnostic: "request_body_release_failed",
+    diagnosticContext: { requestId },
+    forwardCancelReason: false,
+    cancelOnError: false,
+    declaredTooLarge,
+    output: "bytes",
+  });
+  if (bytes.byteLength === 0) {
     throw new ApiError(
       413,
       "artifact_size_invalid",
@@ -256,57 +219,6 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
     );
   }
 
-  if (!request.body) {
-    throw new ApiError(
-      413,
-      "artifact_size_invalid",
-      "Your upload must be between 1 byte and 2 MiB.",
-    );
-  }
-
-  const reader = request.body.getReader();
-  const signal = request.signal ?? new AbortController().signal;
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let cancellationStarted = false;
-  const cancel = () => {
-    if (cancellationStarted) return;
-    cancellationStarted = true;
-    cancelRequestBody(reader, requestId);
-  };
-  try {
-    while (true) {
-      const { done, value } = await readArtifactChunk(reader, signal, requestId, cancel);
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_ARTIFACT_BYTES) {
-        cancel();
-        throw new ApiError(
-          413,
-          "artifact_size_invalid",
-          "Your upload must be between 1 byte and 2 MiB.",
-        );
-      }
-      chunks.push(value);
-    }
-  } finally {
-    releaseRequestBodyReader(reader, requestId);
-  }
-
-  if (total === 0) {
-    throw new ApiError(
-      413,
-      "artifact_size_invalid",
-      "Your upload must be between 1 byte and 2 MiB.",
-    );
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
   return bytes;
 }
 

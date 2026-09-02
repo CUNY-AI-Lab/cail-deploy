@@ -1,3 +1,4 @@
+import { readBoundedStream } from "../../bounded-stream";
 import { emitDeployDiagnostic, observeDetachedCleanup } from "../../diagnostics";
 import { ApiError, apiErrorSnapshot } from "../../domain/errors";
 import type { Env } from "../../env";
@@ -16,35 +17,6 @@ function ambiguousResult(cause?: unknown): ApiError {
     "We could not confirm whether this release published. Check the release status. If it is still publishing, use the reconcile action.",
     cause === undefined ? undefined : { cause },
   );
-}
-
-function readWithSignal(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  signal: AbortSignal,
-): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (signal.aborted) {
-    return Promise.reject(signal.reason);
-  }
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (
-      result:
-        | { ok: true; value: ReadableStreamReadResult<Uint8Array> }
-        | { ok: false; reason: unknown },
-    ): void => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      if (result.ok) resolve(result.value);
-      else reject(result.reason);
-    };
-    const onAbort = (): void => finish({ ok: false, reason: signal.reason });
-    signal.addEventListener("abort", onAbort, { once: true });
-    void reader.read().then(
-      (value) => finish({ ok: true, value }),
-      (reason) => finish({ ok: false, reason }),
-    );
-  });
 }
 
 function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
@@ -82,42 +54,23 @@ function discardResponseBody(response: Response): void {
 }
 
 async function readResponseText(response: Response, signal: AbortSignal): Promise<string> {
-  let body: ReadableStream<Uint8Array> | null;
   try {
-    body = response.body;
+    return await readBoundedStream({
+      body: () => response.body,
+      signal,
+      limit: MAX_RESPONSE_BYTES,
+      overflowError: ambiguousResult,
+      bodyAccessError: ambiguousResult,
+      missingBodyError: ambiguousResult,
+      cancelDiagnostic: "wfp_response_body_cancel_failed",
+      releaseDiagnostic: "wfp_response_body_release_failed",
+      diagnosticContext: { boundary: "wfp_response" },
+      forwardCancelReason: false,
+      cancelOnError: true,
+      output: "text",
+    });
   } catch (cause) {
     throw ambiguousResult(cause);
-  }
-  if (!body) throw ambiguousResult();
-  let reader: ReadableStreamDefaultReader<Uint8Array>;
-  try {
-    reader = body.getReader();
-  } catch (cause) {
-    throw ambiguousResult(cause);
-  }
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let complete = false;
-  let byteLength = 0;
-  let text = "";
-  try {
-    while (true) {
-      const result = await readWithSignal(reader, signal);
-      if (result.done) {
-        complete = true;
-        text += decoder.decode();
-        return text;
-      }
-      byteLength += result.value.byteLength;
-      if (byteLength > MAX_RESPONSE_BYTES) {
-        throw ambiguousResult();
-      }
-      text += decoder.decode(result.value, { stream: true });
-    }
-  } catch (cause) {
-    if (!complete) cancelReader(reader);
-    throw ambiguousResult(cause);
-  } finally {
-    releaseReader(reader);
   }
 }
 
