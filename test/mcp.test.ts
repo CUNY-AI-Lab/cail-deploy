@@ -18,6 +18,7 @@ import {
   MAX_ARTIFACT_BASE64_CHARS,
   MAX_MCP_BODY_BYTES,
   MAX_MCP_RESPONSE_BYTES,
+  readMcpMessage,
   readMcpResponseText,
   tools,
 } from "../src/mcp";
@@ -795,6 +796,17 @@ describe("MCP tool argument boundary", () => {
     } finally {
       console.error = originalConsoleError;
     }
+  });
+
+  test("declared oversize without a body still rejects with 413", async () => {
+    const request = new Request("https://deploy.example/mcp", {
+      method: "POST",
+      headers: { "Content-Length": String(MAX_MCP_BODY_BYTES + 1) },
+    });
+    await expect(readMcpMessage(request, requestId)).rejects.toMatchObject({
+      status: 413,
+      code: "mcp_request_too_large",
+    });
   });
 
   test("maps oversized MCP responses to their code and diagnostic labels", async () => {

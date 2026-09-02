@@ -63,6 +63,7 @@ export async function readBoundedStream(
 ): Promise<Uint8Array | string> {
   const body = accessBody(options.body, options.bodyAccessError);
   if (!body) {
+    if (options.declaredTooLarge) throw options.overflowError();
     if (options.missingBodyError) throw options.missingBodyError();
     return options.output === "bytes" ? new Uint8Array() : "";
   }
