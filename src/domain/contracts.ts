@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const SUBJECT_PATTERN = /^cail-[0-9a-f]{32}$/u;
 export const PROJECT_PATTERN = /^prj_[0-9a-f]{32}$/u;
-export const REVISION_PATTERN = /^rev_sha256_[0-9a-f]{64}$/u;
+const REVISION_PATTERN = /^rev_sha256_[0-9a-f]{64}$/u;
 export const RELEASE_PATTERN = /^rel_[0-9a-f]{32}$/u;
 
 const safePath = z
@@ -62,16 +62,3 @@ export const approvalSchema = z.object({ decision: z.literal("approved") }).stri
 export const rollbackSchema = z.object({ approval: releaseApprovalSchema }).strict();
 
 export type Artifact = z.infer<typeof artifactSchema>;
-export type CreateRelease = z.infer<typeof createReleaseSchema>;
-
-export const releaseStatuses = [
-  "queued",
-  "validating",
-  "building",
-  "prepared",
-  "awaiting_approval",
-  "publishing",
-  "reconciling",
-  "live",
-  "failed",
-] as const;

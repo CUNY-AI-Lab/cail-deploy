@@ -20,16 +20,14 @@ function ambiguousResult(cause?: unknown): ApiError {
 }
 
 function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
-  observeDetachedCleanup(() => reader.cancel(), "wfp_response_body_cancel_failed", {
-    boundary: "wfp_response",
-  });
+  observeDetachedCleanup(() => reader.cancel(), "wfp_response_body_cancel_failed", {});
 }
 
 function releaseReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
   try {
     reader.releaseLock();
   } catch {
-    emitDeployDiagnostic("wfp_response_body_release_failed", { boundary: "wfp_response" });
+    emitDeployDiagnostic("wfp_response_body_release_failed", {});
   }
 }
 
@@ -38,7 +36,7 @@ function discardResponseBody(response: Response): void {
   try {
     body = response.body;
   } catch {
-    emitDeployDiagnostic("wfp_response_body_cancel_failed", { boundary: "wfp_response" });
+    emitDeployDiagnostic("wfp_response_body_cancel_failed", {});
     return;
   }
   if (!body) return;
@@ -46,7 +44,7 @@ function discardResponseBody(response: Response): void {
   try {
     reader = body.getReader();
   } catch {
-    emitDeployDiagnostic("wfp_response_body_cancel_failed", { boundary: "wfp_response" });
+    emitDeployDiagnostic("wfp_response_body_cancel_failed", {});
     return;
   }
   cancelReader(reader);
@@ -54,24 +52,21 @@ function discardResponseBody(response: Response): void {
 }
 
 async function readResponseText(response: Response, signal: AbortSignal): Promise<string> {
-  try {
-    return await readBoundedStream({
-      body: () => response.body,
-      signal,
-      limit: MAX_RESPONSE_BYTES,
-      overflowError: ambiguousResult,
-      bodyAccessError: ambiguousResult,
-      missingBodyError: ambiguousResult,
-      cancelDiagnostic: "wfp_response_body_cancel_failed",
-      releaseDiagnostic: "wfp_response_body_release_failed",
-      diagnosticContext: { boundary: "wfp_response" },
-      forwardCancelReason: false,
-      cancelOnError: true,
-      output: "text",
-    });
-  } catch (cause) {
-    throw ambiguousResult(cause);
-  }
+  return readBoundedStream({
+    body: () => response.body,
+    signal,
+    limit: MAX_RESPONSE_BYTES,
+    overflowError: ambiguousResult,
+    bodyAccessError: ambiguousResult,
+    readError: ambiguousResult,
+    missingBodyError: ambiguousResult,
+    cancelDiagnostic: "wfp_response_body_cancel_failed",
+    releaseDiagnostic: "wfp_response_body_release_failed",
+    diagnosticContext: {},
+    forwardCancelReason: false,
+    cancelOnError: true,
+    output: "text",
+  });
 }
 
 const publicationEnvelopeSchema = z

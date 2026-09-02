@@ -208,6 +208,7 @@ export async function readMcpResponseText(
   externalDeadlineSignal?: AbortSignal,
   externalDeadlineError?: ApiError,
 ): Promise<string> {
+  if (!response.body) return "";
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_MCP_OPERATION_MS) {
     throw new Error("MCP internal response timeout is outside its safe bounds.");
   }

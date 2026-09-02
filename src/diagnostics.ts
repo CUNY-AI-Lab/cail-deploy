@@ -8,7 +8,6 @@ export type DeployDiagnostic =
   | "request_body_release_failed"
   | "wfp_response_body_cancel_failed"
   | "wfp_response_body_release_failed"
-  | "workflow_finalization_diagnostic_unattached"
   | "workflow_terminal_finalization_failed";
 
 const diagnosticVocabulary = {
@@ -48,24 +47,16 @@ const diagnosticVocabulary = {
     event: "deploy.wfp.response.body_release_failed",
     error: "body_release_failed",
   },
-  workflow_finalization_diagnostic_unattached: {
-    event: "deploy.workflow.finalization_diagnostic_unattached",
-    error: "finalization_diagnostic_unattached",
-  },
   workflow_terminal_finalization_failed: {
     event: "deploy.workflow.terminal_finalization_failed",
     error: "terminal_finalization_failed",
   },
 } satisfies Record<DeployDiagnostic, { event: string; error: string }>;
 
-export type DiagnosticContext =
-  | {
-      requestId: string;
-      releaseId?: string;
-    }
-  | {
-      boundary: "wfp_response";
-    };
+export interface DiagnosticContext {
+  requestId?: string;
+  releaseId?: string;
+}
 
 interface DeployDiagnosticRecord {
   event: string;

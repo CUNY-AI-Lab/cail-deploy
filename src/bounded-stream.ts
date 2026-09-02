@@ -14,6 +14,7 @@ interface ReadBoundedStreamOptions {
   readonly overflowError: () => Error;
   readonly abortError?: FailureMapper;
   readonly bodyAccessError?: FailureMapper;
+  readonly readError?: FailureMapper;
   readonly missingBodyError?: () => Error;
   readonly cancelDiagnostic: DeployDiagnostic;
   readonly releaseDiagnostic: DeployDiagnostic;
@@ -141,7 +142,7 @@ export async function readBoundedStream(
     }
   } catch (error) {
     if (options.cancelOnError && !complete) cancel(error);
-    throw error;
+    throw options.readError ? options.readError(error) : error;
   } finally {
     release();
   }

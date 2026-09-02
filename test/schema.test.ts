@@ -8,7 +8,7 @@ import {
   readReleaseEventHistory,
 } from "../src/api";
 import { apiErrorSnapshot } from "../src/domain/errors";
-import type { ThrownValue } from "../src/domain/values";
+import type { ThrownValue } from "./helpers";
 import { CONSUME_CONSENT_NONCE_SQL } from "../src/oauth-consent";
 import {
   appendReleaseStatus,

@@ -53,8 +53,9 @@ export function emitReleaseTerminal(
   requestId: string,
   logSubject: string | undefined,
   admittedAt: string,
-  outcome: "ok" | "error" | "denied",
-  reason: "completed" | "upstream_failure" | "denied",
+  terminal:
+    | { outcome: "ok"; reason: "completed" }
+    | { outcome: "error"; reason: "upstream_failure" },
   errorType?: string,
 ): void {
   const context = readLoggingContext(env);
@@ -70,21 +71,10 @@ export function emitReleaseTerminal(
     route: "/v1/projects/{projectId}/releases",
     duration_ms: Math.max(0, Date.now() - Date.parse(admittedAt)),
   };
-  if (outcome === "ok" && reason === "completed") {
-    context.logger.emit(CAIL_EVENTS.ACTION_TERMINAL, {
-      ...common,
-      terminal: { outcome: "ok", reason: "completed" },
-    });
+  if (terminal.outcome === "ok") {
+    context.logger.emit(CAIL_EVENTS.ACTION_TERMINAL, { ...common, terminal });
     return;
   }
-  if (outcome === "denied" && reason === "denied") {
-    context.logger.emit(CAIL_EVENTS.ACTION_TERMINAL, {
-      ...common,
-      terminal: { outcome: "denied", reason: "denied" },
-    });
-    return;
-  }
-  const terminal = { outcome: "error" as const, reason: "upstream_failure" as const };
   if (errorType) {
     context.logger.emit(CAIL_EVENTS.ACTION_TERMINAL, {
       ...common,

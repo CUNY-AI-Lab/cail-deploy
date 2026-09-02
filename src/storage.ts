@@ -57,8 +57,8 @@ export interface ReleaseTransitionResult {
   state: ReleaseTransitionState;
 }
 
-const TERMINAL_RELEASE_STATUSES = ["live", "failed"] as const;
-const NONTERMINAL_RELEASE_STATUSES = [
+export const TERMINAL_RELEASE_STATUSES = ["live", "failed"] as const;
+export const NONTERMINAL_RELEASE_STATUSES = [
   "queued",
   "validating",
   "building",
@@ -104,6 +104,13 @@ const reconciliationClaimSchema = z.union([
   z.object({ state: z.literal("retryable") }).strict(),
 ]);
 
+type ReconciliationRow = {
+  request_digest: string;
+  response_json: string;
+  created_at: string;
+  lease_expired: number | null;
+};
+
 function parseReconciliationClaim(value: string): ReconciliationClaim {
   try {
     return reconciliationClaimSchema.parse(JSON.parse(value));
@@ -117,16 +124,37 @@ function parseReconciliationClaim(value: string): ReconciliationClaim {
   }
 }
 
+function validatedReconciliationClaim(
+  row: ReconciliationRow | null,
+  requestDigest: string,
+): ReconciliationClaim | null {
+  if (!row) return null;
+  if (row.request_digest !== requestDigest) {
+    throw new ApiError(
+      500,
+      "reconciliation_record_invalid",
+      "Something went wrong processing this release. Try again.",
+    );
+  }
+  return parseReconciliationClaim(row.response_json);
+}
+
+function reconciliationLeaseExpired(row: ReconciliationRow): 0 | 1 {
+  if (row.lease_expired !== 0 && row.lease_expired !== 1) {
+    throw new ApiError(
+      500,
+      "reconciliation_record_invalid",
+      "Something went wrong processing this release. Try again.",
+    );
+  }
+  return row.lease_expired;
+}
+
 async function reconciliationRow(
   env: Env,
   release: ReleaseRow,
   leaseMs: number,
-): Promise<{
-  request_digest: string;
-  response_json: string;
-  created_at: string;
-  lease_expired: number | null;
-} | null> {
+): Promise<ReconciliationRow | null> {
   return env.DB.prepare(
     `SELECT request_digest, response_json, created_at,
        CASE
@@ -143,12 +171,7 @@ async function reconciliationRow(
       reconciliationOperation(release.release_id),
       RECONCILIATION_KEY,
     )
-    .first<{
-      request_digest: string;
-      response_json: string;
-      created_at: string;
-      lease_expired: number | null;
-    }>();
+    .first<ReconciliationRow>();
 }
 
 export async function acquireReconciliationAuthority(
@@ -204,26 +227,13 @@ export async function acquireReconciliationAuthority(
   }
 
   let row = await reconciliationRow(env, release, leaseMs);
-  if (!row) return { state: "blocked" };
-  if (row.request_digest !== requestDigest) {
-    throw new ApiError(
-      500,
-      "reconciliation_record_invalid",
-      "Something went wrong processing this release. Try again.",
-    );
-  }
-  let claim = parseReconciliationClaim(row.response_json);
+  let claim = validatedReconciliationClaim(row, requestDigest);
+  if (!row || !claim) return { state: "blocked" };
   if (claim.state === "complete") {
     return { state: "complete", publicationName: claim.publicationName };
   }
-  if (row.lease_expired !== 0 && row.lease_expired !== 1) {
-    throw new ApiError(
-      500,
-      "reconciliation_record_invalid",
-      "Something went wrong processing this release. Try again.",
-    );
-  }
-  if (claim.state === "active" && row.lease_expired === 0) {
+  const leaseExpired = reconciliationLeaseExpired(row);
+  if (claim.state === "active" && leaseExpired === 0) {
     return { state: "in_progress" };
   }
   const retryable = claim.state === "retryable";
@@ -271,27 +281,13 @@ export async function acquireReconciliationAuthority(
   }
 
   row = await reconciliationRow(env, release, leaseMs);
-  if (!row) return { state: "blocked" };
-  if (row.request_digest !== requestDigest) {
-    throw new ApiError(
-      500,
-      "reconciliation_record_invalid",
-      "Something went wrong processing this release. Try again.",
-    );
-  }
-  claim = parseReconciliationClaim(row.response_json);
+  claim = validatedReconciliationClaim(row, requestDigest);
+  if (!row || !claim) return { state: "blocked" };
   if (claim.state === "complete") {
     return { state: "complete", publicationName: claim.publicationName };
   }
   if (claim.state !== "active") return { state: "blocked" };
-  if (row.lease_expired !== 0 && row.lease_expired !== 1) {
-    throw new ApiError(
-      500,
-      "reconciliation_record_invalid",
-      "Something went wrong processing this release. Try again.",
-    );
-  }
-  return row.lease_expired === 0 ? { state: "in_progress" } : { state: "blocked" };
+  return reconciliationLeaseExpired(row) === 0 ? { state: "in_progress" } : { state: "blocked" };
 }
 
 export async function releaseReconciliationAuthority(

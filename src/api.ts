@@ -8,7 +8,6 @@ import {
   artifactSchema,
   createProjectSchema,
   createReleaseSchema,
-  PROJECT_PATTERN,
   RELEASE_PATTERN,
   rollbackSchema,
 } from "./domain/contracts";
@@ -529,28 +528,6 @@ export async function readReleaseEventHistory(
     + length(CAST(occurred_at AS BLOB))
     + COALESCE(length(CAST(actor_subject AS BLOB)), 0)
     + COALESCE(length(CAST(detail_json AS BLOB)), 0)`;
-  const summary = await db
-    .prepare(
-      `SELECT COUNT(*) AS event_count, COALESCE(SUM(${historySizeSql}), 0) AS event_bytes
-       FROM release_events WHERE release_id = ?`,
-    )
-    .bind(releaseId)
-    .first<{ event_count: number; event_bytes: number }>();
-  if (
-    !summary ||
-    !Number.isSafeInteger(summary.event_count) ||
-    !Number.isSafeInteger(summary.event_bytes) ||
-    summary.event_count < 0 ||
-    summary.event_bytes < 0 ||
-    summary.event_count > MAX_RELEASE_EVENT_COUNT ||
-    summary.event_bytes > MAX_RELEASE_EVENT_HISTORY_BYTES
-  ) {
-    throw new ApiError(
-      503,
-      "release_history_too_large",
-      "This release's history is too long to show.",
-    );
-  }
   const events = await db
     .prepare(
       `SELECT sequence, type, occurred_at, actor_subject, detail_json,
@@ -882,8 +859,7 @@ async function reconcileRelease(
         release.request_id,
         release.operational_subject ?? undefined,
         release.admitted_at,
-        "error",
-        "upstream_failure",
+        { outcome: "error", reason: "upstream_failure" },
       );
       throw cause;
     }
@@ -918,8 +894,7 @@ async function reconcileRelease(
       release.request_id,
       release.operational_subject ?? undefined,
       release.admitted_at,
-      "ok",
-      "completed",
+      { outcome: "ok", reason: "completed" },
     );
     const current = await requireRelease(env, projectId, releaseId);
     if (current.status !== "live" || current.publication_name !== name) {
@@ -1008,9 +983,6 @@ export async function handleApiForPrincipal(
         principal.operationalSubject,
       );
     return reconcileRelease(env, principal.subject, actionMatch[1], actionMatch[2], requestId);
-  }
-  if (PROJECT_PATTERN.test(url.pathname) || RELEASE_PATTERN.test(url.pathname)) {
-    throw new ApiError(404, "route_not_found", "The route was not found.");
   }
   throw new ApiError(404, "route_not_found", "The route was not found.");
 }

@@ -3,7 +3,7 @@ import { prepareAndSmokeWorker } from "../../src/adapters/cloudflare/worker-bund
 import { ensureWorkflowInstance, readArtifactBody } from "../../src/api";
 import { artifactSchema } from "../../src/domain/contracts";
 import { apiErrorSnapshot } from "../../src/domain/errors";
-import type { ThrownValue } from "../../src/domain/values";
+import type { ThrownValue } from "../helpers";
 import type { ReleaseWorkflowParams, TestWorkflowBinding, WorkerLoaderLike } from "../../src/env";
 
 const artifactBytes =
