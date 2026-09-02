@@ -229,15 +229,10 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
           } catch {
             return { outcome: "uncertain" as const };
           }
-          emitReleaseTerminal(
-            this.env,
-            releaseId,
-            requestId,
-            logSubject,
-            admittedAt,
-            "ok",
-            "completed",
-          );
+          emitReleaseTerminal(this.env, releaseId, requestId, logSubject, admittedAt, {
+            outcome: "ok",
+            reason: "completed",
+          });
           return { outcome: "live" as const };
         },
       );
@@ -272,8 +267,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
                 requestId,
                 logSubject,
                 admittedAt,
-                "error",
-                "upstream_failure",
+                { outcome: "error", reason: "upstream_failure" },
                 errorType,
               );
           }),

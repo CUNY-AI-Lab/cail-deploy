@@ -1,13 +1,13 @@
 import { publicationTimeoutMs, publishWorker } from "./adapters/cloudflare/wfp";
 import type { Principal } from "./auth";
 import { authenticate } from "./auth";
-import { emitDeployDiagnostic, observeDetachedCleanup } from "./diagnostics";
+import { readBoundedStream } from "./bounded-stream";
+import { emitDeployDiagnostic } from "./diagnostics";
 import {
   approvalSchema,
   artifactSchema,
   createProjectSchema,
   createReleaseSchema,
-  PROJECT_PATTERN,
   RELEASE_PATTERN,
   rollbackSchema,
 } from "./domain/contracts";
@@ -181,74 +181,36 @@ function parsedBody<T>(result: { success: true; data: T } | { success: false }):
   return result.data;
 }
 
-function cancelRequestBody(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  requestId: string,
-): void {
-  observeDetachedCleanup(() => reader.cancel(), "request_body_cancel_failed", { requestId });
-}
-
 function requestCancelled(requestId: string, cause: unknown): ApiError {
   return new ApiError(499, "request_cancelled", "The request was cancelled.", {
     cause,
   });
 }
 
-async function readArtifactChunk(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  signal: AbortSignal,
-  requestId: string,
-  cancel: () => void,
-): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (signal.aborted) {
-    cancel();
-    throw requestCancelled(requestId, signal.reason);
-  }
-
-  return await new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
-    let settled = false;
-    const finish = (continuation: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      continuation();
-    };
-    const onAbort = () => {
-      cancel();
-      finish(() => reject(requestCancelled(requestId, signal.reason)));
-    };
-
-    signal.addEventListener("abort", onAbort, { once: true });
-    void reader.read().then(
-      (result) => finish(() => resolve(result)),
-      (cause) => finish(() => reject(cause)),
-    );
-  });
-}
-
-function releaseRequestBodyReader(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  requestId: string,
-): void {
-  try {
-    reader.releaseLock();
-  } catch {
-    emitDeployDiagnostic("request_body_release_failed", { requestId });
-  }
-}
-
 export async function readArtifactBody(request: Request, requestId: string): Promise<Uint8Array> {
   const declaredLength = request.headers.get("Content-Length");
-  if (
+  const declaredTooLarge =
     declaredLength !== null &&
     /^\d+$/u.test(declaredLength) &&
-    Number(declaredLength) > MAX_ARTIFACT_BYTES
-  ) {
-    if (request.body) {
-      const reader = request.body.getReader();
-      cancelRequestBody(reader, requestId);
-      releaseRequestBodyReader(reader, requestId);
-    }
+    Number(declaredLength) > MAX_ARTIFACT_BYTES;
+  const sizeError = () =>
+    new ApiError(413, "artifact_size_invalid", "Your upload must be between 1 byte and 2 MiB.");
+  const bytes = await readBoundedStream({
+    body: () => request.body,
+    signal: request.signal ?? new AbortController().signal,
+    limit: MAX_ARTIFACT_BYTES,
+    overflowError: sizeError,
+    abortError: (cause) => requestCancelled(requestId, cause),
+    missingBodyError: sizeError,
+    cancelDiagnostic: "request_body_cancel_failed",
+    releaseDiagnostic: "request_body_release_failed",
+    diagnosticContext: { requestId },
+    forwardCancelReason: false,
+    cancelOnError: false,
+    declaredTooLarge,
+    output: "bytes",
+  });
+  if (bytes.byteLength === 0) {
     throw new ApiError(
       413,
       "artifact_size_invalid",
@@ -256,57 +218,6 @@ export async function readArtifactBody(request: Request, requestId: string): Pro
     );
   }
 
-  if (!request.body) {
-    throw new ApiError(
-      413,
-      "artifact_size_invalid",
-      "Your upload must be between 1 byte and 2 MiB.",
-    );
-  }
-
-  const reader = request.body.getReader();
-  const signal = request.signal ?? new AbortController().signal;
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let cancellationStarted = false;
-  const cancel = () => {
-    if (cancellationStarted) return;
-    cancellationStarted = true;
-    cancelRequestBody(reader, requestId);
-  };
-  try {
-    while (true) {
-      const { done, value } = await readArtifactChunk(reader, signal, requestId, cancel);
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_ARTIFACT_BYTES) {
-        cancel();
-        throw new ApiError(
-          413,
-          "artifact_size_invalid",
-          "Your upload must be between 1 byte and 2 MiB.",
-        );
-      }
-      chunks.push(value);
-    }
-  } finally {
-    releaseRequestBodyReader(reader, requestId);
-  }
-
-  if (total === 0) {
-    throw new ApiError(
-      413,
-      "artifact_size_invalid",
-      "Your upload must be between 1 byte and 2 MiB.",
-    );
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
   return bytes;
 }
 
@@ -617,28 +528,6 @@ export async function readReleaseEventHistory(
     + length(CAST(occurred_at AS BLOB))
     + COALESCE(length(CAST(actor_subject AS BLOB)), 0)
     + COALESCE(length(CAST(detail_json AS BLOB)), 0)`;
-  const summary = await db
-    .prepare(
-      `SELECT COUNT(*) AS event_count, COALESCE(SUM(${historySizeSql}), 0) AS event_bytes
-       FROM release_events WHERE release_id = ?`,
-    )
-    .bind(releaseId)
-    .first<{ event_count: number; event_bytes: number }>();
-  if (
-    !summary ||
-    !Number.isSafeInteger(summary.event_count) ||
-    !Number.isSafeInteger(summary.event_bytes) ||
-    summary.event_count < 0 ||
-    summary.event_bytes < 0 ||
-    summary.event_count > MAX_RELEASE_EVENT_COUNT ||
-    summary.event_bytes > MAX_RELEASE_EVENT_HISTORY_BYTES
-  ) {
-    throw new ApiError(
-      503,
-      "release_history_too_large",
-      "This release's history is too long to show.",
-    );
-  }
   const events = await db
     .prepare(
       `SELECT sequence, type, occurred_at, actor_subject, detail_json,
@@ -970,8 +859,7 @@ async function reconcileRelease(
         release.request_id,
         release.operational_subject ?? undefined,
         release.admitted_at,
-        "error",
-        "upstream_failure",
+        { outcome: "error", reason: "upstream_failure" },
       );
       throw cause;
     }
@@ -1006,8 +894,7 @@ async function reconcileRelease(
       release.request_id,
       release.operational_subject ?? undefined,
       release.admitted_at,
-      "ok",
-      "completed",
+      { outcome: "ok", reason: "completed" },
     );
     const current = await requireRelease(env, projectId, releaseId);
     if (current.status !== "live" || current.publication_name !== name) {
@@ -1096,9 +983,6 @@ export async function handleApiForPrincipal(
         principal.operationalSubject,
       );
     return reconcileRelease(env, principal.subject, actionMatch[1], actionMatch[2], requestId);
-  }
-  if (PROJECT_PATTERN.test(url.pathname) || RELEASE_PATTERN.test(url.pathname)) {
-    throw new ApiError(404, "route_not_found", "The route was not found.");
   }
   throw new ApiError(404, "route_not_found", "The route was not found.");
 }

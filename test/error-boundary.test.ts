@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { TEST_SUBJECTS } from "@cuny-ai-lab/cail-identity/testing";
 import { ApiError, errorResponse } from "../src/domain/errors";
-import type { ThrownValue } from "../src/domain/values";
+import type { ThrownValue } from "./helpers";
 import type { Env } from "../src/env";
 import { workerHandler } from "../src/handler";
 

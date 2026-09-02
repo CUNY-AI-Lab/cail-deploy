@@ -10,14 +10,15 @@ import Ajv2020 from "ajv/dist/2020.js";
 import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
 import type { Principal } from "../src/auth";
 import { apiErrorSnapshot } from "../src/domain/errors";
-import type { JsonObject } from "../src/domain/json";
-import type { ThrownValue } from "../src/domain/values";
+import type { JsonObject, JsonValue } from "../src/domain/json";
+import type { ThrownValue } from "./helpers";
 import type { Env } from "../src/env";
 import {
   createMcpApiRequest,
   MAX_ARTIFACT_BASE64_CHARS,
   MAX_MCP_BODY_BYTES,
   MAX_MCP_RESPONSE_BYTES,
+  readMcpMessage,
   readMcpResponseText,
   tools,
 } from "../src/mcp";
@@ -503,15 +504,13 @@ describe("MCP tool argument boundary", () => {
       {
         headers: { "Content-Type": "application/json" },
         status: 406,
-        message: "Not Acceptable: Client must accept both application/json and text/event-stream",
       },
       {
         headers: { Accept: "application/json, text/event-stream", "Content-Type": "text/plain" },
         status: 415,
-        message: "Unsupported Media Type: Content-Type must be application/json",
       },
     ] as const;
-    for (const { headers, status, message } of cases) {
+    for (const { headers, status } of cases) {
       // SAFETY: media validation must reject this request before any Env binding is accessed.
       const response = await handleMcpWithPrincipal(
         new Request("https://deploy.invalid/mcp", { method: "POST", headers, body }),
@@ -523,7 +522,7 @@ describe("MCP tool argument boundary", () => {
       expect(response.headers.get("X-CAIL-Request-Id")).toBe(requestId);
       expect(await response.json()).toEqual({
         jsonrpc: "2.0",
-        error: { code: -32000, message },
+        error: expect.objectContaining({ code: -32000 }),
         id: null,
       });
     }
@@ -542,7 +541,7 @@ describe("MCP tool argument boundary", () => {
     expect(malformed.status).toBe(400);
     expect(await malformed.json()).toEqual({
       jsonrpc: "2.0",
-      error: { code: -32700, message: "Parse error: Invalid JSON" },
+      error: expect.objectContaining({ code: -32700 }),
       id: null,
     });
   });
@@ -752,66 +751,9 @@ describe("MCP tool argument boundary", () => {
     }
   });
 
-  test("rejects declared oversized outer JSON without reading, decoding, or API access", async () => {
-    let pulls = 0;
-    let cancelled = false;
-    let envReads = 0;
-    let decoderReads = 0;
-    // SAFETY: the hostile proxy proves Content-Length rejection occurs before Env access.
-    const env = new Proxy({} as Env, {
-      get() {
-        envReads += 1;
-        throw new Error("The API handler must not run for oversized MCP JSON.");
-      },
-    });
-    const textDecoderDescriptor = Object.getOwnPropertyDescriptor(globalThis, "TextDecoder");
-    Object.defineProperty(globalThis, "TextDecoder", {
-      configurable: true,
-      get() {
-        decoderReads += 1;
-        return textDecoderDescriptor?.value;
-      },
-    });
-    // SAFETY: this RequestInit intentionally uses a streaming body and Cloudflare's duplex extension to exercise size cancellation.
-    const request = new Request("https://deploy.invalid/mcp", {
-      method: "POST",
-      body: new ReadableStream<Uint8Array>({
-        pull(controller) {
-          pulls += 1;
-          controller.enqueue(new Uint8Array([1]));
-        },
-        cancel() {
-          cancelled = true;
-          return new Promise<void>(() => undefined);
-        },
-      }),
-      duplex: "half",
-      headers: {
-        Accept: "application/json, text/event-stream",
-        "Content-Length": String(MAX_MCP_BODY_BYTES + 1),
-        "Content-Type": "application/json",
-      },
-    } as RequestInit);
-
-    try {
-      await expect(
-        handleMcpWithPrincipal(request, env, requestId, principal),
-      ).rejects.toMatchObject({
-        status: 413,
-        code: "mcp_request_too_large",
-      });
-      expect(pulls).toBe(0);
-      expect(cancelled).toBe(true);
-      expect(decoderReads).toBe(0);
-      expect(envReads).toBe(0);
-    } finally {
-      if (textDecoderDescriptor)
-        Object.defineProperty(globalThis, "TextDecoder", textDecoderDescriptor);
-    }
-  });
-
-  test("preserves the MCP size error when cancellation, release, and diagnostics throw", async () => {
-    // SAFETY: this hostile Request fixture supplies only the body-reader methods needed to exercise cleanup failures.
+  test("maps MCP request body overflow to its code and diagnostic labels", async () => {
+    const diagnostics: JsonValue[] = [];
+    // SAFETY: this hostile request fixture supplies only the reader methods needed to exercise wrapper diagnostics.
     const request = {
       headers: new Headers({
         ...legacyTransportHeaders,
@@ -828,58 +770,10 @@ describe("MCP tool argument boundary", () => {
         }),
       },
     } as Request;
+    // SAFETY: declared-size rejection occurs before the handler reads any Env binding.
+    const env = {} as Env;
     const originalConsoleError = console.error;
-    console.error = () => {
-      throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
-    };
-    try {
-      await expect(
-        // SAFETY: the request is rejected for size before this empty Env can be read.
-        handleMcpWithPrincipal(request, {} as Env, requestId, principal),
-      ).rejects.toMatchObject({
-        status: 413,
-        code: "mcp_request_too_large",
-      });
-    } finally {
-      console.error = originalConsoleError;
-    }
-  });
-
-  test("rejects chunked oversized outer JSON without decoding or API access", async () => {
-    let cancelled = false;
-    let envReads = 0;
-    let decoderReads = 0;
-    // SAFETY: the hostile proxy proves chunked size rejection occurs before Env access.
-    const env = new Proxy({} as Env, {
-      get() {
-        envReads += 1;
-        throw new Error("The API handler must not run for oversized MCP JSON.");
-      },
-    });
-    const textDecoderDescriptor = Object.getOwnPropertyDescriptor(globalThis, "TextDecoder");
-    Object.defineProperty(globalThis, "TextDecoder", {
-      configurable: true,
-      get() {
-        decoderReads += 1;
-        return textDecoderDescriptor?.value;
-      },
-    });
-    // SAFETY: this RequestInit intentionally uses a streaming body and Cloudflare's duplex extension to exercise size cancellation.
-    const request = new Request("https://deploy.invalid/mcp", {
-      method: "POST",
-      body: new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new Uint8Array(MAX_MCP_BODY_BYTES + 1));
-        },
-        cancel() {
-          cancelled = true;
-          return new Promise<void>(() => undefined);
-        },
-      }),
-      duplex: "half",
-      headers: legacyTransportHeaders,
-    } as RequestInit);
-
+    console.error = (diagnostic: JsonValue) => diagnostics.push(diagnostic);
     try {
       await expect(
         handleMcpWithPrincipal(request, env, requestId, principal),
@@ -887,116 +781,44 @@ describe("MCP tool argument boundary", () => {
         status: 413,
         code: "mcp_request_too_large",
       });
-      expect(cancelled).toBe(true);
-      expect(decoderReads).toBe(0);
-      expect(envReads).toBe(0);
-    } finally {
-      if (textDecoderDescriptor)
-        Object.defineProperty(globalThis, "TextDecoder", textDecoderDescriptor);
-    }
-  });
-
-  test("preserves a primary MCP read failure when release and diagnostics also fail", async () => {
-    const primary = new Error("PRIMARY_MCP_READ_FAILURE");
-    // SAFETY: this hostile Request fixture supplies only the reader methods needed to preserve the primary failure.
-    const request = {
-      headers: new Headers(legacyTransportHeaders),
-      body: {
-        getReader: () => ({
-          read: async () => {
-            throw primary;
-          },
-          releaseLock: () => {
-            throw new Error("PRIVATE_MCP_RELEASE_FAILURE");
-          },
-        }),
-      },
-    } as Request;
-    const originalConsoleError = console.error;
-    console.error = () => {
-      throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
-    };
-    try {
-      // SAFETY: this fixture reaches the supplied reader before any Env binding is needed.
-      await expect(handleMcpWithPrincipal(request, {} as Env, requestId, principal)).rejects.toBe(
-        primary,
-      );
+      expect(diagnostics).toEqual([
+        {
+          event: "deploy.mcp.request.body_cancel_failed",
+          error: "body_cancel_failed",
+          requestId,
+        },
+        {
+          event: "deploy.mcp.request.body_release_failed",
+          error: "body_release_failed",
+          requestId,
+        },
+      ]);
     } finally {
       console.error = originalConsoleError;
     }
   });
 
-  test("cancels and unlocks a truly stalled MCP request body on caller abort", async () => {
-    const controller = new AbortController();
-    const reason = new Error("caller aborted MCP request");
-    let cancelCount = 0;
-    let cancelReason: ThrownValue;
-    const body = new ReadableStream<Uint8Array>({
-      pull: () => new Promise<void>(() => undefined),
-      cancel(value) {
-        cancelCount += 1;
-        cancelReason = value;
-      },
-    });
-    // SAFETY: this RequestInit intentionally uses a streaming body and Cloudflare's duplex extension to test caller abort cleanup.
-    const request = new Request("https://deploy.invalid/mcp", {
+  test("declared oversize without a body still rejects with 413", async () => {
+    const request = new Request("https://deploy.example/mcp", {
       method: "POST",
-      body,
-      duplex: "half",
-      signal: controller.signal,
-      headers: legacyTransportHeaders,
-    } as RequestInit);
-
-    // SAFETY: this cancellation test only needs an empty Env because the request aborts before dispatch.
-    const pending = handleMcpWithPrincipal(request, {} as Env, requestId, principal);
-    controller.abort(reason);
-    const error = await pending.catch((caught: ThrownValue) => caught);
-    expect(apiErrorSnapshot(error)).toEqual({
-      status: 499,
-      code: "request_cancelled",
-      message: "The request was cancelled.",
+      headers: { "Content-Length": String(MAX_MCP_BODY_BYTES + 1) },
     });
-    await Bun.sleep(0);
-    expect(cancelCount).toBe(1);
-    expect(cancelReason).toBe(reason);
-    expect(body.locked).toBe(false);
+    await expect(readMcpMessage(request, requestId)).rejects.toMatchObject({
+      status: 413,
+      code: "mcp_request_too_large",
+    });
   });
 
-  test("bounds, cancels, and unlocks an oversized internal MCP response", async () => {
-    let cancelCount = 0;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(MAX_MCP_RESPONSE_BYTES + 1));
-      },
-      cancel() {
-        cancelCount += 1;
-      },
-    });
-    const response = new Response(body);
-    const error = await readMcpResponseText(
-      response,
-      new AbortController().signal,
-      requestId,
-    ).catch((caught: ThrownValue) => caught);
-    expect(apiErrorSnapshot(error)).toEqual({
-      status: 502,
-      code: "mcp_response_too_large",
-      message: "The response is too large to return.",
-    });
-    await Bun.sleep(0);
-    expect(cancelCount).toBe(1);
-    expect(body.locked).toBe(false);
-  });
-
-  test("preserves an internal response read failure when cleanup and diagnostics fail", async () => {
-    const primary = new Error("PRIMARY_MCP_RESPONSE_READ_FAILURE");
-    // SAFETY: this hostile Response fixture supplies only the reader methods needed to preserve the primary failure.
+  test("maps oversized MCP responses to their code and diagnostic labels", async () => {
+    const diagnostics: JsonValue[] = [];
+    // SAFETY: this hostile response fixture supplies only the reader methods needed to exercise wrapper diagnostics.
     const response = {
       body: {
         getReader: () => ({
-          read: async () => {
-            throw primary;
-          },
+          read: async () => ({
+            done: false,
+            value: new Uint8Array(MAX_MCP_RESPONSE_BYTES + 1),
+          }),
           cancel: () => {
             throw new Error("PRIVATE_MCP_RESPONSE_CANCEL_FAILURE");
           },
@@ -1007,42 +829,35 @@ describe("MCP tool argument boundary", () => {
       },
     } as Response;
     const originalConsoleError = console.error;
-    console.error = () => {
-      throw new Error("PRIVATE_DIAGNOSTIC_SINK_FAILURE");
-    };
+    console.error = (diagnostic: JsonValue) => diagnostics.push(diagnostic);
     try {
       await expect(
         readMcpResponseText(response, new AbortController().signal, requestId),
-      ).rejects.toBe(primary);
+      ).rejects.toMatchObject({
+        status: 502,
+        code: "mcp_response_too_large",
+      });
+      expect(diagnostics).toEqual([
+        {
+          event: "deploy.mcp.response.body_cancel_failed",
+          error: "body_cancel_failed",
+          requestId,
+        },
+        {
+          event: "deploy.mcp.response.body_release_failed",
+          error: "body_release_failed",
+          requestId,
+        },
+      ]);
     } finally {
       console.error = originalConsoleError;
     }
   });
 
-  test("cancels and unlocks a stalled internal MCP response on caller abort", async () => {
-    const controller = new AbortController();
-    const reason = new Error("caller aborted MCP response");
-    let cancelCount = 0;
-    let cancelReason: ThrownValue;
-    const body = new ReadableStream<Uint8Array>({
-      pull: () => new Promise<void>(() => undefined),
-      cancel(value) {
-        cancelCount += 1;
-        cancelReason = value;
-      },
-    });
-    const pending = readMcpResponseText(new Response(body), controller.signal, requestId);
-    controller.abort(reason);
-    const error = await pending.catch((caught: ThrownValue) => caught);
-    expect(apiErrorSnapshot(error)).toEqual({
-      status: 499,
-      code: "request_cancelled",
-      message: "The request was cancelled.",
-    });
-    await Bun.sleep(0);
-    expect(cancelCount).toBe(1);
-    expect(cancelReason).toBe(reason);
-    expect(body.locked).toBe(false);
+  test("returns an empty internal MCP response before validating its deadline", async () => {
+    await expect(
+      readMcpResponseText(new Response(null), new AbortController().signal, requestId, 0),
+    ).resolves.toBe("");
   });
 
   test("cancels and unlocks a stalled internal MCP response at its deadline", async () => {

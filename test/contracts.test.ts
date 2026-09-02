@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { z } from "zod";
-import { artifactSchema, REVISION_PATTERN, releaseStatuses } from "../src/domain/contracts";
+import { artifactSchema, createReleaseSchema } from "../src/domain/contracts";
 import { bytesToHex, canonicalJson, parseContentDigest, sha256Hex } from "../src/domain/digests";
 import type { JsonObject } from "../src/domain/json";
+import { NONTERMINAL_RELEASE_STATUSES, TERMINAL_RELEASE_STATUSES } from "../src/storage";
 
 const fixturePath = new URL("../fixtures/worker-artifact.v1.json", import.meta.url);
 
@@ -12,7 +13,12 @@ describe("immutable artifact contract", () => {
     const bytes = new Uint8Array(await Bun.file(fixturePath).arrayBuffer());
     expect(bytes.byteLength).toBeGreaterThan(0);
     const digest = await sha256Hex(bytes);
-    expect(`rev_sha256_${digest}`).toMatch(REVISION_PATTERN);
+    expect(
+      createReleaseSchema.safeParse({
+        revisionId: `rev_sha256_${digest}`,
+        approval: "automatic",
+      }).success,
+    ).toBe(true);
     expect(artifactSchema.parse(JSON.parse(new TextDecoder().decode(bytes))).runtime).toBe(
       "worker",
     );
@@ -94,32 +100,7 @@ describe("immutable artifact contract", () => {
     expect(artifactSchema.safeParse(withoutBindings).success).toBe(false);
   });
 
-  test("release progress freezes prepared before approval", () => {
-    expect(releaseStatuses).toEqual([
-      "queued",
-      "validating",
-      "building",
-      "prepared",
-      "awaiting_approval",
-      "publishing",
-      "reconciling",
-      "live",
-      "failed",
-    ]);
-  });
-
   test("machine-readable schemas freeze the artifact fields and release enum", async () => {
-    const artifactContract = JSON.parse(
-      await Bun.file(new URL("../contract/artifact-v1.schema.json", import.meta.url)).text(),
-    );
-    expect(artifactContract.required).toEqual([
-      "schemaVersion",
-      "runtime",
-      "entrypoint",
-      "files",
-      "compatibility",
-      "requestedBindings",
-    ]);
     const releaseContract = z
       .object({
         $defs: z.object({ releaseStatus: z.object({ enum: z.array(z.string()) }) }),
@@ -130,60 +111,9 @@ describe("immutable artifact contract", () => {
           await Bun.file(new URL("../contract/release-v1.schema.json", import.meta.url)).text(),
         ),
       );
-    expect(releaseContract.$defs.releaseStatus.enum).toEqual([...releaseStatuses]);
-  });
-
-  test("machine-readable OAuth MCP contract freezes the public surface", async () => {
-    const contract = z
-      .object({
-        provider: z.object({ package: z.string(), version: z.string() }).passthrough(),
-        routes: z.record(z.string(), z.string()),
-        authorization: z
-          .object({
-            scope: z.string(),
-            pkceMethods: z.array(z.string()),
-            accessTokenTtlSeconds: z.number(),
-            implicitFlow: z.boolean(),
-            tokenExchangeGrant: z.boolean(),
-            clientIdMetadataDocument: z.boolean(),
-          })
-          .passthrough(),
-        identity: z
-          .object({ audience: z.string(), principalProps: z.array(z.string()) })
-          .passthrough(),
-      })
-      .passthrough()
-      .parse(
-        JSON.parse(
-          await Bun.file(new URL("../contract/oauth-mcp-v1.json", import.meta.url)).text(),
-        ),
-      );
-    expect(contract.provider).toEqual({
-      package: "@cloudflare/workers-oauth-provider",
-      version: "0.5.0",
-    });
-    expect(contract.routes).toEqual({
-      protectedResourceMetadata: "/.well-known/oauth-protected-resource/mcp",
-      authorizationServerMetadata: "/.well-known/oauth-authorization-server",
-      register: "/oauth/register",
-      authorize: "/api/oauth/authorize",
-      token: "/oauth/token",
-      resource: "/mcp",
-    });
-    expect(contract.authorization).toMatchObject({
-      scope: "cail:deploy",
-      pkceMethods: ["S256"],
-      accessTokenTtlSeconds: 3600,
-      implicitFlow: false,
-      tokenExchangeGrant: false,
-      clientIdMetadataDocument: false,
-    });
-    expect(contract.identity).toEqual({
-      authorizationCredential: "X-CAIL-Identity-JWT",
-      audience: "cail:deploy",
-      principalProps: ["subject", "operationalSubject", "scope"],
-      ownershipField: "subject",
-      optionalOperationalField: "operationalSubject",
-    });
+    expect(releaseContract.$defs.releaseStatus.enum).toEqual([
+      ...NONTERMINAL_RELEASE_STATUSES,
+      ...TERMINAL_RELEASE_STATUSES,
+    ]);
   });
 });

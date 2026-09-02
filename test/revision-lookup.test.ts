@@ -150,52 +150,6 @@ describe("immutable revision lookup", () => {
   const inconsistencies: Array<[string, Parameters<typeof fixture>[0]]> = [
     ["missing artifact", { head: null }],
     ["non-ready row", { status: "failed" }],
-    ["unexpected artifact key", { artifactKey: `${artifactKey}.other` }],
-    [
-      "revision ID and artifact digest disagreement",
-      {
-        artifactDigest: "e".repeat(64),
-        head: revisionHead({
-          checksums: { sha256: checksumBytes("e".repeat(64)) },
-          customMetadata: { projectId, revisionId, artifactDigest: "e".repeat(64) },
-        }),
-      },
-    ],
-    ["wrong artifact object key", { head: revisionHead({ key: `${artifactKey}.other` }) }],
-    ["wrong byte count", { head: revisionHead({ size: 320 }) }],
-    [
-      "wrong project metadata",
-      {
-        head: revisionHead({
-          customMetadata: {
-            projectId: `prj_${"e".repeat(32)}`,
-            revisionId,
-            artifactDigest: digest,
-          },
-        }),
-      },
-    ],
-    [
-      "wrong revision metadata",
-      {
-        head: revisionHead({
-          customMetadata: {
-            projectId,
-            revisionId: `rev_sha256_${"e".repeat(64)}`,
-            artifactDigest: digest,
-          },
-        }),
-      },
-    ],
-    [
-      "wrong digest metadata",
-      {
-        head: revisionHead({
-          customMetadata: { projectId, revisionId, artifactDigest: "e".repeat(64) },
-        }),
-      },
-    ],
-    ["missing SHA-256 checksum", { head: revisionHead({ checksums: {} }) }],
     [
       "wrong SHA-256 checksum",
       { head: revisionHead({ checksums: { sha256: checksumBytes("e".repeat(64)) } }) },

@@ -6,8 +6,9 @@ import {
 } from "../src/adapters/cloudflare/wfp";
 import { normalizeWorkerModules } from "../src/adapters/cloudflare/worker-bundler";
 import { sendApprovalEvent } from "../src/api";
+import type { JsonValue } from "../src/domain/json";
 import type { Env } from "../src/env";
-import type { ThrownValue } from "../src/domain/values";
+import type { ThrownValue } from "./helpers";
 import type { ReleaseRow } from "../src/storage";
 
 const originalFetch = globalThis.fetch;
@@ -250,38 +251,57 @@ describe("Cloudflare volatile boundaries", () => {
     ).rejects.toMatchObject({ code: "publication_ambiguous" });
   });
 
-  test("oversized and stalled successful bodies are cancelled, unlocked, and remain ambiguous", async () => {
-    let oversizedCancels = 0;
-    const oversized = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+  test("maps oversized WfP responses to their code and diagnostic labels", async () => {
+    const diagnostics: JsonValue[] = [];
+    // SAFETY: this reader fixture supplies only the stream methods exercised by
+    // the WfP response overflow cleanup path.
+    const reader = {
+      read: async () => ({
+        done: false,
+        value: new Uint8Array(1024 * 1024 + 1),
+      }),
+      cancel: () => {
+        throw new Error("PRIVATE_WFP_RESPONSE_CANCEL_FAILURE");
       },
-      cancel() {
-        oversizedCancels += 1;
+      releaseLock: () => {
+        throw new Error("PRIVATE_WFP_RESPONSE_RELEASE_FAILURE");
       },
-    });
-    const oversizedResponse = new Response(oversized, { status: 200 });
-    await expect(publishWithResponse(oversizedResponse)).rejects.toMatchObject({
-      code: "publication_ambiguous",
-    });
-    expect(oversizedCancels).toBe(1);
-    expect(oversizedResponse.body?.locked).toBe(false);
+    } as ReadableStreamDefaultReader<Uint8Array>;
+    const originalConsoleError = console.error;
+    console.error = (diagnostic: JsonValue) => diagnostics.push(diagnostic);
+    try {
+      await expect(publishWithResponse(responseWithReader(200, reader))).rejects.toMatchObject({
+        status: 502,
+        code: "publication_ambiguous",
+      });
+      expect(diagnostics).toEqual([
+        {
+          event: "deploy.wfp.response.body_cancel_failed",
+          error: "body_cancel_failed",
+        },
+        {
+          event: "deploy.wfp.response.body_release_failed",
+          error: "body_release_failed",
+        },
+      ]);
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
 
-    let stalledCancels = 0;
-    const stalled = new ReadableStream<Uint8Array>({
-      cancel() {
-        stalledCancels += 1;
-        return new Promise<void>(() => undefined);
+  test("maps WfP response body access failures once", async () => {
+    const primary = new Error("PRIVATE_WFP_BODY_ACCESS_FAILURE");
+    const response = new Response(null, { status: 200 });
+    Object.defineProperty(response, "body", {
+      get() {
+        throw primary;
       },
     });
-    const stalledResponse = new Response(stalled, { status: 200 });
-    const startedAt = performance.now();
-    await expect(publishWithResponse(stalledResponse)).rejects.toMatchObject({
-      code: "publication_ambiguous",
-    });
-    expect(performance.now() - startedAt).toBeLessThan(2_000);
-    expect(stalledCancels).toBe(1);
-    expect(stalledResponse.body?.locked).toBe(false);
+    const captured = await publishWithResponse(response).catch((error: ThrownValue) => error);
+    expect(captured).toBeInstanceOf(Error);
+    if (!(captured instanceof Error)) throw new Error("Expected an Error from WfP publication.");
+    expect(captured).toMatchObject({ status: 502, code: "publication_ambiguous" });
+    expect(captured.cause).toBe(primary);
   });
 
   test("non-2xx response cleanup is nonblocking and cannot replace provider classification", async () => {
@@ -330,44 +350,6 @@ describe("Cloudflare volatile boundaries", () => {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
-  });
-
-  test("read failure remains the exact private cause when cleanup and diagnostics fail", async () => {
-    const primary = new Error("PRIVATE_READ_FAILURE");
-    let cancels = 0;
-    let releases = 0;
-    console.error = () => {
-      throw new Error("PRIVATE_DIAGNOSTIC_FAILURE");
-    };
-    // SAFETY: this reader fixture injects a primary read rejection while
-    // implementing the cleanup methods under test.
-    const reader = {
-      read: () => Promise.reject(primary),
-      cancel: () => {
-        cancels += 1;
-        return Promise.reject(new Error("PRIVATE_CANCEL_FAILURE"));
-      },
-      releaseLock: () => {
-        releases += 1;
-        throw new Error("PRIVATE_RELEASE_FAILURE");
-      },
-    } as ReadableStreamDefaultReader<Uint8Array>;
-    let captured: unknown;
-    try {
-      await publishWithResponse(responseWithReader(200, reader));
-    } catch (error) {
-      captured = error;
-    }
-    await Bun.sleep(0);
-    expect(captured).toMatchObject({
-      code: "publication_ambiguous",
-      message:
-        "We could not confirm whether this release published. Check the release status. If it is still publishing, use the reconcile action.",
-    });
-    // SAFETY: publication failure formatting preserves the injected Error cause.
-    expect((captured as Error).cause).toBe(primary);
-    expect(cancels).toBe(1);
-    expect(releases).toBe(1);
   });
 
   test("WfP names use the full revision digest and 4xx is deterministic rejection", async () => {

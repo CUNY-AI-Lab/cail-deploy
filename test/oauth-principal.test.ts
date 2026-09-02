@@ -47,13 +47,12 @@ describe("OAuth Principal handoff", () => {
     expect(oauthPrincipalFromProps({ subject: TEST_SUBJECTS.alice, scope: ["other"] })).toEqual({
       kind: "insufficient_scope",
     });
-    expect(
-      oauthPrincipalFromProps({
-        subject: TEST_SUBJECTS.alice,
-        scope: ["cail:deploy"],
-        callerSubject: TEST_SUBJECTS.bob,
-      }),
-    ).toEqual({ kind: "invalid" });
+    const propsWithCallerSubject = {
+      subject: TEST_SUBJECTS.alice,
+      scope: ["cail:deploy"],
+      callerSubject: TEST_SUBJECTS.bob,
+    };
+    expect(oauthPrincipalFromProps(propsWithCallerSubject)).toEqual({ kind: "invalid" });
   });
 
   test("returns a standard bounded insufficient-scope challenge", async () => {

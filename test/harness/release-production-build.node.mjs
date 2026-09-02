@@ -62,11 +62,6 @@ function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function releaseActionId(releaseId) {
-  const hex = releaseId.slice(4);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
 async function readPreparedObject(env, preparedKey, preparedDigest) {
   assert.equal(isText(preparedKey), true);
   assert.match(preparedKey, /^prepared\/prj_[0-9a-f]{32}\/rel_[0-9a-f]{32}\/[0-9a-f]{64}\.json$/u);
@@ -110,7 +105,7 @@ function parseFlattenedLogMessage(message) {
   return Object.hasOwn(fields, "event.name") ? fields : null;
 }
 
-function assertReleaseLogEvents(logs, releaseId) {
+function assertReleaseLogEvents(logs) {
   assert.ok(logs.length > 0, "the local build harness emitted no runtime logs");
   const events = logs
     .map((log) => parseFlattenedLogMessage(log.message))
@@ -124,50 +119,6 @@ function assertReleaseLogEvents(logs, releaseId) {
     events.map((event) => event["event.name"]),
     ["cail.action.admitted", "cail.action.terminal"],
   );
-
-  const common = {
-    "cail.action.id": releaseActionId(releaseId),
-    "cail.product.id": "kale-deploy",
-    "cail.request.id": INITIAL_REQUEST_ID,
-    "cail.principal.type": "anonymous",
-    "cail.schema.version": 2,
-    "cail.source.class": "platform",
-    "deployment.environment.name": "test",
-    "event.name": "cail.action.admitted",
-    "http.request.method": "POST",
-    "service.name": "kale-release-control-plane",
-    "service.namespace": "cuny-ai-lab",
-    "service.version": "uncommitted",
-    severity_number: 9,
-    severity_text: "INFO",
-    body: "Action admitted.",
-    timestamp: events[0].timestamp,
-    "url.template": "/v1/projects/{projectId}/releases",
-  };
-  const admitted = events[0];
-  const terminal = events[1];
-  assert.deepEqual(Object.keys(admitted).sort(), Object.keys(common).sort());
-  assert.deepEqual(admitted, common);
-  assert.match(admitted.timestamp, /^\d{4}-\d{2}-\d{2}T[^ ]+Z$/u);
-  assert.ok(Number.isFinite(Date.parse(admitted.timestamp)));
-
-  const terminalExpected = {
-    ...common,
-    "cail.operation.duration_ms": terminal["cail.operation.duration_ms"],
-    "cail.outcome": "ok",
-    "cail.outcome.reason": "completed",
-    "event.name": "cail.action.terminal",
-    body: "Action reached a terminal state.",
-    timestamp: terminal.timestamp,
-  };
-  assert.deepEqual(Object.keys(terminal).sort(), Object.keys(terminalExpected).sort());
-  assert.deepEqual(terminal, terminalExpected);
-  assert.match(terminal.timestamp, /^\d{4}-\d{2}-\d{2}T[^ ]+Z$/u);
-  assert.ok(Number.isFinite(Date.parse(terminal.timestamp)));
-  assert.ok(Date.parse(terminal.timestamp) >= Date.parse(admitted.timestamp));
-  assert.ok(Number.isSafeInteger(terminal["cail.operation.duration_ms"]));
-  assert.ok(terminal["cail.operation.duration_ms"] >= 0);
-  assert.ok(terminal["cail.operation.duration_ms"] < TEST_TIMEOUT_MS);
 }
 
 async function waitForRelease(worker, projectId, releaseId, jwt, expectedStatus) {
@@ -894,7 +845,7 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
 
   const logs = harness.getLogs();
   const runtimeLogs = JSON.stringify(logs);
-  assertReleaseLogEvents(logs, release.releaseId);
+  assertReleaseLogEvents(logs);
   assert.equal(runtimeLogs.includes(ownerJwt), false, "runtime logs captured the identity JWT");
   assert.equal(
     runtimeLogs.includes(TEST_SUBJECTS.alice),

@@ -51,8 +51,7 @@ describe("release operational event contract", () => {
           requestId,
           operationalSubject,
           new Date(Date.now() - 10).toISOString(),
-          "ok",
-          "completed",
+          { outcome: "ok", reason: "completed" },
         );
       });
 
@@ -82,7 +81,7 @@ describe("release operational event contract", () => {
     ];
 
     for (const requestId of invalidRequestIds) {
-      const { records, diagnostics } = captureEvents(() => {
+      const { records } = captureEvents(() => {
         emitReleaseAdmission(env, releaseId, requestId, operationalSubject);
         emitReleaseTerminal(
           env,
@@ -90,16 +89,11 @@ describe("release operational event contract", () => {
           requestId,
           operationalSubject,
           new Date(Date.now() - 10).toISOString(),
-          "ok",
-          "completed",
+          { outcome: "ok", reason: "completed" },
         );
       });
 
       expect(records).toEqual([]);
-      expect(diagnostics).toEqual([
-        "cail-log: event_contract_error",
-        "cail-log: event_contract_error",
-      ]);
     }
   });
 

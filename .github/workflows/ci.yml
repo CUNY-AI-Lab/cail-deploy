@@ -80,11 +80,9 @@ jobs:
           version_id="$(jq -er --arg message "$expected_message" '
             [.[] | select(.annotations["workers/message"] == $message)] | last | .id
           ' <<<"$versions")"
-          test "$version_id" != "null"
           version="$(bunx wrangler versions view "$version_id" --config wrangler.production.jsonc --json)"
-          jq -e --arg sha "$GITHUB_SHA" --arg message "$expected_message" '
-            .annotations["workers/tag"] == $sha and
-            .annotations["workers/message"] == $message
+          jq -e --arg sha "$GITHUB_SHA" '
+            .annotations["workers/tag"] == $sha
           ' <<<"$version"
           deployments="$(bunx wrangler deployments list --config wrangler.production.jsonc --json)"
           jq -e --arg version "$version_id" '

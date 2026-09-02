@@ -15,7 +15,6 @@ export type OAuthPrincipalInput = {
   subject?: string;
   operationalSubject?: string;
   scope?: string[];
-  callerSubject?: string;
 } | null;
 
 export type OAuthPrincipalResult =
