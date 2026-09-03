@@ -1,0 +1,27 @@
+{
+  "name": "cuny-ai-lab",
+  "owner": {
+    "name": "CUNY AI Lab",
+    "email": "hello@ailab.gc.cuny.edu"
+  },
+  "metadata": {
+    "description": "CUNY AI Lab plugins for publishing Cloudflare Worker apps through Kale Deploy."
+  },
+  "plugins": [
+    {
+      "name": "kale-deploy",
+      "source": "./plugins/kale-deploy",
+      "description": "Prepare and publish Cloudflare Worker apps through the CUNY AI Lab Kale Deploy release control plane.",
+      "version": "0.3.0",
+      "author": {
+        "name": "CUNY AI Lab",
+        "email": "hello@ailab.gc.cuny.edu"
+      },
+      "homepage": "https://github.com/CUNY-AI-Lab/cail-deploy",
+      "repository": "https://github.com/CUNY-AI-Lab/cail-deploy",
+      "license": "MIT",
+      "keywords": ["cloudflare", "workers", "deployment", "mcp", "oauth"],
+      "category": "development"
+    }
+  ]
+}

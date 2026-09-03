@@ -37,7 +37,7 @@ Canonical references:
 
 Deploy serves one stateless `/mcp` route through Cloudflare Agents' `createMcpHandler`. The maintained handler negotiates both MCP `2026-07-28` and stateless `2025-06-18` clients, so Deploy owns one protocol implementation, one tool dispatcher, and one set of tool schemas.
 
-The repository is also the source of the `cuny-ai-lab` Codex marketplace and its `kale-deploy` plugin. That plugin names this Worker as its only MCP server and documents the tools published by this dispatcher.
+The repository is also the source of the `cuny-ai-lab` Codex and Claude Code marketplace and its `kale-deploy` plugin. That plugin names this Worker as its only MCP server and documents the tools published by this dispatcher.
 
 OAuth metadata sends browser authorization to the canonical Doorway origin's
 unlisted `https://tools.ailab.gc.cuny.edu/api/oauth/authorize` route. Doorway

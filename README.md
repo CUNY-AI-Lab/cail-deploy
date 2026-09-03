@@ -39,6 +39,17 @@ codex plugin add kale-deploy@cuny-ai-lab
 codex mcp login kale
 ```
 
+## Use from Claude Code
+
+The same `cuny-ai-lab` marketplace and `kale-deploy` plugin install into Claude
+Code. Add the marketplace, install the plugin at user scope, then open `/mcp`
+to complete the browser OAuth flow for the `kale` server.
+
+```text
+/plugin marketplace add CUNY-AI-Lab/cail-deploy
+/plugin install kale-deploy@cuny-ai-lab
+```
+
 ## Release
 
 Merge only after the repository checks pass. Deploy is a direct production
