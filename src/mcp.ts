@@ -637,7 +637,7 @@ async function callKaleTool<T>(
       observeLateMcpResponse(response, requestId, operation.deadlineError);
       return errorToolResult(operation.deadlineError, requestId);
     }
-    return name === "kale.preview_project"
+    return await (name === "kale.preview_project"
       ? mcpPreviewResult(
           response,
           requestId,
@@ -653,7 +653,7 @@ async function callKaleTool<T>(
           remainingMs,
           operation.deadlineSignal,
           operation.deadlineError,
-        );
+        ));
   } finally {
     clearTimeout(operation.timeoutHandle);
   }
