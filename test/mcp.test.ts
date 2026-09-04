@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import {
   Client as ModernClient,
@@ -7,6 +7,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import Ajv2020 from "ajv/dist/2020.js";
+import { createMcpHandler } from "agents/mcp/server";
 import { handleMcpWithPrincipal } from "../src/adapters/cloudflare/mcp";
 import type { Principal } from "../src/auth";
 import { apiErrorSnapshot } from "../src/domain/errors";
@@ -15,6 +16,7 @@ import type { ThrownValue } from "../src/domain/values";
 import type { Env } from "../src/env";
 import {
   createMcpApiRequest,
+  createKaleMcpServer,
   MAX_ARTIFACT_BASE64_CHARS,
   MAX_MCP_BODY_BYTES,
   MAX_MCP_RESPONSE_BYTES,
@@ -1071,6 +1073,58 @@ describe("MCP tool argument boundary", () => {
     expect(cancelCount).toBe(1);
     expect(cancelReason).toBeInstanceOf(Error);
     expect(body.locked).toBe(false);
+  });
+
+  test("keeps the tools/call deadline active while consuming the API response body", async () => {
+    let cancellations = 0;
+    let cancelReason: ThrownValue;
+    const body = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => undefined),
+      cancel(reason) {
+        cancellations += 1;
+        cancelReason = reason;
+      },
+    });
+    // SAFETY: the project lookup returns null, so requireOwnedProject rejects
+    // before dispatch accesses any other Env binding or DB method.
+    const env = {
+      DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) },
+    } as Env;
+    const request = modernRequest(
+      "tools/call",
+      {
+        name: "kale.get_release",
+        arguments: validToolArguments["kale.get_release"],
+      },
+      { "Mcp-Name": "kale.get_release" },
+    );
+    const handler = createMcpHandler(
+      () => createKaleMcpServer(request.url, env, requestId, principal, request.signal, 25),
+      { route: "/mcp", corsOptions: false, allowedOriginHostnames: "*" },
+    );
+    const responseJson = spyOn(Response, "json").mockImplementationOnce(
+      () => new Response(body, { status: 404 }),
+    );
+    try {
+      const response = await handler.fetch(request);
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.result.isError).toBe(true);
+      expect(JSON.parse(result.result.content[0].text)).toEqual({
+        error: {
+          code: "mcp_operation_timeout",
+          message:
+            "That took too long. For release writes, check the release status first, then reuse the same Idempotency-Key if you need to retry.",
+          requestId,
+        },
+      });
+      await Bun.sleep(0);
+      expect(cancellations).toBe(1);
+      expect(apiErrorSnapshot(cancelReason)?.code).toBe("mcp_operation_timeout");
+      expect(body.locked).toBe(false);
+    } finally {
+      responseJson.mockRestore();
+    }
   });
 
   test("threads caller cancellation into the internal API request", () => {
