@@ -58,14 +58,10 @@ const diagnosticVocabulary = {
   },
 } satisfies Record<DeployDiagnostic, { event: string; error: string }>;
 
-export type DiagnosticContext =
-  | {
-      requestId: string;
-      releaseId?: string;
-    }
-  | {
-      boundary: "wfp_response";
-    };
+export interface DiagnosticContext {
+  requestId: string;
+  releaseId?: string;
+}
 
 interface DeployDiagnosticRecord {
   event: string;
@@ -80,9 +76,9 @@ export function emitDeployDiagnostic(kind: DeployDiagnostic, context: Diagnostic
     const diagnostic: DeployDiagnosticRecord = {
       event: vocabulary.event,
       error: vocabulary.error,
+      requestId: context.requestId,
     };
-    if ("requestId" in context) diagnostic.requestId = context.requestId;
-    if ("releaseId" in context && context.releaseId) diagnostic.releaseId = context.releaseId;
+    if (context.releaseId) diagnostic.releaseId = context.releaseId;
     console.error(diagnostic);
   } catch {
     // Diagnostics are observational and cannot replace the primary result.

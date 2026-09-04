@@ -944,7 +944,7 @@ async function reconcileRelease(
     try {
       name = await publishWorker(
         env,
-        projectId,
+        { requestId, releaseId },
         release.revision_id,
         parsePreparedEnvelope(JSON.parse(json)),
       );

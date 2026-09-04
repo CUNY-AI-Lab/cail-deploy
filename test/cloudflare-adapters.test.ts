@@ -17,7 +17,10 @@ afterEach(() => {
   console.error = originalConsoleError;
 });
 
-const projectId = "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const publicationContext = {
+  requestId: "30cc0bc0-6078-49f0-a9c0-ed8e546a9151",
+  releaseId: "rel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+};
 const revisionId = `rev_sha256_${"b".repeat(64)}`;
 const expectedPublicationName = "b".repeat(64);
 const prepared = {
@@ -38,7 +41,7 @@ async function publishWithResponse(response: Response, timeout = "1000"): Promis
       WFP_PUBLISH_TIMEOUT_MS: timeout,
       WFP_API: { fetch: async () => response },
     } as Env,
-    projectId,
+    publicationContext,
     revisionId,
     prepared,
   );
@@ -139,7 +142,7 @@ describe("Cloudflare volatile boundaries", () => {
           WFP_NAMESPACE: "namespace",
           WFP_PUBLISH_TIMEOUT_MS: "1000",
         } as Env,
-        projectId,
+        publicationContext,
         revisionId,
         prepared,
       );
@@ -177,7 +180,7 @@ describe("Cloudflare volatile boundaries", () => {
         WFP_NAMESPACE: "namespace",
         WFP_API,
       } as Env,
-      projectId,
+      publicationContext,
       revisionId,
       {
         mainModule: "index.js",
@@ -370,6 +373,29 @@ describe("Cloudflare volatile boundaries", () => {
     expect(releases).toBe(1);
   });
 
+  test("failed provider-body cleanup retains its request and release context", async () => {
+    const diagnostics: unknown[] = [];
+    console.error = (record) => diagnostics.push(record);
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        throw new Error("PRIVATE_PROVIDER_CLEANUP_DETAIL");
+      },
+    });
+    const response = new Response(body, { status: 503 });
+    await expect(publishWithResponse(response)).rejects.toMatchObject({
+      code: "publication_ambiguous",
+    });
+    await Bun.sleep(0);
+    expect(response.body?.locked).toBe(false);
+    expect(diagnostics).toEqual([
+      {
+        event: "deploy.wfp.response.body_cancel_failed",
+        error: "body_cancel_failed",
+        ...publicationContext,
+      },
+    ]);
+  });
+
   test("WfP names use the full revision digest and 4xx is deterministic rejection", async () => {
     expect(publicationName(revisionId)).toBe(expectedPublicationName);
     // SAFETY: this provider stub returns a deterministic 4xx rejection.
@@ -385,7 +411,7 @@ describe("Cloudflare volatile boundaries", () => {
           WFP_ACCOUNT_ID: "account",
           WFP_NAMESPACE: "namespace",
         } as Env,
-        "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        publicationContext,
         `rev_sha256_${"b".repeat(64)}`,
         {
           mainModule: "index.js",

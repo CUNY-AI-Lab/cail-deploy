@@ -1,4 +1,8 @@
-import { emitDeployDiagnostic, observeDetachedCleanup } from "../../diagnostics";
+import {
+  type DiagnosticContext,
+  emitDeployDiagnostic,
+  observeDetachedCleanup,
+} from "../../diagnostics";
 import { ApiError, apiErrorSnapshot } from "../../domain/errors";
 import type { Env } from "../../env";
 import type { PreparedWorker } from "./worker-bundler";
@@ -47,26 +51,30 @@ function readWithSignal(
   });
 }
 
-function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
-  observeDetachedCleanup(() => reader.cancel(), "wfp_response_body_cancel_failed", {
-    boundary: "wfp_response",
-  });
+function cancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  context: DiagnosticContext,
+): void {
+  observeDetachedCleanup(() => reader.cancel(), "wfp_response_body_cancel_failed", context);
 }
 
-function releaseReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+function releaseReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  context: DiagnosticContext,
+): void {
   try {
     reader.releaseLock();
   } catch {
-    emitDeployDiagnostic("wfp_response_body_release_failed", { boundary: "wfp_response" });
+    emitDeployDiagnostic("wfp_response_body_release_failed", context);
   }
 }
 
-function discardResponseBody(response: Response): void {
+function discardResponseBody(response: Response, context: DiagnosticContext): void {
   let body: ReadableStream<Uint8Array> | null;
   try {
     body = response.body;
   } catch {
-    emitDeployDiagnostic("wfp_response_body_cancel_failed", { boundary: "wfp_response" });
+    emitDeployDiagnostic("wfp_response_body_cancel_failed", context);
     return;
   }
   if (!body) return;
@@ -74,14 +82,18 @@ function discardResponseBody(response: Response): void {
   try {
     reader = body.getReader();
   } catch {
-    emitDeployDiagnostic("wfp_response_body_cancel_failed", { boundary: "wfp_response" });
+    emitDeployDiagnostic("wfp_response_body_cancel_failed", context);
     return;
   }
-  cancelReader(reader);
-  releaseReader(reader);
+  cancelReader(reader, context);
+  releaseReader(reader, context);
 }
 
-async function readResponseText(response: Response, signal: AbortSignal): Promise<string> {
+async function readResponseText(
+  response: Response,
+  signal: AbortSignal,
+  context: DiagnosticContext,
+): Promise<string> {
   let body: ReadableStream<Uint8Array> | null;
   try {
     body = response.body;
@@ -114,10 +126,10 @@ async function readResponseText(response: Response, signal: AbortSignal): Promis
       text += decoder.decode(result.value, { stream: true });
     }
   } catch (cause) {
-    if (!complete) cancelReader(reader);
+    if (!complete) cancelReader(reader, context);
     throw ambiguousResult(cause);
   } finally {
-    releaseReader(reader);
+    releaseReader(reader, context);
   }
 }
 
@@ -168,7 +180,7 @@ export function publicationTimeoutMs(raw: string | undefined): number {
 
 export async function publishWorker(
   env: Env,
-  projectId: string,
+  context: { requestId: string; releaseId: string },
   revisionId: string,
   prepared: PreparedWorker,
 ): Promise<string> {
@@ -214,13 +226,13 @@ export async function publishWorker(
     );
   }
   if (!response.ok) {
-    discardResponseBody(response);
+    discardResponseBody(response, context);
     const code = response.status >= 500 ? "publication_ambiguous" : "publication_rejected";
     throw new ApiError(502, code, "We could not publish this release.");
   }
   let envelope: PublicationEnvelopeInput | null;
   try {
-    envelope = JSON.parse(await readResponseText(response, signal));
+    envelope = JSON.parse(await readResponseText(response, signal, context));
   } catch (cause) {
     if (apiErrorSnapshot(cause)?.code === "publication_ambiguous") throw cause;
     throw ambiguousResult(cause);

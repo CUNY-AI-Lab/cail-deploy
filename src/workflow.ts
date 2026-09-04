@@ -190,7 +190,7 @@ export class ReleaseWorkflow extends WorkflowEntrypoint<Env, ReleaseWorkflowPara
           try {
             name = await publishWorker(
               this.env,
-              projectId,
+              { requestId, releaseId },
               revisionId,
               parsePreparedEnvelope(JSON.parse(retainedJson)),
             );
