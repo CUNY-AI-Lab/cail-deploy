@@ -133,7 +133,6 @@ async function fixture(status: "publishing" | "reconciling") {
     ARTIFACTS: {
       get: async (key: string) => (key === preparedKey ? { text: async () => prepared } : null),
     },
-    AUTH_MODE: "test",
     SERVICE_RELEASE: "e332fcc",
     CLOUDFLARE_API_TOKEN: "test-only",
     WFP_ACCOUNT_ID: "account",

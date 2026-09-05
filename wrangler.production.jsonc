@@ -21,7 +21,6 @@
     "traces": { "enabled": false }
   },
   "vars": {
-    "AUTH_MODE": "cail-jwt",
     "CAIL_ENVIRONMENT": "production",
     "SERVICE_AUDIENCE": "cail:deploy",
     "PUBLIC_BASE_URL": "https://kale-release-control-plane.ailab-452.workers.dev",

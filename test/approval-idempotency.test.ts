@@ -9,7 +9,7 @@ const projectId = `prj_${"b".repeat(32)}`;
 const revisionId = `rev_sha256_${"c".repeat(64)}`;
 const releaseId = `rel_${"d".repeat(32)}`;
 const now = "2026-08-07T00:00:00.000Z";
-const principal: Principal = { subject, authentication: "isolated-test-bearer" };
+const principal: Principal = { subject, authentication: "cail-identity-jwt" };
 
 class BarrierD1 {
   private idempotencyReads = 0;

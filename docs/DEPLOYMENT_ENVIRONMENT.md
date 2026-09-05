@@ -3,7 +3,7 @@
 Deploy's operational log resource is identified by the explicit
 `CAIL_ENVIRONMENT` Worker variable. The source-owned values are exactly
 `production`, `staging`, and `test`; the logger never derives an environment
-from `AUTH_MODE`, a hostname, or a default. Missing, empty, case-variant, or
+from a hostname or a default. Missing, empty, case-variant, or
 whitespace-padded values leave readiness unavailable and reject operational
 API/MCP traffic before it can reach authentication or stateful work.
 

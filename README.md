@@ -39,6 +39,18 @@ codex plugin add kale-deploy@cuny-ai-lab
 codex mcp login kale
 ```
 
+## Local verification
+
+Run `bun run check` for the local Worker, D1, R2, Workflow, and OAuth checks.
+Those checks create a run-scoped identity issuer and verify its signed JWTs
+through the same authentication path used in production.
+
+For `bun run dev`, supply `CAIL_IDENTITY_ISSUER`,
+`CAIL_TRUSTED_IDENTITY_ISSUER`, and `CAIL_IDENTITY_JWKS` in `.dev.vars` for
+your local issuer, then send its signed `cail:deploy` JWT in
+`X-CAIL-Identity-JWT`. Readiness stays unavailable until the verifier is
+configured.
+
 ## Release
 
 Merge only after the repository checks pass. Deploy is a direct production

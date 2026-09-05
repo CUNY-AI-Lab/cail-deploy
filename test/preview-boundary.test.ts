@@ -8,7 +8,7 @@ const subject = `cail_${"b".repeat(32)}`;
 const requestId = "11111111-1111-4111-8111-111111111111";
 const principal: Principal = {
   subject,
-  authentication: "isolated-test-bearer",
+  authentication: "cail-identity-jwt",
 };
 
 function previewEnv(input: {

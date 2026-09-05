@@ -19,7 +19,6 @@ function env(overrides: Partial<Env>): Env {
   // SAFETY: this fixture supplies the authentication fields required by the
   // tested handler; each test adds only the boundary-specific overrides.
   return {
-    AUTH_MODE: "cail-jwt",
     CAIL_ENVIRONMENT: "test",
     SERVICE_AUDIENCE: audience,
     ...overrides,
@@ -28,11 +27,12 @@ function env(overrides: Partial<Env>): Env {
 
 describe("CAIL identity boundary", () => {
   test("readiness JSON is never cached or sniffed", async () => {
+    const issuer = await createTestIdentityIssuer();
     const response = await workerHandler.fetch(
       new Request("https://deploy.invalid/health"),
       env({
-        AUTH_MODE: "test",
-        TEST_PRINCIPALS_JSON: JSON.stringify({ test: TEST_SUBJECTS.alice }),
+        CAIL_IDENTITY_JWKS: issuer.jwksJson,
+        CAIL_IDENTITY_ISSUER: issuer.issuer,
       }),
     );
 
@@ -41,16 +41,22 @@ describe("CAIL identity boundary", () => {
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 
-  test("readiness rejects unsupported and malformed identity modes", async () => {
-    expect(await identityReady(env({ AUTH_MODE: "unknown" }))).toBe(false);
-    expect(await identityReady(env({ AUTH_MODE: "test", TEST_PRINCIPALS_JSON: "not-json" }))).toBe(
-      false,
-    );
+  test("readiness requires a usable JWT verifier", async () => {
+    const issuer = await createTestIdentityIssuer();
+    expect(await identityReady(env({}))).toBe(false);
     expect(
       await identityReady(
         env({
-          AUTH_MODE: "test",
-          TEST_PRINCIPALS_JSON: JSON.stringify({ test: TEST_SUBJECTS.alice }),
+          CAIL_IDENTITY_ISSUER: issuer.issuer,
+          CAIL_IDENTITY_JWKS: "not-json",
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      await identityReady(
+        env({
+          CAIL_IDENTITY_JWKS: issuer.jwksJson,
+          CAIL_IDENTITY_ISSUER: issuer.issuer,
         }),
       ),
     ).toBe(true);
@@ -196,8 +202,16 @@ describe("CAIL identity boundary", () => {
     expect(principal.operationalSubject).toBeUndefined();
   });
 
-  test("rejects wrong audience and credential ambiguity", async () => {
+  test("rejects raw bearer credentials, wrong audience, and credential ambiguity", async () => {
     const issuer = await createTestIdentityIssuer();
+    await expect(
+      authenticate(
+        new Request("https://deploy.invalid", {
+          headers: { Authorization: "Bearer test-owner-a" },
+        }),
+        env({ CAIL_IDENTITY_JWKS: issuer.jwksJson, CAIL_IDENTITY_ISSUER: issuer.issuer }),
+      ),
+    ).rejects.toMatchObject({ status: 401, code: "authentication_required" });
     const wrongAudience = await issuer.mintIdentityJwt({ audience: "https://other.invalid" });
     await expect(
       authenticate(
