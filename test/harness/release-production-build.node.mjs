@@ -244,7 +244,6 @@ test("actual Deploy local integration preserves identity, artifact, Workflow, pr
       {
         configPath: "wrangler.release-workerd-test.jsonc",
         vars: {
-          AUTH_MODE: "cail-jwt",
           SERVICE_AUDIENCE: "cail:deploy",
           PUBLIC_BASE_URL: "http://127.0.0.1:8787",
           OAUTH_AUTHORIZE_URL: "http://127.0.0.1:8787/api/oauth/authorize",

@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { TEST_SUBJECTS } from "@cuny-ai-lab/cail-identity/testing";
+import { createTestIdentityIssuer, TEST_SUBJECTS } from "@cuny-ai-lab/cail-identity/testing";
 import { ApiError, errorResponse } from "../src/domain/errors";
 import type { ThrownValue } from "../src/domain/values";
 import type { Env } from "../src/env";
 import { workerHandler } from "../src/handler";
 
 const requestId = "019f8bdc-342a-76e1-ba71-005d69808f86";
+const issuer = await createTestIdentityIssuer();
+const identityJwt = await issuer.mintIdentityJwt({
+  audience: "cail:deploy",
+  subject: TEST_SUBJECTS.alice,
+});
 interface HostileValue {
   value: object;
   trapCount(): number;
@@ -60,10 +65,10 @@ function rejectingEnv(rejection: () => ThrownValue): Env {
   // SAFETY: the test D1 adapter intentionally implements only prepare/bind/
   // first, the exact seam exercised by error-boundary failures.
   return {
-    AUTH_MODE: "test",
     CAIL_ENVIRONMENT: "test",
-    TEST_PRINCIPALS_JSON: JSON.stringify({ reviewer: TEST_SUBJECTS.alice }),
-    SERVICE_AUDIENCE: "https://deploy.invalid",
+    CAIL_IDENTITY_JWKS: issuer.jwksJson,
+    CAIL_IDENTITY_ISSUER: issuer.issuer,
+    SERVICE_AUDIENCE: "cail:deploy",
     DB: {
       prepare() {
         return statement;
@@ -76,7 +81,7 @@ function projectRequest(correlation = requestId): Request {
   return new Request("https://deploy.invalid/v1/projects", {
     method: "POST",
     headers: {
-      Authorization: "Bearer reviewer",
+      "X-CAIL-Identity-JWT": identityJwt,
       "Content-Type": "application/json",
       "Idempotency-Key": "typed-boundary-regression",
       "X-CAIL-Request-Id": correlation,

@@ -7,7 +7,6 @@ const releaseId = "rel_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa";
 const operationalSubject = `cail-v1-${"b".repeat(32)}`;
 // SAFETY: this fixture supplies the environment fields consumed by the event sink.
 const env = {
-  AUTH_MODE: "test",
   CAIL_ENVIRONMENT: "test",
   SERVICE_RELEASE: "8baede9",
 } as Env;

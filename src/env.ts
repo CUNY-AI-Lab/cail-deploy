@@ -101,10 +101,8 @@ export interface Env {
   LOADER: WorkerLoaderLike;
   DISPATCHER: DispatchNamespaceLike;
   RELEASE_WORKFLOW: TestWorkflowBinding;
-  AUTH_MODE: string;
   /** Explicit deployment label used by cail-log resource identity. */
   CAIL_ENVIRONMENT: string;
-  TEST_PRINCIPALS_JSON?: string;
   CAIL_IDENTITY_JWKS?: string;
   CAIL_IDENTITY_ISSUER?: string;
   /** One exact trusted issuer; absent means the canonical CAIL issuer. */

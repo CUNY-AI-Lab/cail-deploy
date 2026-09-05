@@ -7,7 +7,6 @@
   "workers_dev": true,
   "observability": { "enabled": true },
   "vars": {
-    "AUTH_MODE": "test",
     "CAIL_ENVIRONMENT": "test",
     "SERVICE_AUDIENCE": "cail:deploy",
     "PUBLIC_BASE_URL": "http://127.0.0.1:8787",
@@ -15,8 +14,7 @@
     "WFP_ACCOUNT_ID": "replace-with-isolated-account-id",
     "WFP_NAMESPACE": "replace-with-run-scoped-namespace",
     "WFP_PUBLISH_TIMEOUT_MS": "30000",
-    "PREVIEW_TIMEOUT_MS": "5000",
-    "TEST_PRINCIPALS_JSON": "{\"test-owner-a\":\"cail-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"test-owner-b\":\"cail-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"
+    "PREVIEW_TIMEOUT_MS": "5000"
   },
   "d1_databases": [
     {
