@@ -287,6 +287,20 @@ describe("Cloudflare volatile boundaries", () => {
     expect(stalledResponse.body?.locked).toBe(false);
   });
 
+  test("preserves the private cause when a successful WfP body cannot be accessed", async () => {
+    const primary = new Error("PRIVATE_WFP_BODY_ACCESS_FAILURE");
+    const response = new Response(null, { status: 200 });
+    Object.defineProperty(response, "body", {
+      get() {
+        throw primary;
+      },
+    });
+    const failure = await publishWithResponse(response).catch((error: ThrownValue) => error);
+    expect(failure).toMatchObject({ status: 502, code: "publication_ambiguous" });
+    if (!(failure instanceof Error)) throw new Error("Expected a publication failure.");
+    expect(failure.cause).toBe(primary);
+  });
+
   test("non-2xx response cleanup is nonblocking and cannot replace provider classification", async () => {
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: ThrownValue): void => {
