@@ -20,6 +20,7 @@ import {
   MAX_ARTIFACT_BASE64_CHARS,
   MAX_MCP_BODY_BYTES,
   MAX_MCP_RESPONSE_BYTES,
+  readMcpMessage,
   readMcpResponseText,
   tools,
 } from "../src/mcp";
@@ -757,6 +758,7 @@ describe("MCP tool argument boundary", () => {
   test("rejects declared oversized outer JSON without reading, decoding, or API access", async () => {
     let pulls = 0;
     let cancelled = false;
+    let cancelReason: ThrownValue;
     let envReads = 0;
     let decoderReads = 0;
     // SAFETY: the hostile proxy proves Content-Length rejection occurs before Env access.
@@ -782,8 +784,9 @@ describe("MCP tool argument boundary", () => {
           pulls += 1;
           controller.enqueue(new Uint8Array([1]));
         },
-        cancel() {
+        cancel(reason) {
           cancelled = true;
+          cancelReason = reason;
           return new Promise<void>(() => undefined);
         },
       }),
@@ -804,12 +807,24 @@ describe("MCP tool argument boundary", () => {
       });
       expect(pulls).toBe(0);
       expect(cancelled).toBe(true);
+      expect(cancelReason).toBeUndefined();
       expect(decoderReads).toBe(0);
       expect(envReads).toBe(0);
     } finally {
       if (textDecoderDescriptor)
         Object.defineProperty(globalThis, "TextDecoder", textDecoderDescriptor);
     }
+  });
+
+  test("rejects declared oversized MCP JSON even when the body is absent", async () => {
+    const request = new Request("https://deploy.invalid/mcp", {
+      method: "POST",
+      headers: { "Content-Length": String(MAX_MCP_BODY_BYTES + 1) },
+    });
+    await expect(readMcpMessage(request, requestId)).rejects.toMatchObject({
+      status: 413,
+      code: "mcp_request_too_large",
+    });
   });
 
   test("preserves the MCP size error when cancellation, release, and diagnostics throw", async () => {
@@ -988,6 +1003,72 @@ describe("MCP tool argument boundary", () => {
     await Bun.sleep(0);
     expect(cancelCount).toBe(1);
     expect(body.locked).toBe(false);
+  });
+
+  test("decodes a multibyte MCP response split between chunks without cancelling it", async () => {
+    let cancellations = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([0x41, 0xe2]));
+        controller.enqueue(new Uint8Array([0x82]));
+        controller.enqueue(new Uint8Array([0xac, 0x42]));
+        controller.close();
+      },
+      cancel() {
+        cancellations += 1;
+      },
+    });
+    await expect(
+      readMcpResponseText(new Response(body), new AbortController().signal, requestId),
+    ).resolves.toBe("A€B");
+    expect(cancellations).toBe(0);
+    expect(body.locked).toBe(false);
+  });
+
+  test("rejects malformed MCP response UTF-8 and cancels an unfinished body", async () => {
+    let cancellations = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([0xff]));
+      },
+      cancel() {
+        cancellations += 1;
+        return new Promise<void>(() => undefined);
+      },
+    });
+    await expect(
+      readMcpResponseText(new Response(body), new AbortController().signal, requestId),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(cancellations).toBe(1);
+    expect(body.locked).toBe(false);
+
+    await expect(
+      readMcpResponseText(
+        new Response(new Uint8Array([0xe2, 0x82])),
+        new AbortController().signal,
+        requestId,
+      ),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
+
+  test("reports an already locked MCP response before an expired external deadline", async () => {
+    const body = new ReadableStream<Uint8Array>();
+    const owner = body.getReader();
+    try {
+      await expect(
+        readMcpResponseText(
+          new Response(body),
+          new AbortController().signal,
+          requestId,
+          10,
+          AbortSignal.abort(new Error("expired deadline")),
+        ),
+      ).rejects.toBeInstanceOf(TypeError);
+      expect(body.locked).toBe(true);
+    } finally {
+      await owner.cancel();
+      owner.releaseLock();
+    }
   });
 
   test("preserves an internal response read failure when cleanup and diagnostics fail", async () => {
