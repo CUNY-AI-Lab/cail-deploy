@@ -76,22 +76,17 @@ jobs:
         run: |
           set -euo pipefail
           expected_message="Deploy main $GITHUB_SHA"
-          versions="$(bunx wrangler versions list --config wrangler.production.jsonc --json)"
-          version_id="$(jq -er --arg message "$expected_message" '
-            [.[] | select(.annotations["workers/message"] == $message)] | last | .id
-          ' <<<"$versions")"
-          test "$version_id" != "null"
+          deployment="$(bunx wrangler deployments status --config wrangler.production.jsonc --json)"
+          version_id="$(jq -er '
+            (.versions // []) |
+            select(length == 1 and .[0].percentage == 100) |
+            .[0].version_id
+          ' <<<"$deployment")"
           version="$(bunx wrangler versions view "$version_id" --config wrangler.production.jsonc --json)"
           jq -e --arg sha "$GITHUB_SHA" --arg message "$expected_message" '
             .annotations["workers/tag"] == $sha and
             .annotations["workers/message"] == $message
           ' <<<"$version"
-          deployments="$(bunx wrangler deployments list --config wrangler.production.jsonc --json)"
-          jq -e --arg version "$version_id" '
-            last |
-            (.versions // []) | length == 1 and
-            .[0].version_id == $version and .[0].percentage == 100
-          ' <<<"$deployments"
           printf 'serving_version=%s\n' "$version_id" >> "$GITHUB_STEP_SUMMARY"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
