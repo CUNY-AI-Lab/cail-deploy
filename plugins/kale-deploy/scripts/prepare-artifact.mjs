@@ -6,6 +6,7 @@ import path from "node:path";
 
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const SAFE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\\).{1,240}$/u;
+const SENSITIVE_SOURCE_BASENAME = /^(?:\.env(?:\..+)?|\.dev\.vars(?:\..+)?)$/iu;
 
 function usage() {
   return "Usage: bun prepare-artifact.mjs --entrypoint <path> --compatibility-date <YYYY-MM-DD> [--root <dir>] [--source <dir>]";
@@ -57,6 +58,9 @@ async function collectFiles(root, directory, output) {
     }
     if (!entry.isFile()) continue;
     const relative = safeRelativePath(path.relative(root, absolute));
+    if (SENSITIVE_SOURCE_BASENAME.test(entry.name)) {
+      throw new Error(`Sensitive source file is not allowed: ${relative}`);
+    }
     const bytes = await readFile(absolute);
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     if (text.includes("\u0000")) throw new Error(`Binary source is not allowed: ${relative}`);
