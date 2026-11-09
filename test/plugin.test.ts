@@ -24,6 +24,7 @@ describe("Kale Deploy plugin", () => {
     await mkdir(path.join(root, "src", "lib"), { recursive: true });
     await writeFile(path.join(root, "src", "index.ts"), "import './lib/value';\n");
     await writeFile(path.join(root, "src", "lib", "value.ts"), "export const value = 1;\n");
+    await writeFile(path.join(root, "src", ".metadata"), "public metadata\n");
 
     const prepared = await prepareArtifact({
       root,
@@ -37,6 +38,7 @@ describe("Kale Deploy plugin", () => {
       runtime: "worker",
       entrypoint: "src/index.ts",
       files: {
+        "src/.metadata": "public metadata\n",
         "src/index.ts": "import './lib/value';\n",
         "src/lib/value.ts": "export const value = 1;\n",
       },
@@ -47,6 +49,29 @@ describe("Kale Deploy plugin", () => {
     expect(prepared.uploadArguments.contentDigest).toMatch(/^sha-256=:[A-Za-z0-9+/]{43}=:$/u);
     expect(prepared.artifactDigest).toMatch(/^[0-9a-f]{64}$/u);
   });
+
+  test.each([".env", ".env.production", ".dev.vars", ".dev.vars.local"])(
+    "rejects %s before artifact preparation",
+    async (name) => {
+      const root = await mkdtemp(path.join(tmpdir(), "kale-plugin-sensitive-"));
+      temporaryDirectories.push(root);
+      await mkdir(path.join(root, "src", "nested"), { recursive: true });
+      await writeFile(path.join(root, "src", "index.ts"), "export default {};\n");
+      await writeFile(
+        path.join(root, "src", "nested", name),
+        "HARMLESS_AUDIT_MARKER=fixture-only\n",
+      );
+
+      await expect(
+        prepareArtifact({
+          root,
+          source: "src",
+          entrypoint: "src/index.ts",
+          compatibilityDate: "2026-07-22",
+        }),
+      ).rejects.toThrow(`Sensitive source file is not allowed: src/nested/${name}`);
+    },
+  );
 
   test("rejects entrypoints outside the source tree", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "kale-plugin-invalid-"));
