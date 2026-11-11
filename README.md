@@ -58,3 +58,13 @@ cutover for this stateful control plane: the local Workerd/D1/R2/Workflow gate
 proves the release before it reaches production. A successful release leaves
 the public readiness check healthy while anonymous project creation remains
 rejected.
+
+## License
+
+Copyright © 2026 CUNY AI Lab, The Graduate Center, City University of New York.
+
+This software is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later). You may use, study, change, and share it, including for commercial purposes. If you distribute a modified version, or run one as a network service that other people use, you must make its complete source code available to them under the same license.
+
+This license applies to every version of this repository, including earlier commits. Third-party components keep their own licenses: `tools/oxlint/anti-slop/` is vendored under its own license (see its `LICENSE`).
+
+Questions about licensing: [ailab@gc.cuny.edu](mailto:ailab@gc.cuny.edu). See CAIL's [licensing page](https://ailab.gc.cuny.edu/license/).
